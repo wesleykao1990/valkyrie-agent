@@ -33,6 +33,16 @@ Pilot: proposed ADR-P003 read-only native connectivity slice
   memory/profile injection disabled.
 - Deterministic fake-runtime tests plus opt-in `smoke:native` for a running local
   pilot.
+- Forward migration 004 and SQLite/PostgreSQL parity for explicit writer-lease
+  owners, monotonic fencing tokens, heartbeat renewal, exact release, durable
+  quarantine, and idempotent transactional artifact batches.
+- Internal disabled writer-boundary contract: a private shallow Git store plus one
+  relative worktree, a Docker-compatible OCI provider with effective-policy
+  inspection and no ambient credentials, host-owned heartbeat and ownership-
+  aware lease-loss stop/quarantine, bounded manifest export, deterministic
+  baseline secret scanning, cleanup, and quarantine. Fake/provider orchestration
+  is tested; real isolation and provider-aware restart recovery are not yet
+  exercised on this host.
 
 ## Default behavior remains simulated
 
@@ -72,8 +82,9 @@ implemented capability and live exercise are reported separately.
   authorization, expiry/rotation/revocation, or remote channel attestation.
 - PostgreSQL is contract-tested; production still needs deployment-specific roles,
   TLS, backup/restore, monitoring, retention, and an outbox dispatcher.
-- Run/lease claims have ownership and expiry, but a real long writer needs renewal,
-  fencing, kill-on-lease-loss, orphan quarantine, and cleanup.
+- The writer boundary has renewal, fencing, ownership-aware stop/quarantine, and
+  cleanup contracts, but it is not connected to a runtime, has not passed a live
+  engine test on this host, and lacks durable provider-aware restart recovery.
 - Native subprocess durability does not cross control-plane restart; restart
   reconciliation fails non-resumable orphans conservatively.
 - Memory promotion validates the exact preview and file target but cannot make the
@@ -83,8 +94,10 @@ implemented capability and live exercise are reported separately.
 
 ## Not implemented or enabled
 
-- External container/devcontainer/VM writer sandbox, network policy, secret
-  broker, artifact export/secret scan, or production credential injection.
+- A live-verified external writer sandbox on the deployment host, model egress
+  policy, secret broker, or production credential injection. The implemented
+  Docker-compatible provider and baseline scanner remain disabled/internal until
+  their opt-in live test passes.
 - Real repository implementation by Atomic, Codex, or Claude; deterministic
   check/repair/reviewer pipeline; draft PR creation; merge; deploy.
 - Atomic model workflow, HIL response mapping, steering, pause/resume, or proven

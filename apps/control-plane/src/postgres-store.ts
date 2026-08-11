@@ -2,17 +2,26 @@ import type { Approval, Artifact, MemoryProposal, Project, Run, RunEvent, Task }
 import { nowIso } from "./ids.ts";
 import { assertUniqueMigrationVersions, loadMigrationFiles } from "./migrations.ts";
 import {
+  artifactsEqual,
   canonicalJson,
   decodeJson,
   deterministicOutboxId,
   IdempotencyConflictError,
   isoString,
   nullableIsoString,
+  observeStoreClock,
   StorageConflictError,
+  validateArtifactBatchInput,
+  validateWorkspaceLeaseFence,
+  validateWorkspaceLeaseQuarantine,
+  validateWorkspaceLeaseRenewal,
+  validateWriterLeaseRequest,
+  validateWriterLeaseWindow,
   type ApprovalResolutionInput,
   type ApprovalResolutionResult,
   type ApprovalRequestInput,
   type ApprovalRequestResult,
+  type ArtifactBatchResult,
   type ControlPlaneStore,
   type IdempotencyInput,
   type MigrationResult,
@@ -22,8 +31,13 @@ import {
   type RunBundleInput,
   type RunBundleResult,
   type StoreHealth,
+  type StoreClock,
   type StoredIdempotencyRecord,
+  type WriterLeaseRequest,
   type WorkspaceLease,
+  type WorkspaceLeaseFence,
+  type WorkspaceLeaseQuarantine,
+  type WorkspaceLeaseRenewal,
   type WorkspaceLeaseResult,
   type WorkspaceRecord,
 } from "./store.ts";
@@ -54,14 +68,19 @@ export interface PostgresStoreOptions {
   statementTimeoutMs?: number;
   applicationName?: string;
   ssl?: boolean | Record<string, unknown>;
+  now?: StoreClock;
 }
 
 export class PostgresStore implements ControlPlaneStore {
   readonly backend = "postgres" as const;
   private initialMigrationResults: MigrationResult[] = [];
   private readonly pool: PoolLike;
+  private readonly clock: StoreClock;
 
-  private constructor(pool: PoolLike) { this.pool = pool; }
+  private constructor(pool: PoolLike, clock: StoreClock) {
+    this.pool = pool;
+    this.clock = clock;
+  }
 
   static async connect(options: PostgresStoreOptions): Promise<PostgresStore> {
     if (!options.databaseUrl) throw new Error("DATABASE_URL is required when PostgreSQL storage is selected");
@@ -75,7 +94,7 @@ export class PostgresStore implements ControlPlaneStore {
       application_name: options.applicationName ?? "wesley-agent-control-plane",
       ssl: options.ssl,
     }) as unknown as PoolLike;
-    const store = new PostgresStore(pool);
+    const store = new PostgresStore(pool, options.now ?? (() => new Date()));
     try {
       if (options.autoMigrate) store.initialMigrationResults = await store.applyMigrations();
       else await store.assertMigrationsCurrent();
@@ -271,12 +290,14 @@ export class PostgresStore implements ControlPlaneStore {
         if (replay) return replay;
       }
       await this.insertRun(client, effectiveRun);
+      let persistedLease: WorkspaceLease | undefined;
       if (input.workspace && input.lease) {
         await this.insertWorkspace(client, input.workspace);
-        await this.insertLease(client, input.lease);
+        persistedLease = await this.insertLease(client, input.lease, observeStoreClock(this.clock));
         await this.insertOutbox(client, "workspace.lease.acquired", input.workspace.id, {
-          workspaceId: input.workspace.id, runId: effectiveRun.id, mode: input.lease.mode,
-        }, input.lease.workspaceId);
+          workspaceId: input.workspace.id, runId: effectiveRun.id, ownerId: persistedLease.ownerId,
+          mode: persistedLease.mode, fencingToken: persistedLease.fencingToken,
+        }, `${persistedLease.workspaceId}:${persistedLease.fencingToken}`);
       }
       await this.insertOutbox(client, "run.created", effectiveRun.id, {
         runId: effectiveRun.id, projectId: effectiveRun.projectId, rootRuntime: effectiveRun.rootRuntime,
@@ -286,7 +307,7 @@ export class PostgresStore implements ControlPlaneStore {
           runId: effectiveRun.id, workspaceId: input.workspace?.id ?? null,
         });
       }
-      return { run: effectiveRun, workspace: input.workspace, lease: input.lease, replayed: false };
+      return { run: effectiveRun, workspace: input.workspace, lease: persistedLease, replayed: false };
     });
   }
 
@@ -436,8 +457,11 @@ export class PostgresStore implements ControlPlaneStore {
     });
   }
 
-  async createLease(lease: WorkspaceLease): Promise<void> {
-    await this.transaction(async (client) => {
+  async createLease(lease: WriterLeaseRequest): Promise<WorkspaceLease> {
+    validateWriterLeaseRequest(lease);
+    return this.transaction(async (client) => {
+      const observedAt = observeStoreClock(this.clock);
+      validateWriterLeaseWindow(lease, observedAt);
       const workspace = await this.getWorkspaceRow(client, lease.workspaceId);
       if (!workspace || workspace.runId !== lease.runId) throw new StorageConflictError("Lease owner does not match workspace owner");
       const runRow = (await client.query("SELECT * FROM runs WHERE id=$1 FOR UPDATE", [lease.runId])).rows[0];
@@ -445,22 +469,43 @@ export class PostgresStore implements ControlPlaneStore {
       if (!run || (run.workspaceId && run.workspaceId !== lease.workspaceId)) {
         throw new StorageConflictError("Run already owns another workspace or is missing");
       }
-      await this.insertLease(client, lease);
+      const persisted = await this.insertLease(client, lease, observedAt);
       await client.query("UPDATE runs SET workspace_id=$1 WHERE id=$2 AND workspace_id IS NULL", [lease.workspaceId, lease.runId]);
       await this.insertOutbox(client, "workspace.lease.acquired", lease.workspaceId, {
-        workspaceId: lease.workspaceId, runId: lease.runId, mode: lease.mode,
-      }, lease.workspaceId);
+        workspaceId: lease.workspaceId, runId: lease.runId, ownerId: lease.ownerId,
+        mode: lease.mode, fencingToken: persisted.fencingToken,
+      }, `${lease.workspaceId}:${persisted.fencingToken}`);
+      return persisted;
     });
   }
 
-  private async insertLease(client: Queryable, lease: WorkspaceLease): Promise<void> {
-    await client.query(`INSERT INTO workspace_leases (workspace_id,run_id,mode,expires_at,heartbeat_at)
-      VALUES ($1,$2,$3,$4,$5)`, [lease.workspaceId, lease.runId, lease.mode, lease.expiresAt, lease.heartbeatAt]);
+  private async nextFencingToken(client: Queryable, workspaceId: string, runId: string): Promise<number> {
+    const result = await client.query(`UPDATE workspaces SET lease_epoch=lease_epoch+1
+      WHERE id=$1 AND run_id=$2 AND lease_epoch<9007199254740991
+      RETURNING lease_epoch`, [workspaceId, runId]);
+    if (result.rowCount !== 1) throw new StorageConflictError("Workspace lease epoch is unavailable or exhausted");
+    const token = Number(result.rows[0].lease_epoch);
+    if (!Number.isSafeInteger(token) || token < 1) throw new StorageConflictError("Workspace lease epoch is invalid");
+    return token;
   }
 
-  async createWorkspaceLease(workspace: WorkspaceRecord, lease: WorkspaceLease): Promise<WorkspaceLeaseResult> {
+  private async insertLease(client: Queryable, lease: WriterLeaseRequest, observedAt: string): Promise<WorkspaceLease> {
+    validateWriterLeaseRequest(lease);
+    validateWriterLeaseWindow(lease, observedAt);
+    const fencingToken = await this.nextFencingToken(client, lease.workspaceId, lease.runId);
+    const result = await client.query(`INSERT INTO workspace_leases
+      (workspace_id,run_id,owner_id,mode,fencing_token,state,expires_at,heartbeat_at,acquired_at,quarantined_at,quarantine_reason)
+      VALUES ($1,$2,$3,$4,$5,'active',$6,$7,$7,NULL,NULL) RETURNING *`, [
+      lease.workspaceId, lease.runId, lease.ownerId, lease.mode, fencingToken, lease.expiresAt, lease.heartbeatAt,
+    ]);
+    return this.mapLease(result.rows[0]);
+  }
+
+  async createWorkspaceLease(workspace: WorkspaceRecord, lease: WriterLeaseRequest): Promise<WorkspaceLeaseResult> {
     this.validateWorkspaceLease(workspace, lease, workspace.runId);
     return this.transaction(async (client) => {
+      const observedAt = observeStoreClock(this.clock);
+      validateWriterLeaseWindow(lease, observedAt);
       await client.query("SELECT pg_advisory_xact_lock(hashtext('workspace-lease'),hashtext($1))", [workspace.runId]);
       const runRow = (await client.query("SELECT * FROM runs WHERE id=$1 FOR UPDATE", [workspace.runId])).rows[0];
       const run = runRow ? this.mapRun(runRow) : null;
@@ -472,61 +517,165 @@ export class PostgresStore implements ControlPlaneStore {
         const existingWorkspace = this.mapWorkspace(found.rows[0]);
         const existingLease = await this.getLeaseRow(client, existingWorkspace.id);
         if (existingWorkspace.id === workspace.id && existingWorkspace.runId === workspace.runId &&
-            existingLease?.runId === lease.runId && existingLease.mode === lease.mode) {
+            existingLease?.runId === lease.runId && existingLease.ownerId === lease.ownerId &&
+            existingLease.mode === lease.mode && existingLease.state === "active" &&
+            existingLease.heartbeatAt === lease.heartbeatAt && existingLease.expiresAt === lease.expiresAt) {
           if (!run.workspaceId) await client.query("UPDATE runs SET workspace_id=$1 WHERE id=$2", [workspace.id, run.id]);
           return { workspace: existingWorkspace, lease: existingLease, replayed: true };
         }
         throw new StorageConflictError("Workspace or run already owns another workspace lease");
       }
+      if (run.status !== "queued") {
+        throw new StorageConflictError("A new writer workspace can be claimed only by a queued run");
+      }
       await this.insertWorkspace(client, workspace);
-      await this.insertLease(client, lease);
+      const persisted = await this.insertLease(client, lease, observedAt);
       await client.query("UPDATE runs SET workspace_id=$1 WHERE id=$2", [workspace.id, run.id]);
       await this.insertOutbox(client, "workspace.lease.acquired", workspace.id, {
-        workspaceId: workspace.id, runId: workspace.runId, mode: lease.mode,
-      }, workspace.id);
-      return { workspace, lease, replayed: false };
+        workspaceId: workspace.id, runId: workspace.runId, ownerId: lease.ownerId,
+        mode: lease.mode, fencingToken: persisted.fencingToken,
+      }, `${workspace.id}:${persisted.fencingToken}`);
+      return { workspace, lease: persisted, replayed: false };
     });
   }
 
-  private validateWorkspaceLease(workspace: WorkspaceRecord, lease: WorkspaceLease, runId: string): void {
+  private validateWorkspaceLease(workspace: WorkspaceRecord, lease: WriterLeaseRequest, runId: string): void {
+    validateWriterLeaseRequest(lease);
     if (workspace.runId !== runId || lease.runId !== runId || lease.workspaceId !== workspace.id) {
       throw new StorageConflictError("Workspace, lease, and run ownership must match");
     }
-    if (lease.mode !== "writer") throw new StorageConflictError("Writing candidates require a writer lease");
   }
 
-  async heartbeatLease(workspaceId: string, runId: string, heartbeatAt: string, expiresAt: string): Promise<boolean> {
-    const result = await this.pool.query(`UPDATE workspace_leases SET heartbeat_at=$1,expires_at=$2
-      WHERE workspace_id=$3 AND run_id=$4 AND expires_at>$1`, [heartbeatAt, expiresAt, workspaceId, runId]);
-    return result.rowCount === 1;
-  }
+  async rotateWorkspaceLease(lease: WriterLeaseRequest): Promise<WorkspaceLease> {
+    validateWriterLeaseRequest(lease);
+    return this.transaction(async (client) => {
+      const observedAt = observeStoreClock(this.clock);
+      validateWriterLeaseWindow(lease, observedAt);
+      const runRow = (await client.query("SELECT * FROM runs WHERE id=$1 FOR UPDATE", [lease.runId])).rows[0];
+      const run = runRow ? this.mapRun(runRow) : null;
+      if (!run || run.workspaceId !== lease.workspaceId) {
+        throw new StorageConflictError("Run does not own the workspace being rotated");
+      }
+      const workspaceRow = (await client.query("SELECT * FROM workspaces WHERE id=$1 FOR UPDATE", [lease.workspaceId])).rows[0];
+      const workspace = workspaceRow ? this.mapWorkspace(workspaceRow) : null;
+      if (!workspace || workspace.runId !== lease.runId) {
+        throw new StorageConflictError("Lease owner does not match workspace owner");
+      }
+      const previous = await this.getLeaseRow(client, lease.workspaceId, true);
+      if (previous?.state === "quarantined") {
+        throw new StorageConflictError("A quarantined writer lease requires explicit fenced release before reacquisition");
+      }
+      if (previous && Date.parse(previous.expiresAt) > Date.parse(observedAt)) {
+        throw new StorageConflictError("An unexpired writer lease cannot be rotated");
+      }
 
-  async releaseLease(workspaceId: string): Promise<void> {
-    await this.transaction(async (client) => {
-      const lease = await this.getLeaseRow(client, workspaceId);
-      if (!lease) return;
-      await client.query("DELETE FROM workspace_leases WHERE workspace_id=$1", [workspaceId]);
-      await this.insertOutbox(client, "workspace.lease.released", workspaceId, {
-        workspaceId, runId: lease.runId,
-      }, `${workspaceId}:${lease.heartbeatAt}`);
+      const fencingToken = await this.nextFencingToken(client, lease.workspaceId, lease.runId);
+      let result: QueryResult;
+      if (previous) {
+        result = await client.query(`UPDATE workspace_leases
+          SET owner_id=$1,mode=$2,fencing_token=$3,state='active',expires_at=$4,heartbeat_at=$5,acquired_at=$5,
+              quarantined_at=NULL,quarantine_reason=NULL
+          WHERE workspace_id=$6 AND run_id=$7 AND fencing_token=$8 RETURNING *`, [
+          lease.ownerId, lease.mode, fencingToken, lease.expiresAt, lease.heartbeatAt,
+          lease.workspaceId, lease.runId, previous.fencingToken,
+        ]);
+      } else {
+        result = await client.query(`INSERT INTO workspace_leases
+          (workspace_id,run_id,owner_id,mode,fencing_token,state,expires_at,heartbeat_at,acquired_at,quarantined_at,quarantine_reason)
+          VALUES ($1,$2,$3,$4,$5,'active',$6,$7,$7,NULL,NULL) RETURNING *`, [
+          lease.workspaceId, lease.runId, lease.ownerId, lease.mode, fencingToken,
+          lease.expiresAt, lease.heartbeatAt,
+        ]);
+      }
+      if (result.rowCount !== 1) throw new StorageConflictError("Writer lease rotation lost its ownership race");
+      await client.query("UPDATE workspaces SET status='leased' WHERE id=$1 AND run_id=$2", [lease.workspaceId, lease.runId]);
+      await this.insertOutbox(client, previous ? "workspace.lease.rotated" : "workspace.lease.acquired", lease.workspaceId, {
+        workspaceId: lease.workspaceId, runId: lease.runId, ownerId: lease.ownerId,
+        fencingToken, previousOwnerId: previous?.ownerId ?? null,
+        previousFencingToken: previous?.fencingToken ?? null, previousExpiresAt: previous?.expiresAt ?? null,
+      }, `${lease.workspaceId}:${fencingToken}`);
+      return this.mapLease(result.rows[0]);
     });
   }
 
-  async releaseWorkspaceLease(workspaceId: string, runId: string): Promise<boolean> {
+  async renewWorkspaceLease(input: WorkspaceLeaseRenewal): Promise<WorkspaceLease | null> {
+    validateWorkspaceLeaseRenewal(input);
+    const observedAt = observeStoreClock(this.clock);
+    validateWriterLeaseWindow(input, observedAt);
+    const result = await this.pool.query(`UPDATE workspace_leases SET heartbeat_at=$1,expires_at=$2
+      WHERE workspace_id=$3 AND run_id=$4 AND owner_id=$5 AND fencing_token=$6 AND state='active'
+        AND expires_at>$7 AND heartbeat_at<=$1 AND expires_at<=$2 RETURNING *`, [
+      input.heartbeatAt, input.expiresAt, input.workspaceId, input.runId, input.ownerId, input.fencingToken, observedAt,
+    ]);
+    return result.rowCount === 1 ? this.mapLease(result.rows[0]) : null;
+  }
+
+  async quarantineWorkspaceLease(input: WorkspaceLeaseQuarantine): Promise<WorkspaceLease | null> {
+    validateWorkspaceLeaseQuarantine(input);
     return this.transaction(async (client) => {
-      const lease = await this.getLeaseRow(client, workspaceId, true);
+      const workspace = await client.query("SELECT id FROM workspaces WHERE id=$1 AND run_id=$2 FOR UPDATE", [
+        input.workspaceId, input.runId,
+      ]);
+      if (workspace.rowCount !== 1) return null;
+      const lease = await this.getLeaseRow(client, input.workspaceId, true);
+      if (!lease || lease.runId !== input.runId || lease.ownerId !== input.ownerId ||
+          lease.fencingToken !== input.fencingToken) return null;
+      if (Date.parse(input.quarantinedAt) < Date.parse(lease.acquiredAt)) {
+        throw new StorageConflictError("Writer lease quarantine time cannot precede acquisition");
+      }
+      if (lease.state === "quarantined") {
+        if (lease.quarantinedAt === input.quarantinedAt && lease.quarantineReason === input.reason) return lease;
+        throw new StorageConflictError("Writer lease was already quarantined with different evidence");
+      }
+      const updated = await client.query(`UPDATE workspace_leases
+        SET state='quarantined',quarantined_at=$1,quarantine_reason=$2
+        WHERE workspace_id=$3 AND run_id=$4 AND owner_id=$5 AND fencing_token=$6 AND state='active' RETURNING *`, [
+        input.quarantinedAt, input.reason, input.workspaceId, input.runId, input.ownerId, input.fencingToken,
+      ]);
+      if (updated.rowCount !== 1) return null;
+      await client.query("UPDATE workspaces SET status='quarantined' WHERE id=$1 AND run_id=$2", [input.workspaceId, input.runId]);
+      await this.insertOutbox(client, "workspace.lease.quarantined", input.workspaceId, {
+        workspaceId: input.workspaceId, runId: input.runId, ownerId: input.ownerId,
+        fencingToken: input.fencingToken, quarantinedAt: input.quarantinedAt, reason: input.reason,
+      }, `${input.workspaceId}:${input.fencingToken}:quarantined`);
+      return this.mapLease(updated.rows[0]);
+    });
+  }
+
+  async releaseWorkspaceLease(fence: WorkspaceLeaseFence): Promise<boolean> {
+    validateWorkspaceLeaseFence(fence);
+    return this.transaction(async (client) => {
+      const workspace = await client.query("SELECT id FROM workspaces WHERE id=$1 AND run_id=$2 FOR UPDATE", [
+        fence.workspaceId, fence.runId,
+      ]);
+      if (workspace.rowCount !== 1) return false;
+      const lease = await this.getLeaseRow(client, fence.workspaceId, true);
       if (!lease) return false;
-      if (lease.runId !== runId) throw new StorageConflictError("Only the owning run may release a writer lease");
-      const deleted = await client.query("DELETE FROM workspace_leases WHERE workspace_id=$1 AND run_id=$2", [workspaceId, runId]);
+      if (lease.runId !== fence.runId || lease.ownerId !== fence.ownerId || lease.fencingToken !== fence.fencingToken) {
+        return false;
+      }
+      const deleted = await client.query(`DELETE FROM workspace_leases
+        WHERE workspace_id=$1 AND run_id=$2 AND owner_id=$3 AND fencing_token=$4`, [
+        fence.workspaceId, fence.runId, fence.ownerId, fence.fencingToken,
+      ]);
       if (deleted.rowCount !== 1) return false;
-      await client.query("UPDATE workspaces SET status='released' WHERE id=$1 AND run_id=$2", [workspaceId, runId]);
-      await this.insertOutbox(client, "workspace.lease.released", workspaceId, { workspaceId, runId }, `${workspaceId}:${lease.heartbeatAt}`);
+      await client.query("UPDATE workspaces SET status='released' WHERE id=$1 AND run_id=$2", [fence.workspaceId, fence.runId]);
+      await this.insertOutbox(client, "workspace.lease.released", fence.workspaceId, {
+        workspaceId: fence.workspaceId, runId: fence.runId, ownerId: fence.ownerId,
+        fencingToken: fence.fencingToken, priorState: lease.state,
+        quarantinedAt: lease.quarantinedAt, quarantineReason: lease.quarantineReason,
+      }, `${fence.workspaceId}:${fence.fencingToken}:released`);
       return true;
     });
   }
 
+  async getWorkspaceLease(workspaceId: string): Promise<WorkspaceLease | null> {
+    return this.getLeaseRow(this.pool, workspaceId);
+  }
+
   async listLeases(): Promise<WorkspaceLease[]> {
-    return (await this.pool.query("SELECT * FROM workspace_leases ORDER BY heartbeat_at DESC")).rows.map(this.mapLease);
+    return (await this.pool.query("SELECT * FROM workspace_leases WHERE state='active' ORDER BY heartbeat_at DESC")).rows
+      .map(this.mapLease);
   }
 
   private async getLeaseRow(client: Queryable, workspaceId: string, lock = false): Promise<WorkspaceLease | null> {
@@ -716,6 +865,39 @@ export class PostgresStore implements ControlPlaneStore {
     });
   }
 
+  async createArtifactBatch(artifacts: Artifact[]): Promise<ArtifactBatchResult> {
+    const runId = validateArtifactBatchInput(artifacts);
+    return this.transaction(async (client) => {
+      const run = await client.query("SELECT id FROM runs WHERE id=$1 FOR UPDATE", [runId]);
+      if (run.rowCount !== 1) throw new StorageConflictError("Artifact batch run not found");
+      let inserted = 0;
+      const persisted: Artifact[] = [];
+      for (const artifact of artifacts) {
+        const row = (await client.query("SELECT * FROM artifacts WHERE id=$1 FOR UPDATE", [artifact.id])).rows[0];
+        if (row) {
+          const existing = this.mapArtifact(row);
+          if (!artifactsEqual(existing, artifact)) {
+            throw new StorageConflictError(`Artifact ${artifact.id} was already used with different content`);
+          }
+          persisted.push(existing);
+        } else {
+          const created = await client.query(`INSERT INTO artifacts
+            (id,run_id,kind,uri,checksum,media_type,created_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`, [
+            artifact.id, artifact.runId, artifact.kind, artifact.uri, artifact.checksum,
+            artifact.mediaType, artifact.createdAt,
+          ]);
+          persisted.push(this.mapArtifact(created.rows[0]));
+          inserted += 1;
+        }
+        await this.insertOutbox(client, "artifact.created", artifact.id, {
+          artifactId: artifact.id, runId: artifact.runId, kind: artifact.kind, checksum: artifact.checksum,
+        }, artifact.id);
+      }
+      return { artifacts: persisted, replayed: inserted === 0 };
+    });
+  }
+
   async listArtifacts(runId: string): Promise<Artifact[]> {
     return (await this.pool.query("SELECT * FROM artifacts WHERE run_id=$1 ORDER BY created_at", [runId])).rows.map(this.mapArtifact);
   }
@@ -828,13 +1010,15 @@ export class PostgresStore implements ControlPlaneStore {
   }
 
   async listReconciliationCandidates(now: string, outboxLimit = 100): Promise<ReconciliationCandidates> {
-    const [queued, strandedIds, terminal, expired, pending] = await Promise.all([
+    const [queued, strandedIds, terminal, expired, quarantined, pending] = await Promise.all([
       this.pool.query("SELECT * FROM runs WHERE status='queued' ORDER BY created_at"),
       this.pool.query(`SELECT a.id FROM approvals a JOIN runs r ON r.id=a.run_id
         WHERE a.state<>'pending' AND r.status='awaiting_approval' ORDER BY a.resolved_at`),
       this.pool.query(`SELECT l.* FROM workspace_leases l JOIN runs r ON r.id=l.run_id
-        WHERE r.status IN ('completed','failed','cancelled') ORDER BY l.heartbeat_at`),
-      this.pool.query("SELECT * FROM workspace_leases WHERE expires_at<=$1 ORDER BY expires_at", [now]),
+        WHERE l.state='active' AND r.status IN ('completed','failed','cancelled') ORDER BY l.heartbeat_at`),
+      this.pool.query("SELECT * FROM workspace_leases WHERE state='active' AND expires_at<=$1 ORDER BY expires_at", [now]),
+      this.pool.query(`SELECT * FROM workspace_leases
+        WHERE state='quarantined' ORDER BY quarantined_at,workspace_id`),
       this.pool.query(`SELECT * FROM outbox_events WHERE published_at IS NULL AND available_at<=$1
         ORDER BY created_at,id LIMIT $2`, [now, outboxLimit]),
     ]);
@@ -848,6 +1032,7 @@ export class PostgresStore implements ControlPlaneStore {
       strandedApprovals,
       terminalLeases: terminal.rows.map(this.mapLease),
       expiredLeases: expired.rows.map(this.mapLease),
+      quarantinedLeases: quarantined.rows.map(this.mapLease),
       pendingOutbox: pending.rows.map(this.mapOutbox),
     };
   }
@@ -883,8 +1068,11 @@ export class PostgresStore implements ControlPlaneStore {
   });
 
   private mapLease = (row: any): WorkspaceLease => ({
-    workspaceId: row.workspace_id, runId: row.run_id, mode: row.mode,
+    workspaceId: row.workspace_id, runId: row.run_id, ownerId: row.owner_id, mode: row.mode,
+    fencingToken: Number(row.fencing_token), state: row.state,
     expiresAt: isoString(row.expires_at), heartbeatAt: isoString(row.heartbeat_at),
+    acquiredAt: isoString(row.acquired_at), quarantinedAt: nullableIsoString(row.quarantined_at),
+    quarantineReason: row.quarantine_reason,
   });
 
   private mapApproval = (row: any): Approval => ({

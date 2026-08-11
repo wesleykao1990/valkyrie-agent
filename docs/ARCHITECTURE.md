@@ -84,18 +84,56 @@ before normalized projections. Context packs and run contracts are bounded,
 checksummed workspace artifacts. Every pilot final action is `analysis_only` and
 `crossProcessResume=false`.
 
-This boundary is not a writer sandbox. A later external container/VM provider,
-lease heartbeat/fencing, network/filesystem policy, artifact secret scan, and
-cleanup must be verified before any native adapter may edit a repository.
+This boundary is not a writer sandbox. Milestone 4 now provides the separate,
+disabled contract below, but it must pass a real-engine smoke on the deployment
+host before any native adapter may edit a repository.
+
+## Disabled external writer boundary
+
+The internal Milestone 4 fixture path is deliberately not registered as an HTTP,
+MCP, or runtime adapter capability. It composes these separate authorities:
+
+1. `WriterWorkspaceManager` snapshots one exact clean base commit into a private
+   shallow bare Git store, creates one relative worktree, and never mounts the
+   developer checkout or a shared Git directory.
+2. The storage boundary assigns an explicit owner and monotonic fencing token.
+   Renewal, quarantine, and release require the exact original fence; quarantined
+   rows remain durable reconciliation evidence.
+3. `OciSandboxProvider` creates one digest-pinned Docker-compatible container with
+   the private run Git root writable, separately staged context read-only, network
+   `none`, read-only root, numeric non-root user, built-in seccomp, dropped
+   capabilities, no-new-privileges, and CPU/memory/PID/tmpfs/time/output bounds.
+   It re-inspects immutable labels, mounts, workdir, network, image, and privilege
+   policy before execution or cleanup.
+4. `WriterLeaseSupervisor` begins immediately after durable lease creation and
+   renews only its retained fence. Lease loss stops the old container when exact
+   ownership is still proven; ambiguous ownership is quarantined without release
+   or reuse, and a rotated successor cannot be mutated.
+5. Governed export claims an exact-fence cleanup freeze after container stop,
+   accepts an explicit bounded
+   manifest, rejects traversal/symlinks/hardlinks/special files, performs a
+   baseline deterministic secret scan, and atomically/idempotently registers
+   opaque checksummed artifact references. Secret values and engine output are
+   absent from control-plane evidence.
+6. Only after durable artifacts and owned container/worktree cleanup does the
+   exact lease release. Ambiguous ownership or cleanup leaves durable quarantine
+   evidence instead of automatic reuse.
+
+The real provider is disabled by default. Deterministic fake-engine tests prove
+the slice but not kernel/network isolation or process-restart recovery. This
+development host has no qualifying engine, so the opt-in live test skips;
+provider-aware durable sandbox reconciliation is still absent and writer runtimes
+remain unavailable.
 
 ## Prototype substitution
 
 The production architecture uses PostgreSQL and a read-only OpenViking trial. The
 downloadable prototype defaults to SQLite and local Markdown retrieval so it can
 run without external credentials. PostgreSQL now exists behind the store contract;
-OpenViking and writer runtimes remain disabled continuation work. Read-only native
-connectivity adapters exist only behind explicit feature flags and the proposed
-ADR-P003 boundary.
+OpenViking and writer runtimes remain disabled continuation work. The writer
+boundary is contract-tested behind proposed ADR-P004 but not live-verified or
+composed into a model adapter. Read-only native connectivity adapters exist only
+behind explicit feature flags and the proposed ADR-P003 boundary.
 
 
 ## A/B pilot path

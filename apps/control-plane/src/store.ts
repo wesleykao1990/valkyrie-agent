@@ -10,13 +10,44 @@ export interface WorkspaceRecord {
   createdAt: string;
 }
 
-export interface WorkspaceLease {
+export interface WriterLeaseRequest {
   workspaceId: string;
   runId: string;
-  mode: string;
+  ownerId: string;
+  mode: "writer";
   expiresAt: string;
   heartbeatAt: string;
 }
+
+export type WorkspaceLeaseState = "active" | "quarantined";
+
+export interface WorkspaceLease extends WriterLeaseRequest {
+  fencingToken: number;
+  state: WorkspaceLeaseState;
+  acquiredAt: string;
+  quarantinedAt: string | null;
+  quarantineReason: string | null;
+}
+
+export interface WorkspaceLeaseFence {
+  workspaceId: string;
+  runId: string;
+  ownerId: string;
+  fencingToken: number;
+}
+
+export interface WorkspaceLeaseRenewal extends WorkspaceLeaseFence {
+  heartbeatAt: string;
+  expiresAt: string;
+}
+
+export interface WorkspaceLeaseQuarantine extends WorkspaceLeaseFence {
+  quarantinedAt: string;
+  reason: string;
+}
+
+export type StoreClock = () => Date;
+export const MAX_WRITER_LEASE_TTL_MS = 24 * 60 * 60 * 1000;
 
 export interface OutboxEvent {
   id: string;
@@ -60,7 +91,7 @@ export interface StoreHealth {
 export interface RunBundleInput {
   run: Run;
   workspace?: WorkspaceRecord;
-  lease?: WorkspaceLease;
+  lease?: WriterLeaseRequest;
   idempotency?: IdempotencyInput;
 }
 
@@ -86,6 +117,11 @@ export type MutableRunPatch = Partial<Pick<Run,
 export interface WorkspaceLeaseResult {
   workspace: WorkspaceRecord;
   lease: WorkspaceLease;
+  replayed: boolean;
+}
+
+export interface ArtifactBatchResult {
+  artifacts: Artifact[];
   replayed: boolean;
 }
 
@@ -130,6 +166,7 @@ export interface ReconciliationCandidates {
   strandedApprovals: StrandedApproval[];
   terminalLeases: WorkspaceLease[];
   expiredLeases: WorkspaceLease[];
+  quarantinedLeases: WorkspaceLease[];
   pendingOutbox: OutboxEvent[];
 }
 
@@ -173,11 +210,15 @@ export interface ControlPlaneStore {
   getWorkspace(id: string): Promise<WorkspaceRecord | null>;
   getWorkspaceForRun(runId: string): Promise<WorkspaceRecord | null>;
   updateWorkspaceStatus(id: string, status: string): Promise<void>;
-  createLease(lease: WorkspaceLease): Promise<void>;
-  createWorkspaceLease(workspace: WorkspaceRecord, lease: WorkspaceLease): Promise<WorkspaceLeaseResult>;
-  heartbeatLease(workspaceId: string, runId: string, heartbeatAt: string, expiresAt: string): Promise<boolean>;
-  releaseLease(workspaceId: string): Promise<void>;
-  releaseWorkspaceLease(workspaceId: string, runId: string): Promise<boolean>;
+  createLease(lease: WriterLeaseRequest): Promise<WorkspaceLease>;
+  createWorkspaceLease(workspace: WorkspaceRecord, lease: WriterLeaseRequest): Promise<WorkspaceLeaseResult>;
+  rotateWorkspaceLease(lease: WriterLeaseRequest): Promise<WorkspaceLease>;
+  renewWorkspaceLease(input: WorkspaceLeaseRenewal): Promise<WorkspaceLease | null>;
+  quarantineWorkspaceLease(input: WorkspaceLeaseQuarantine): Promise<WorkspaceLease | null>;
+  releaseWorkspaceLease(fence: WorkspaceLeaseFence): Promise<boolean>;
+  /** Returns active or quarantined state for one workspace. */
+  getWorkspaceLease(workspaceId: string): Promise<WorkspaceLease | null>;
+  /** Returns active leases only; quarantine evidence is exposed by reconciliation/getWorkspaceLease. */
   listLeases(): Promise<WorkspaceLease[]>;
 
   requestApprovalTransaction(input: ApprovalRequestInput): Promise<ApprovalRequestResult>;
@@ -187,6 +228,8 @@ export interface ControlPlaneStore {
   resolveApprovalTransaction(input: ApprovalResolutionInput): Promise<ApprovalResolutionResult>;
 
   createArtifact(artifact: Artifact): Promise<void>;
+  /** Persists one run's bounded artifact set and all matching outbox records atomically. */
+  createArtifactBatch(artifacts: Artifact[]): Promise<ArtifactBatchResult>;
   listArtifacts(runId: string): Promise<Artifact[]>;
 
   createMemoryProposal(item: MemoryProposal): Promise<void>;
@@ -215,6 +258,93 @@ export class IdempotencyConflictError extends StorageConflictError {
     super(message);
     this.name = "IdempotencyConflictError";
   }
+}
+
+const maximumFencingToken = Number.MAX_SAFE_INTEGER;
+
+function timestampMillis(value: string, field: string): number {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed) || new Date(parsed).toISOString() !== value) {
+    throw new StorageConflictError(`${field} must be a canonical UTC ISO timestamp`);
+  }
+  return parsed;
+}
+
+export function validateWriterLeaseRequest(input: WriterLeaseRequest): void {
+  if (input.mode !== "writer") throw new StorageConflictError("Writing candidates require a writer lease");
+  if (!input.ownerId || input.ownerId !== input.ownerId.trim() || input.ownerId.length > 256 || /[\u0000-\u001f\u007f]/.test(input.ownerId)) {
+    throw new StorageConflictError("Writer lease owner ID must be 1-256 printable non-whitespace-edge characters");
+  }
+  const heartbeatAt = timestampMillis(input.heartbeatAt, "Writer lease heartbeatAt");
+  const expiresAt = timestampMillis(input.expiresAt, "Writer lease expiresAt");
+  if (expiresAt <= heartbeatAt) throw new StorageConflictError("Writer lease expiry must be after its heartbeat");
+}
+
+export function observeStoreClock(clock: StoreClock): string {
+  const observed = clock();
+  const timestamp = observed instanceof Date ? observed.getTime() : Number.NaN;
+  if (!Number.isFinite(timestamp)) throw new StorageConflictError("Storage clock returned an invalid time");
+  return new Date(timestamp).toISOString();
+}
+
+export function validateWriterLeaseWindow(input: WriterLeaseRequest | WorkspaceLeaseRenewal, observedAt: string): void {
+  const observed = timestampMillis(observedAt, "Observed storage time");
+  const expiresAt = timestampMillis(input.expiresAt, "Writer lease expiresAt");
+  if (expiresAt <= observed) throw new StorageConflictError("Writer lease expiry must be after observed storage time");
+  if (expiresAt - observed > MAX_WRITER_LEASE_TTL_MS) {
+    throw new StorageConflictError("Writer lease expiry may not exceed 24 hours from observed storage time");
+  }
+}
+
+export function validateWorkspaceLeaseFence(input: WorkspaceLeaseFence): void {
+  if (!input.ownerId || input.ownerId !== input.ownerId.trim() || input.ownerId.length > 256 || /[\u0000-\u001f\u007f]/.test(input.ownerId)) {
+    throw new StorageConflictError("Writer lease owner ID must be 1-256 printable non-whitespace-edge characters");
+  }
+  if (!Number.isSafeInteger(input.fencingToken) || input.fencingToken < 1 || input.fencingToken > maximumFencingToken) {
+    throw new StorageConflictError("Writer lease fencing token must be a positive safe integer");
+  }
+}
+
+export function validateWorkspaceLeaseRenewal(input: WorkspaceLeaseRenewal): void {
+  validateWorkspaceLeaseFence(input);
+  const heartbeatAt = timestampMillis(input.heartbeatAt, "Writer lease heartbeatAt");
+  const expiresAt = timestampMillis(input.expiresAt, "Writer lease expiresAt");
+  if (expiresAt <= heartbeatAt) throw new StorageConflictError("Writer lease expiry must be after its heartbeat");
+}
+
+export function validateWorkspaceLeaseQuarantine(input: WorkspaceLeaseQuarantine): void {
+  validateWorkspaceLeaseFence(input);
+  timestampMillis(input.quarantinedAt, "Writer lease quarantinedAt");
+  if (!input.reason || input.reason !== input.reason.trim() || input.reason.length > 1_000 || /[\u0000-\u001f\u007f]/.test(input.reason)) {
+    throw new StorageConflictError("Writer lease quarantine reason must be 1-1000 safe characters");
+  }
+}
+
+export function validateArtifactBatchInput(artifacts: Artifact[]): string {
+  if (artifacts.length < 1 || artifacts.length > 1_000) {
+    throw new StorageConflictError("Artifact batches must contain between 1 and 1000 items");
+  }
+  const runId = artifacts[0].runId;
+  if (!runId) throw new StorageConflictError("Artifact batch run ID must not be empty");
+  const ids = new Set<string>();
+  for (const artifact of artifacts) {
+    if (!artifact.id) throw new StorageConflictError("Artifact ID must not be empty");
+    if (artifact.runId !== runId) throw new StorageConflictError("Every artifact in a batch must belong to the same run");
+    if (ids.has(artifact.id)) throw new StorageConflictError(`Artifact batch contains duplicate ID ${artifact.id}`);
+    ids.add(artifact.id);
+    timestampMillis(artifact.createdAt, "Artifact createdAt");
+  }
+  return runId;
+}
+
+export function artifactsEqual(stored: Artifact, requested: Artifact): boolean {
+  return stored.id === requested.id
+    && stored.runId === requested.runId
+    && stored.kind === requested.kind
+    && stored.uri === requested.uri
+    && stored.checksum === requested.checksum
+    && stored.mediaType === requested.mediaType
+    && stored.createdAt === requested.createdAt;
 }
 
 export function decodeJson<T>(value: unknown, fallback: T): T {

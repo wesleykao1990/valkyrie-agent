@@ -83,12 +83,31 @@ DBOS/PostgreSQL durability contract through a process-kill/restart test.
 
 ## Milestone 4 — Real workspace boundary
 
-- One Git worktree per writing candidate and no duplicate Atomic top-level
+Status: deterministic contract slice implemented; live provider verification is
+blocked on this host because no supported container/VM engine is installed, and
+durable provider-aware restart reconciliation remains incomplete. Writer runtime
+registration remains disabled.
+
+- [x] Private shallow Git store plus one relative worktree per fixture candidate;
+  no developer checkout/shared Git directory and no duplicate Atomic top-level
   worktree.
-- Writer-lease heartbeat, renewal/fencing, expiry, and orphan reconciliation.
-- External container/devcontainer or VM for every real writer.
-- No production credentials; scoped filesystem/network policy.
-- Artifact export, secret scanning, terminal cleanup, and quarantine evidence.
+- [x] Writer-lease owner, monotonic fencing token, heartbeat, renewal, expiry,
+  exact-fence release, and durable quarantine/reconciliation evidence.
+- [x] Disabled Docker-compatible provider with one container per fixture, exact
+  ownership labels, digest-pinned image, default no-network policy, read-only
+  root/context, non-root user, built-in seccomp, privilege/resource bounds, and
+  bounded cleanup.
+- [x] Explicit artifact manifest, path/type/size bounds, baseline secret scan,
+  atomic idempotent registration, opaque references, terminal cleanup, and
+  quarantine behavior.
+- [x] Deterministic fake-engine/workspace/lease/artifact/coordinator tests.
+- [ ] Opt-in provider smoke passes against a real engine and reviewed immutable
+  fixture image on the deployment host. Until then, this milestone is not live-
+  complete and no model writer may be enabled.
+- [ ] Durable sandbox-instance lifecycle state and provider-aware restart/orphan
+  reconciliation by immutable engine ID and exact ownership labels.
+- [ ] Remote micro-VM or equivalent stronger isolation for confidential/high-risk
+  work; scoped model egress and short-lived credential broker.
 
 ## Milestone 5 — End-to-end Atomic pilot
 

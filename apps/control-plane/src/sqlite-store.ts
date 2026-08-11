@@ -5,15 +5,24 @@ import type { Approval, Artifact, MemoryProposal, Project, Run, RunEvent, Task }
 import { nowIso } from "./ids.ts";
 import { assertUniqueMigrationVersions, loadMigrationFiles } from "./migrations.ts";
 import {
+  artifactsEqual,
   canonicalJson,
   decodeJson,
   deterministicOutboxId,
   IdempotencyConflictError,
+  observeStoreClock,
   StorageConflictError,
+  validateArtifactBatchInput,
+  validateWorkspaceLeaseFence,
+  validateWorkspaceLeaseQuarantine,
+  validateWorkspaceLeaseRenewal,
+  validateWriterLeaseRequest,
+  validateWriterLeaseWindow,
   type ApprovalResolutionInput,
   type ApprovalResolutionResult,
   type ApprovalRequestInput,
   type ApprovalRequestResult,
+  type ArtifactBatchResult,
   type ControlPlaneStore,
   type IdempotencyInput,
   type MigrationResult,
@@ -23,19 +32,30 @@ import {
   type RunBundleInput,
   type RunBundleResult,
   type StoreHealth,
+  type StoreClock,
   type StoredIdempotencyRecord,
+  type WriterLeaseRequest,
   type WorkspaceLease,
+  type WorkspaceLeaseFence,
+  type WorkspaceLeaseQuarantine,
+  type WorkspaceLeaseRenewal,
   type WorkspaceLeaseResult,
   type WorkspaceRecord,
 } from "./store.ts";
+
+export interface SqliteStoreOptions {
+  now?: StoreClock;
+}
 
 export class SqliteStore implements ControlPlaneStore {
   readonly backend = "sqlite" as const;
   private db: DatabaseSync;
   private initialMigrationResults: MigrationResult[];
+  private readonly clock: StoreClock;
 
-  constructor(path: string) {
+  constructor(path: string, options: SqliteStoreOptions = {}) {
     mkdirSync(dirname(path), { recursive: true });
+    this.clock = options.now ?? (() => new Date());
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;");
     this.initialMigrationResults = this.applyMigrations();
@@ -210,13 +230,15 @@ export class SqliteStore implements ControlPlaneStore {
       // Insert without the circular reference, then link ownership after the
       // workspace and lease exist. Migration triggers validate the final link.
       this.insertRun(input.workspace ? { ...effectiveRun, workspaceId: null } : effectiveRun);
+      let persistedLease: WorkspaceLease | undefined;
       if (input.workspace && input.lease) {
         this.insertWorkspace(input.workspace);
-        this.insertLease(input.lease);
+        persistedLease = this.insertLease(input.lease, observeStoreClock(this.clock));
         this.db.prepare("UPDATE runs SET workspace_id=? WHERE id=?").run(input.workspace.id, effectiveRun.id);
         this.insertOutbox("workspace.lease.acquired", input.workspace.id, {
-          workspaceId: input.workspace.id, runId: effectiveRun.id, mode: input.lease.mode,
-        }, input.lease.workspaceId);
+          workspaceId: input.workspace.id, runId: effectiveRun.id, ownerId: persistedLease.ownerId,
+          mode: persistedLease.mode, fencingToken: persistedLease.fencingToken,
+        }, `${persistedLease.workspaceId}:${persistedLease.fencingToken}`);
       }
       this.insertOutbox("run.created", effectiveRun.id, {
         runId: effectiveRun.id, projectId: effectiveRun.projectId, rootRuntime: effectiveRun.rootRuntime,
@@ -225,7 +247,7 @@ export class SqliteStore implements ControlPlaneStore {
       const result: RunBundleResult = {
         run: effectiveRun,
         workspace: input.workspace,
-        lease: input.lease,
+        lease: persistedLease,
         replayed: false,
       };
       if (input.idempotency) {
@@ -394,30 +416,55 @@ export class SqliteStore implements ControlPlaneStore {
     });
   }
 
-  async createLease(lease: WorkspaceLease): Promise<void> {
-    this.transaction(() => {
+  async createLease(lease: WriterLeaseRequest): Promise<WorkspaceLease> {
+    validateWriterLeaseRequest(lease);
+    return this.transaction(() => {
+      const observedAt = observeStoreClock(this.clock);
+      validateWriterLeaseWindow(lease, observedAt);
       const workspace = this.getWorkspaceRow(lease.workspaceId);
       if (!workspace || workspace.runId !== lease.runId) throw new StorageConflictError("Lease owner does not match workspace owner");
       const run = this.getRunRow(lease.runId);
       if (!run || (run.workspaceId && run.workspaceId !== lease.workspaceId)) {
         throw new StorageConflictError("Run already owns another workspace or is missing");
       }
-      this.insertLease(lease);
+      const persisted = this.insertLease(lease, observedAt);
       this.db.prepare("UPDATE runs SET workspace_id=? WHERE id=? AND workspace_id IS NULL").run(lease.workspaceId, lease.runId);
       this.insertOutbox("workspace.lease.acquired", lease.workspaceId, {
-        workspaceId: lease.workspaceId, runId: lease.runId, mode: lease.mode,
-      }, lease.workspaceId);
+        workspaceId: lease.workspaceId, runId: lease.runId, ownerId: lease.ownerId,
+        mode: lease.mode, fencingToken: persisted.fencingToken,
+      }, `${lease.workspaceId}:${persisted.fencingToken}`);
+      return persisted;
     });
   }
 
-  private insertLease(lease: WorkspaceLease): void {
-    this.db.prepare("INSERT INTO workspace_leases (workspace_id,run_id,mode,expires_at,heartbeat_at) VALUES (?,?,?,?,?)")
-      .run(lease.workspaceId, lease.runId, lease.mode, lease.expiresAt, lease.heartbeatAt);
+  private nextFencingToken(workspaceId: string, runId: string): number {
+    const row = this.db.prepare(`UPDATE workspaces SET lease_epoch=lease_epoch+1
+      WHERE id=? AND run_id=? AND lease_epoch<9007199254740991
+      RETURNING lease_epoch`).get(workspaceId, runId) as any;
+    if (!row) throw new StorageConflictError("Workspace lease epoch is unavailable or exhausted");
+    const token = Number(row.lease_epoch);
+    if (!Number.isSafeInteger(token) || token < 1) throw new StorageConflictError("Workspace lease epoch is invalid");
+    return token;
   }
 
-  async createWorkspaceLease(workspace: WorkspaceRecord, lease: WorkspaceLease): Promise<WorkspaceLeaseResult> {
+  private insertLease(lease: WriterLeaseRequest, observedAt: string): WorkspaceLease {
+    validateWriterLeaseRequest(lease);
+    validateWriterLeaseWindow(lease, observedAt);
+    const fencingToken = this.nextFencingToken(lease.workspaceId, lease.runId);
+    this.db.prepare(`INSERT INTO workspace_leases
+      (workspace_id,run_id,owner_id,mode,fencing_token,state,expires_at,heartbeat_at,acquired_at,quarantined_at,quarantine_reason)
+      VALUES (?,?,?,?,?,'active',?,?,?,NULL,NULL)`).run(
+        lease.workspaceId, lease.runId, lease.ownerId, lease.mode, fencingToken,
+        lease.expiresAt, lease.heartbeatAt, lease.heartbeatAt,
+      );
+    return this.getLeaseRow(lease.workspaceId)!;
+  }
+
+  async createWorkspaceLease(workspace: WorkspaceRecord, lease: WriterLeaseRequest): Promise<WorkspaceLeaseResult> {
     this.validateWorkspaceLease(workspace, lease, workspace.runId);
     return this.transaction(() => {
+      const observedAt = observeStoreClock(this.clock);
+      validateWriterLeaseWindow(lease, observedAt);
       const run = this.getRunRow(workspace.runId);
       if (!run || (run.workspaceId && run.workspaceId !== workspace.id)) {
         throw new StorageConflictError("Run already owns another workspace or is missing");
@@ -426,61 +473,157 @@ export class SqliteStore implements ControlPlaneStore {
       const existingLease = this.getLeaseRow(lease.workspaceId);
       if (existingWorkspace || existingLease) {
         if (existingWorkspace?.runId === workspace.runId && existingLease?.runId === lease.runId &&
-            existingLease.mode === lease.mode) {
+            existingLease.ownerId === lease.ownerId && existingLease.mode === lease.mode &&
+            existingLease.state === "active" && existingLease.heartbeatAt === lease.heartbeatAt &&
+            existingLease.expiresAt === lease.expiresAt) {
           if (!run.workspaceId) this.db.prepare("UPDATE runs SET workspace_id=? WHERE id=?").run(workspace.id, run.id);
           return { workspace: existingWorkspace, lease: existingLease, replayed: true };
         }
         throw new StorageConflictError("Workspace or lease ID is already owned by another run");
       }
+      if (run.status !== "queued") {
+        throw new StorageConflictError("A new writer workspace can be claimed only by a queued run");
+      }
       this.insertWorkspace(workspace);
-      this.insertLease(lease);
+      const persisted = this.insertLease(lease, observedAt);
       this.db.prepare("UPDATE runs SET workspace_id=? WHERE id=?").run(workspace.id, run.id);
       this.insertOutbox("workspace.lease.acquired", workspace.id, {
-        workspaceId: workspace.id, runId: workspace.runId, mode: lease.mode,
-      }, workspace.id);
-      return { workspace, lease, replayed: false };
+        workspaceId: workspace.id, runId: workspace.runId, ownerId: lease.ownerId,
+        mode: lease.mode, fencingToken: persisted.fencingToken,
+      }, `${workspace.id}:${persisted.fencingToken}`);
+      return { workspace, lease: persisted, replayed: false };
     });
   }
 
-  private validateWorkspaceLease(workspace: WorkspaceRecord, lease: WorkspaceLease, runId: string): void {
+  private validateWorkspaceLease(workspace: WorkspaceRecord, lease: WriterLeaseRequest, runId: string): void {
+    validateWriterLeaseRequest(lease);
     if (workspace.runId !== runId || lease.runId !== runId || lease.workspaceId !== workspace.id) {
       throw new StorageConflictError("Workspace, lease, and run ownership must match");
     }
-    if (lease.mode !== "writer") throw new StorageConflictError("Writing candidates require a writer lease");
   }
 
-  async heartbeatLease(workspaceId: string, runId: string, heartbeatAt: string, expiresAt: string): Promise<boolean> {
-    const result = this.db.prepare(`UPDATE workspace_leases SET heartbeat_at=?, expires_at=?
-      WHERE workspace_id=? AND run_id=? AND expires_at>?`).run(heartbeatAt, expiresAt, workspaceId, runId, heartbeatAt) as any;
-    return Number(result.changes) === 1;
-  }
+  async rotateWorkspaceLease(lease: WriterLeaseRequest): Promise<WorkspaceLease> {
+    validateWriterLeaseRequest(lease);
+    return this.transaction(() => {
+      const observedAt = observeStoreClock(this.clock);
+      validateWriterLeaseWindow(lease, observedAt);
+      const workspace = this.getWorkspaceRow(lease.workspaceId);
+      if (!workspace || workspace.runId !== lease.runId) {
+        throw new StorageConflictError("Lease owner does not match workspace owner");
+      }
+      const run = this.getRunRow(lease.runId);
+      if (!run || run.workspaceId !== lease.workspaceId) {
+        throw new StorageConflictError("Run does not own the workspace being rotated");
+      }
+      const previous = this.getLeaseRow(lease.workspaceId);
+      if (previous?.state === "quarantined") {
+        throw new StorageConflictError("A quarantined writer lease requires explicit fenced release before reacquisition");
+      }
+      if (previous && Date.parse(previous.expiresAt) > Date.parse(observedAt)) {
+        throw new StorageConflictError("An unexpired writer lease cannot be rotated");
+      }
 
-  async releaseLease(workspaceId: string): Promise<void> {
-    this.transaction(() => {
-      const lease = this.getLeaseRow(workspaceId);
-      if (!lease) return;
-      this.db.prepare("DELETE FROM workspace_leases WHERE workspace_id=?").run(workspaceId);
-      this.insertOutbox("workspace.lease.released", workspaceId, {
-        workspaceId, runId: lease.runId,
-      }, `${workspaceId}:${lease.heartbeatAt}`);
+      const fencingToken = this.nextFencingToken(lease.workspaceId, lease.runId);
+      if (previous) {
+        this.db.prepare(`UPDATE workspace_leases
+          SET owner_id=?,mode=?,fencing_token=?,state='active',expires_at=?,heartbeat_at=?,acquired_at=?,
+              quarantined_at=NULL,quarantine_reason=NULL
+          WHERE workspace_id=? AND run_id=? AND fencing_token=?`).run(
+            lease.ownerId, lease.mode, fencingToken, lease.expiresAt, lease.heartbeatAt, lease.heartbeatAt,
+            lease.workspaceId, lease.runId, previous.fencingToken,
+          );
+      } else {
+        this.db.prepare(`INSERT INTO workspace_leases
+          (workspace_id,run_id,owner_id,mode,fencing_token,state,expires_at,heartbeat_at,acquired_at,quarantined_at,quarantine_reason)
+          VALUES (?,?,?,?,?,'active',?,?,?,NULL,NULL)`).run(
+            lease.workspaceId, lease.runId, lease.ownerId, lease.mode, fencingToken,
+            lease.expiresAt, lease.heartbeatAt, lease.heartbeatAt,
+          );
+      }
+      this.db.prepare("UPDATE workspaces SET status='leased' WHERE id=? AND run_id=?")
+        .run(lease.workspaceId, lease.runId);
+      const persisted = this.getLeaseRow(lease.workspaceId)!;
+      this.insertOutbox(previous ? "workspace.lease.rotated" : "workspace.lease.acquired", lease.workspaceId, {
+        workspaceId: lease.workspaceId, runId: lease.runId, ownerId: lease.ownerId,
+        fencingToken, previousOwnerId: previous?.ownerId ?? null,
+        previousFencingToken: previous?.fencingToken ?? null, previousExpiresAt: previous?.expiresAt ?? null,
+      }, `${lease.workspaceId}:${fencingToken}`);
+      return persisted;
     });
   }
 
-  async releaseWorkspaceLease(workspaceId: string, runId: string): Promise<boolean> {
+  async renewWorkspaceLease(input: WorkspaceLeaseRenewal): Promise<WorkspaceLease | null> {
+    validateWorkspaceLeaseRenewal(input);
+    const observedAt = observeStoreClock(this.clock);
+    validateWriterLeaseWindow(input, observedAt);
+    const row = this.db.prepare(`UPDATE workspace_leases SET heartbeat_at=?,expires_at=?
+      WHERE workspace_id=? AND run_id=? AND owner_id=? AND fencing_token=? AND state='active'
+        AND expires_at>? AND heartbeat_at<=? AND expires_at<=? RETURNING *`).get(
+          input.heartbeatAt, input.expiresAt, input.workspaceId, input.runId, input.ownerId, input.fencingToken,
+          observedAt, input.heartbeatAt, input.expiresAt,
+        ) as any;
+    return row ? this.mapLease(row) : null;
+  }
+
+  async quarantineWorkspaceLease(input: WorkspaceLeaseQuarantine): Promise<WorkspaceLease | null> {
+    validateWorkspaceLeaseQuarantine(input);
     return this.transaction(() => {
-      const lease = this.getLeaseRow(workspaceId);
+      const lease = this.getLeaseRow(input.workspaceId);
+      if (!lease || lease.runId !== input.runId || lease.ownerId !== input.ownerId ||
+          lease.fencingToken !== input.fencingToken) return null;
+      if (Date.parse(input.quarantinedAt) < Date.parse(lease.acquiredAt)) {
+        throw new StorageConflictError("Writer lease quarantine time cannot precede acquisition");
+      }
+      if (lease.state === "quarantined") {
+        if (lease.quarantinedAt === input.quarantinedAt && lease.quarantineReason === input.reason) return lease;
+        throw new StorageConflictError("Writer lease was already quarantined with different evidence");
+      }
+      const updated = this.db.prepare(`UPDATE workspace_leases
+        SET state='quarantined',quarantined_at=?,quarantine_reason=?
+        WHERE workspace_id=? AND run_id=? AND owner_id=? AND fencing_token=? AND state='active'`).run(
+          input.quarantinedAt, input.reason, input.workspaceId, input.runId, input.ownerId, input.fencingToken,
+        ) as any;
+      if (Number(updated.changes) !== 1) return null;
+      this.db.prepare("UPDATE workspaces SET status='quarantined' WHERE id=? AND run_id=?")
+        .run(input.workspaceId, input.runId);
+      this.insertOutbox("workspace.lease.quarantined", input.workspaceId, {
+        workspaceId: input.workspaceId, runId: input.runId, ownerId: input.ownerId,
+        fencingToken: input.fencingToken, quarantinedAt: input.quarantinedAt, reason: input.reason,
+      }, `${input.workspaceId}:${input.fencingToken}:quarantined`);
+      return this.getLeaseRow(input.workspaceId);
+    });
+  }
+
+  async releaseWorkspaceLease(fence: WorkspaceLeaseFence): Promise<boolean> {
+    validateWorkspaceLeaseFence(fence);
+    return this.transaction(() => {
+      const lease = this.getLeaseRow(fence.workspaceId);
       if (!lease) return false;
-      if (lease.runId !== runId) throw new StorageConflictError("Only the owning run may release a writer lease");
-      const deleted = this.db.prepare("DELETE FROM workspace_leases WHERE workspace_id=? AND run_id=?").run(workspaceId, runId) as any;
+      if (lease.runId !== fence.runId || lease.ownerId !== fence.ownerId || lease.fencingToken !== fence.fencingToken) {
+        return false;
+      }
+      const deleted = this.db.prepare(`DELETE FROM workspace_leases
+        WHERE workspace_id=? AND run_id=? AND owner_id=? AND fencing_token=?`).run(
+          fence.workspaceId, fence.runId, fence.ownerId, fence.fencingToken,
+        ) as any;
       if (Number(deleted.changes) !== 1) return false;
-      this.db.prepare("UPDATE workspaces SET status='released' WHERE id=? AND run_id=?").run(workspaceId, runId);
-      this.insertOutbox("workspace.lease.released", workspaceId, { workspaceId, runId }, `${workspaceId}:${lease.heartbeatAt}`);
+      this.db.prepare("UPDATE workspaces SET status='released' WHERE id=? AND run_id=?").run(fence.workspaceId, fence.runId);
+      this.insertOutbox("workspace.lease.released", fence.workspaceId, {
+        workspaceId: fence.workspaceId, runId: fence.runId, ownerId: fence.ownerId,
+        fencingToken: fence.fencingToken, priorState: lease.state,
+        quarantinedAt: lease.quarantinedAt, quarantineReason: lease.quarantineReason,
+      }, `${fence.workspaceId}:${fence.fencingToken}:released`);
       return true;
     });
   }
 
+  async getWorkspaceLease(workspaceId: string): Promise<WorkspaceLease | null> {
+    return this.getLeaseRow(workspaceId);
+  }
+
   async listLeases(): Promise<WorkspaceLease[]> {
-    return (this.db.prepare("SELECT * FROM workspace_leases ORDER BY heartbeat_at DESC").all() as any[]).map(this.mapLease);
+    return (this.db.prepare("SELECT * FROM workspace_leases WHERE state='active' ORDER BY heartbeat_at DESC").all() as any[])
+      .map(this.mapLease);
   }
 
   private getLeaseRow(workspaceId: string): WorkspaceLease | null {
@@ -661,6 +804,34 @@ export class SqliteStore implements ControlPlaneStore {
     });
   }
 
+  async createArtifactBatch(artifacts: Artifact[]): Promise<ArtifactBatchResult> {
+    const runId = validateArtifactBatchInput(artifacts);
+    return this.transaction(() => {
+      if (!this.getRunRow(runId)) throw new StorageConflictError("Artifact batch run not found");
+      let inserted = 0;
+      const persisted: Artifact[] = [];
+      for (const artifact of artifacts) {
+        const row = this.db.prepare("SELECT * FROM artifacts WHERE id=?").get(artifact.id) as any;
+        if (row) {
+          const existing = this.mapArtifact(row);
+          if (!artifactsEqual(existing, artifact)) {
+            throw new StorageConflictError(`Artifact ${artifact.id} was already used with different content`);
+          }
+          persisted.push(existing);
+        } else {
+          this.db.prepare("INSERT INTO artifacts (id,run_id,kind,uri,checksum,media_type,created_at) VALUES (?,?,?,?,?,?,?)")
+            .run(artifact.id, artifact.runId, artifact.kind, artifact.uri, artifact.checksum, artifact.mediaType, artifact.createdAt);
+          persisted.push(artifact);
+          inserted += 1;
+        }
+        this.insertOutbox("artifact.created", artifact.id, {
+          artifactId: artifact.id, runId: artifact.runId, kind: artifact.kind, checksum: artifact.checksum,
+        }, artifact.id);
+      }
+      return { artifacts: persisted, replayed: inserted === 0 };
+    });
+  }
+
   async listArtifacts(runId: string): Promise<Artifact[]> {
     return (this.db.prepare("SELECT * FROM artifacts WHERE run_id=? ORDER BY created_at").all(runId) as any[]).map(this.mapArtifact);
   }
@@ -773,13 +944,15 @@ export class SqliteStore implements ControlPlaneStore {
       return { approval, run };
     });
     const terminalLeases = (this.db.prepare(`SELECT l.* FROM workspace_leases l JOIN runs r ON r.id=l.run_id
-      WHERE r.status IN ('completed','failed','cancelled') ORDER BY l.heartbeat_at`).all() as any[]).map(this.mapLease);
-    const expiredLeases = (this.db.prepare("SELECT * FROM workspace_leases WHERE expires_at<=? ORDER BY expires_at").all(now) as any[])
+      WHERE l.state='active' AND r.status IN ('completed','failed','cancelled') ORDER BY l.heartbeat_at`).all() as any[]).map(this.mapLease);
+    const expiredLeases = (this.db.prepare("SELECT * FROM workspace_leases WHERE state='active' AND expires_at<=? ORDER BY expires_at").all(now) as any[])
       .map(this.mapLease);
+    const quarantinedLeases = (this.db.prepare(`SELECT * FROM workspace_leases
+      WHERE state='quarantined' ORDER BY quarantined_at,workspace_id`).all() as any[]).map(this.mapLease);
     const pendingOutbox = (this.db.prepare(`SELECT * FROM outbox_events
       WHERE published_at IS NULL AND available_at<=? ORDER BY created_at,id LIMIT ?`).all(now, outboxLimit) as any[])
       .map(this.mapOutbox);
-    return { queuedRuns, strandedApprovals, terminalLeases, expiredLeases, pendingOutbox };
+    return { queuedRuns, strandedApprovals, terminalLeases, expiredLeases, quarantinedLeases, pendingOutbox };
   }
 
   private mapProject = (row: any): Project => ({
@@ -811,8 +984,10 @@ export class SqliteStore implements ControlPlaneStore {
   });
 
   private mapLease = (row: any): WorkspaceLease => ({
-    workspaceId: row.workspace_id, runId: row.run_id, mode: row.mode,
-    expiresAt: row.expires_at, heartbeatAt: row.heartbeat_at,
+    workspaceId: row.workspace_id, runId: row.run_id, ownerId: row.owner_id, mode: row.mode,
+    fencingToken: Number(row.fencing_token), state: row.state, expiresAt: row.expires_at,
+    heartbeatAt: row.heartbeat_at, acquiredAt: row.acquired_at,
+    quarantinedAt: row.quarantined_at, quarantineReason: row.quarantine_reason,
   });
 
   private mapApproval = (row: any): Approval => ({

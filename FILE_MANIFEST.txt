@@ -19,11 +19,13 @@ apps/control-plane/src/atomic-runtime-adapter.ts
 apps/control-plane/src/auth.ts
 apps/control-plane/src/config.ts
 apps/control-plane/src/direct-cli-runtimes.ts
+apps/control-plane/src/governed-artifact-export.ts
 apps/control-plane/src/http.ts
 apps/control-plane/src/ids.ts
 apps/control-plane/src/index.ts
 apps/control-plane/src/migrations.ts
 apps/control-plane/src/mock-runtimes.ts
+apps/control-plane/src/oci-sandbox-provider.ts
 apps/control-plane/src/policy.ts
 apps/control-plane/src/postgres-store.ts
 apps/control-plane/src/project-brain.ts
@@ -37,6 +39,9 @@ apps/control-plane/src/store-factory.ts
 apps/control-plane/src/store.ts
 apps/control-plane/src/types.ts
 apps/control-plane/src/workspace.ts
+apps/control-plane/src/writer-lease-supervisor.ts
+apps/control-plane/src/writer-sandbox-boundary.ts
+apps/control-plane/src/writer-workspace.ts
 apps/mcp-server/src/index.ts
 bin/project-os-mcp
 bin/project-os-pilot-mcp
@@ -58,6 +63,7 @@ docs/HERMES_MCP_SETUP.md
 docs/IMPLEMENTATION_BACKLOG.md
 docs/IMPLEMENTATION_PLAN_M1_M2.md
 docs/IMPLEMENTATION_PLAN_M3_MINIMUM.md
+docs/IMPLEMENTATION_PLAN_M4.md
 docs/NEXT_SESSION_PROMPT.md
 docs/PROMPT_FOR_CODEX_OR_CLAUDE.md
 docs/PROTOTYPE_SCOPE.md
@@ -68,13 +74,16 @@ docs/VERIFICATION.md
 docs/adr/ADR-P001-transactional-storage-boundary.md
 docs/adr/ADR-P002-atomic-package-boundary.md
 docs/adr/ADR-P003-read-only-native-runtime-pilot.md
+docs/adr/ADR-P004-external-writer-boundary.md
 handoff/README.md
 infra/postgres/001_initial.sql
 infra/postgres/002_storage_guarantees.sql
 infra/postgres/003_run_workspace_ownership.sql
+infra/postgres/004_fenced_writer_leases.sql
 infra/sqlite/001_initial.sql
 infra/sqlite/002_storage_guarantees.sql
 infra/sqlite/003_legacy_ownership_guards.sql
+infra/sqlite/004_fenced_writer_leases.sql
 package-lock.json
 package.json
 packages/atomic-workflow-architect/AGENTS.md
@@ -153,6 +162,7 @@ project-brain/Projects/Signal Ledger/Project.md
 project-brain/Shared/Agent Policies.md
 scripts/fake-atomic-rpc.ts
 scripts/fake-direct-runtime.ts
+scripts/fake-oci-engine.ts
 scripts/http-smoke.ts
 scripts/live-native-smoke.ts
 scripts/mcp-smoke.ts
@@ -169,12 +179,17 @@ tests/auth.test.ts
 tests/comparison.test.ts
 tests/direct-cli-runtimes.test.ts
 tests/flow.test.ts
+tests/governed-artifact-export.test.ts
 tests/mcp-auth.test.ts
 tests/native-service-integration.test.ts
+tests/oci-sandbox-provider.test.ts
 tests/policy.test.ts
 tests/project-brain.test.ts
 tests/reset-demo.test.ts
 tests/server-auth.test.ts
 tests/shutdown.test.ts
 tests/storage.test.ts
+tests/writer-lease-supervisor.test.ts
+tests/writer-sandbox-boundary.test.ts
+tests/writer-workspace.test.ts
 tsconfig.json

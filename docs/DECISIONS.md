@@ -98,6 +98,18 @@ Atomic model workflow, mobile ingress, PR, merge, deployment, or canonical-memor
 promotion. See `docs/adr/ADR-P003-read-only-native-runtime-pilot.md`; the boundary
 remains proposed until Wesley accepts or amends it.
 
+### D-22 — Fenced external writer boundary before model writes
+
+Every real writer uses a private per-run Git root, one exact owner/fencing-token
+lease with host-owned heartbeat, and a disabled-by-default external container/VM
+provider. The first Docker-compatible provider requires an immutable local image,
+no network or ambient credentials, effective-policy inspection, bounded resource
+use, explicit secret-scanned artifact export, and stop/cleanup before exact-fence
+release. Contract tests do not authorize writer mode: an opt-in live pass on the
+deployment host is required. See
+`docs/adr/ADR-P004-external-writer-boundary.md`; the boundary remains proposed
+until Wesley accepts or amends it.
+
 ## Deferred
 
 - Prime Agent until long-horizon benchmark tasks show incremental value.

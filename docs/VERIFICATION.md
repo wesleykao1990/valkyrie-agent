@@ -31,9 +31,9 @@ the imported Atomic package verifier/typecheck, HTTP lifecycle smoke, and stdio
 MCP smoke. Current phase evidence:
 
 - `npm run typecheck`: passed with TypeScript 5.8.3 and `noCheck=false`.
-- `npm test`: 77 tests total; 76 passed, 0 failed, 1 opt-in PostgreSQL case skipped
-  in this general phase.
-- `npm run test:postgres`: PostgreSQL 16.14 disposable cluster; 16 passed, 0
+- `npm test`: 115 tests total; 113 passed, 0 failed, 2 honest opt-in cases
+  skipped in this general phase (PostgreSQL contract and live OCI provider).
+- `npm run test:postgres`: PostgreSQL 16.14 disposable cluster; 19 passed, 0
   failed/skipped. The script created a temporary cluster under `/tmp`, bound a
   random loopback port, supplied its own URL/sentinel, stopped PostgreSQL, and
   removed the cluster.
@@ -48,7 +48,7 @@ MCP smoke. Current phase evidence:
   and idempotent run replay.
 
 The first general-suite attempt inside a restricted execution sandbox reached all
-tests but the two loopback-listener cases received host `EPERM`. Rerunning with
+tests but the three loopback-listener cases received host `EPERM`. Rerunning with
 local loopback permission produced the passing result above. This was an
 environment permission failure, not hidden as an application pass.
 
@@ -112,6 +112,66 @@ The existing shared SQLite/PostgreSQL suites still cover checksummed migrations,
 atomic run/workspace/lease creation and rollback, idempotency, outbox atomicity,
 approval transactions/replay/conflict, claims, ownership constraints, restart,
 and reconciliation.
+
+### Milestone 4 writer-boundary contracts
+
+- Forward migration 004 on SQLite/PostgreSQL: v3 backfill, owner/run/workspace
+  constraints, monotonic fencing epochs, exact-fence renewal/release/quarantine,
+  expired rotation, stale-owner/token rejection, quarantine persistence, and
+  rollback/concurrency parity.
+- Atomic/idempotent artifact batches: exact replay, every-field conflict,
+  duplicate/mixed/foreign-run rejection, and late artifact/outbox rollback.
+- Strict writer workspace: clean exact base commit, independent shallow bare Git
+  store, one relative worktree, separate run roots/branches/changes, no source
+  checkout hook or configured fsmonitor execution, no unrelated branch/history
+  object, no simulated fallback, and exact-fence cleanup containment without
+  invoking host Git on writer-controlled metadata.
+- OCI provider: disabled default, absolute no-shell CLI, optional explicit local
+  Unix socket only, immutable image digest with no pull, exact owner/fence labels,
+  effective-policy reinspection, nested workdir, one writable run-root bind,
+  disjoint read-only context, network/IPC none, read-only root, numeric non-root
+  user, built-in seccomp, capability/no-new-privileges/resource bounds, no ambient
+  credential/home environment, output/time/TERM/KILL bounds, emergency stop that
+  bypasses a hung exec, and ownership-aware quarantine without unsafe removal.
+- Host-owned heartbeat starts immediately after durable lease creation, retains
+  its original fence, renews against store-observed time, retries failed loss
+  handling without an unhandled rejection, rejects/cleans a late startup handle,
+  and cannot mutate a rotated successor.
+- Governed export: explicit manifest, traversal/symlink/hardlink/special-file,
+  file/total-byte and permission bounds; exact filesystem replay; high-confidence
+  private-key/provider/cloud/token scan with fingerprint-only evidence; no partial
+  export on a finding; opaque artifact URIs.
+- Internal coordinator: persisted queued-run authority, provider preflight before
+  mutation, stop plus exact-fence cleanup freeze before scan/export, atomic
+  artifact persistence before cleanup/release, disjoint durable artifact root,
+  container/worktree terminal cleanup, and durable secret/persistence/unsafe-
+  cleanup quarantine. It accepts only `workflow=sandbox-fixture` and is not
+  registered through HTTP, MCP, or a runtime adapter.
+
+## Milestone 4 live provider evidence
+
+```bash
+npm run smoke:sandbox
+```
+
+Current outcome: **skipped, not passed**. This macOS host has no Docker, Podman,
+nerdctl, Colima/Lima, Apple container CLI, OrbStack, Multipass, Finch,
+devcontainer CLI, or detected VM engine. `/usr/bin/sandbox-exec` is not the
+accepted external container/VM boundary.
+
+The opt-in test requires `VALKYRIE_OCI_LIVE_ENGINE` as an absolute CLI path and
+`VALKYRIE_OCI_LIVE_IMAGE` as an already-present immutable digest; an explicit
+local `VALKYRIE_OCI_LIVE_SOCKET=unix:///...` is optional. It derives the current
+non-root host UID:GID for strict bind ownership; on a host that cannot expose
+those values, set a reviewed numeric `VALKYRIE_OCI_LIVE_USER=uid:gid`. When
+configured it checks actual non-root execution, writable candidate path,
+read-only root/context, no `eth0`/default route, absence of a host secret canary,
+artifact export, and positive container absence after owned cleanup in addition
+to inspected policy. Normal `npm test`/`npm run verify` strip all four variables
+so inherited shell state cannot accidentally launch it.
+
+Fake-engine success is contract evidence only. No Atomic, Codex, or Claude Code
+writer/model workflow was enabled or counted as a Milestone 4 live pass.
 
 ## Live native pilot evidence
 
@@ -178,11 +238,13 @@ drain, bearer/API/MCP gaps, and exact short-lived memory-preview binding.
 Evidence-backed regressions were added for repaired findings. No
 capability was upgraded merely on documentation or simulated evidence.
 
-The final review left non-blocking deployment advisories: earlier ignored local
+The Milestone 3 final review left non-blocking deployment advisories: earlier ignored local
 state can retain permissive modes (new POSIX server state now uses umask `077`);
 general memory search can return explicitly advisory results; the ignored Atomic
 install lacks a committed transitive lock; and SIGKILL/descendant cleanup belongs
-to the future container/VM boundary.
+  to the external container/VM boundary. Milestone 4 adds bounded container
+  cleanup for a tracked provider, but hard host crash and daemon/descendant
+  reconciliation still need live validation and durable sandbox-instance state.
 
 ## Live integrations not exercised
 
@@ -190,7 +252,8 @@ to the future container/VM boundary.
 - Atomic provider/model workflow, HIL answer mapping, steering, pause/resume, or
   durable DBOS/PostgreSQL native resume.
 - Telegram/phone channel or remote Hermes gateway.
-- Real repository writer container/VM, GitHub PR API, merge, deployment, Linear,
+- Live real-engine writer isolation and any model-backed repository writer,
+  GitHub PR API, merge, deployment, Linear,
   OpenViking, or external outbox publisher.
 - Production credentials, destructive database action, or canonical memory
   promotion in the live native smoke.

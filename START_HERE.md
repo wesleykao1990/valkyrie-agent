@@ -4,9 +4,10 @@
 2. Read `.project-context.yaml` for the repository bootstrap and current pilot posture.
 3. Review `docs/Agentic_Development_Control_Plane_Architecture_Review_v0.2.2.docx` for the current decisions and reasoning.
 4. Read `docs/DECISIONS.md` for accepted, proposed, and deferred architecture choices.
-5. Read `docs/IMPLEMENTATION_PLAN_M1_M2.md` for completed storage/package work and
+5. Read `docs/IMPLEMENTATION_PLAN_M1_M2.md` for completed storage/package work,
    `docs/IMPLEMENTATION_PLAN_M3_MINIMUM.md` for the opt-in native connectivity
-   slice and rollback posture.
+   slice, and `docs/IMPLEMENTATION_PLAN_M4.md` plus proposed ADR-P004 for the
+   disabled external-writer boundary and its remaining live/restart gates.
 6. For Atomic-specific work only, then read `packages/atomic-workflow-architect/START_HERE.md`, its `skills/atomic-workflow-architect/SKILL.md`, and the relevant integration guide. That package is a module, not the whole Project OS, and it is not a live runtime.
 7. Read `docs/STORAGE.md` before selecting PostgreSQL. Install locked dependencies
    with `npm ci`, then run `npm run verify` (full verification requires local

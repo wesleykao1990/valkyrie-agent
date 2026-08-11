@@ -7,25 +7,34 @@
   and exclusive worker claims
 - [x] Inert, independently verified Atomic Workflow Architect package integration
 - [x] Explicit simulated-evidence labels and cross-project task/run/memory checks
+- [x] Authenticated loopback HTTP/MCP with a fail-closed Hermes tool allow-list
+- [x] Read-only Atomic/Codex/Claude Code connectivity adapters, raw-first native
+  events, bounded context/run contracts, and runtime preflight
+- [x] Fenced writer-lease storage, private strict Git worktrees, disabled OCI
+  provider contract, baseline artifact secret scan, and deterministic boundary
+  orchestration tests
 
 ## P0
 
-- [ ] Authenticated control-plane MCP
 - [ ] Linear project/issue read adapter
 - [ ] Linear idea creation with idempotency
-- [ ] Real Git worktree manager
-- [ ] Container runner with no production secrets
-- [ ] Atomic RPC adapter contract test
+- [ ] Live external writer-boundary pass on a supported engine and reviewed
+  digest-pinned fixture image
+- [ ] Durable sandbox-instance state and provider-aware restart reconciliation by
+  immutable engine ID and exact ownership labels
+- [ ] Compose a verified writer boundary into the first non-production Atomic
+  pilot; keep model writers disabled until the live pass
 - [ ] OpenViking read-only retrieval evaluation
-- [ ] Audit log and immutable artifact checksums
+- [ ] Production audit log/retention policy (checksummed artifact registration is
+  implemented for the fixture boundary)
 - [ ] External outbox dispatcher, retry worker, monitoring, and retention
 - [ ] Idempotency/outbox retention cleanup policy
 
 ## P1
 
-- [ ] Direct Codex adapter
-- [ ] Direct Claude Code adapter
-- [ ] Run comparison and reducer
+- [x] Direct read-only Codex adapter
+- [x] Direct optional bare/API-key Claude Code adapter
+- [x] Simulated run comparison and reducer
 - [ ] GitHub PR creation after approval
 - [ ] Linear status/evidence projection
 - [ ] Mobile approval cards with exact effects

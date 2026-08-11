@@ -13,12 +13,12 @@ import {
   MEMORY_PROMOTION_PREVIEW_MAX_FUTURE_SKEW_MS,
 } from "../apps/control-plane/src/service.ts";
 
-async function setup(options: { now?: () => Date } = {}) {
+async function setup(options: { now?: () => Date; storeNow?: () => Date; workspaceNow?: () => Date } = {}) {
   const root = mkdtempSync(join(tmpdir(), "control-plane-test-"));
   const brainRoot = join(root, "brain");
   mkdirSync(join(brainRoot, "Projects", "Ovalo", "Decisions"), { recursive: true });
   writeFileSync(join(brainRoot, "Projects", "Ovalo", "Decisions", "ADR.md"), "---\nauthority: canonical\nstatus: accepted\n---\n# Decision\nUse bounded evidence.\n");
-  const store = new SqliteStore(join(root, "test.sqlite"));
+  const store = new SqliteStore(join(root, "test.sqlite"), { now: options.storeNow });
   await store.seedProjects([
     {
       id: "ovalo", name: "Ovalo", objective: "Language learning", currentMilestone: "Speaking MVP", health: "on_track",
@@ -30,7 +30,7 @@ async function setup(options: { now?: () => Date } = {}) {
     },
   ]);
   const brain = new LocalProjectBrain(brainRoot);
-  const workspaces = new WorkspaceManager(store, join(root, "workspaces"));
+  const workspaces = new WorkspaceManager(store, join(root, "workspaces"), { now: options.workspaceNow });
   const adapters = createMockAdapters(store, workspaces, join(root, "artifacts"), 0);
   const service = new ControlPlaneService(store, brain, workspaces, adapters, options);
   return { root, brainRoot, store, service, workspaces };
@@ -201,7 +201,11 @@ test("startup reconciliation fails an unconfirmed queued run", async () => {
 });
 
 test("startup reconciliation never replays approval after writer-lease quarantine", async () => {
-  const { root, store, service } = await setup();
+  const leaseClock = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  const { root, store, service } = await setup({
+    storeNow: () => new Date(leaseClock),
+    workspaceNow: () => new Date(leaseClock),
+  });
   try {
     const started = await service.startRun({
       projectId: "ovalo",
@@ -220,14 +224,12 @@ test("startup reconciliation never replays approval after writer-lease quarantin
     });
     const run = await store.getRun(runId);
     assert.ok(run?.workspaceId);
-    const expiredAt = new Date(Date.now() - 60_000).toISOString();
-    assert.equal(await store.heartbeatLease(run.workspaceId, run.id, expiredAt, expiredAt), true);
-
     const result = await service.reconcileStartup();
     const reconciled = await store.getRun(runId);
     assert.equal(reconciled?.status, "failed");
     assert.equal(reconciled?.stage, "workspace_quarantined");
     assert.equal((await store.listLeases()).length, 0);
+    assert.equal((await store.getWorkspaceLease(run.workspaceId))?.state, "quarantined");
     assert.equal(result.strandedApprovalsRecovered, 0);
     assert.equal(result.strandedApprovalsNeedingAttention, 1);
     assert.ok((await store.listEvents(runId)).every((event) => !event.message.includes("execution resumed")));
@@ -269,6 +271,60 @@ test("startup reconciliation fails a non-resumable native process orphan and rel
     assert.equal(result.nativeOrphansFailed, 1);
     assert.equal((await store.getRun("run_native_orphan"))?.stage, "native_restart_not_resumable");
     assert.equal((await store.listLeases()).length, 0);
+  } finally {
+    await store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("startup reconciliation quarantines strict terminal writer leases instead of releasing unproven resources", async () => {
+  const { root, store, service } = await setup();
+  try {
+    const createdAt = new Date().toISOString();
+    const runId = "run_terminal_strict_writer";
+    const workspaceId = "ws_terminal_strict_writer";
+    await store.createRunBundle({
+      run: {
+        id: runId,
+        projectId: "ovalo",
+        rootRuntime: "codex",
+        workflow: "sandbox-fixture",
+        status: "failed",
+        stage: "writer_process_unknown",
+        stageIndex: 0,
+        budgetUsd: 1,
+        costUsd: 0,
+        workspaceId,
+        nativeRunId: null,
+        nextActionAt: null,
+        startedAt: createdAt,
+        completedAt: createdAt,
+        metadata: { sandboxBoundary: "contract-fixture-only" },
+        createdAt,
+      },
+      workspace: {
+        id: workspaceId,
+        runId,
+        path: join(root, "strict-writer"),
+        provider: "isolated-git-worktree",
+        status: "leased",
+        createdAt,
+      },
+      lease: {
+        workspaceId,
+        runId,
+        ownerId: "strict_writer_worker",
+        mode: "writer",
+        heartbeatAt: createdAt,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    });
+    const result = await service.reconcileStartup();
+    const lease = await store.getWorkspaceLease(workspaceId);
+    assert.equal(result.terminalLeasesReleased, 0);
+    assert.equal(result.strictWriterLeasesQuarantined, 1);
+    assert.equal(lease?.state, "quarantined");
+    assert.equal(lease?.quarantineReason, "terminal_writer_requires_provider_reconciliation");
   } finally {
     await store.close();
     rmSync(root, { recursive: true, force: true });

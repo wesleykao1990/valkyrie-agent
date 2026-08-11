@@ -4,6 +4,11 @@ Review date: 2026-08-11
 Scope: continuation bundle documents, whole-system prototype `0.2.2`, and
 Atomic Workflow Architect source `0.2.0`
 
+> Historical review snapshot: these findings describe the M1/M2 starting point
+> and are retained as review evidence. Authentication, native connectivity, and
+> the disabled Milestone 4 boundary have since changed. Use `SECURITY.md`,
+> `docs/VERIFICATION.md`, and `docs/SESSION_HANDOFF_v0.3.0.md` for current state.
+
 ## Overall assessment
 
 The accepted shape is sound: Hermes is the mobile interface, Linear/Git/accepted

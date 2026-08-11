@@ -7,20 +7,36 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SqliteStore } from "../apps/control-plane/src/sqlite-store.ts";
 import { PostgresStore } from "../apps/control-plane/src/postgres-store.ts";
+import { loadMigrationFiles } from "../apps/control-plane/src/migrations.ts";
 import {
   deterministicOutboxId,
   IdempotencyConflictError,
   StorageConflictError,
   type ControlPlaneStore,
-  type WorkspaceLease,
+  type WriterLeaseRequest,
   type WorkspaceRecord,
 } from "../apps/control-plane/src/store.ts";
-import type { Approval, Run } from "../apps/control-plane/src/types.ts";
+import type { Approval, Artifact, Run } from "../apps/control-plane/src/types.ts";
 
 const projectSeed = {
   id: "ovalo", name: "Ovalo", objective: "Language learning", currentMilestone: "Speaking MVP", health: "on_track",
   linearTeam: "OVA", repository: "ovalo/app", vaultPath: "Projects/Ovalo", memoryNamespace: "projects/ovalo",
 };
+
+interface MutableStoreClock {
+  now: () => Date;
+  current: () => number;
+  set: (timestamp: number) => void;
+}
+
+function mutableStoreClock(initial = Date.now()): MutableStoreClock {
+  let timestamp = initial;
+  return {
+    now: () => new Date(timestamp),
+    current: () => timestamp,
+    set: (value) => { timestamp = value; },
+  };
+}
 
 function run(id: string, status: Run["status"] = "queued", nextActionAt: string | null = null): Run {
   const createdAt = new Date().toISOString();
@@ -33,14 +49,14 @@ function run(id: string, status: Run["status"] = "queued", nextActionAt: string 
 
 function workspaceBundle(runId: string, suffix = runId, expiresAt = new Date(Date.now() + 60_000).toISOString()): {
   workspace: WorkspaceRecord;
-  lease: WorkspaceLease;
+  lease: WriterLeaseRequest;
 } {
   const createdAt = new Date().toISOString();
   const workspace: WorkspaceRecord = {
     id: `ws_${suffix}`, runId, path: `/tmp/${suffix}`, provider: "test", status: "leased", createdAt,
   };
-  const lease: WorkspaceLease = {
-    workspaceId: workspace.id, runId, mode: "writer", expiresAt, heartbeatAt: createdAt,
+  const lease: WriterLeaseRequest = {
+    workspaceId: workspace.id, runId, ownerId: `owner_${suffix}`, mode: "writer", expiresAt, heartbeatAt: createdAt,
   };
   return { workspace, lease };
 }
@@ -165,13 +181,299 @@ async function exerciseMismatchedApprovalEventContract(store: ControlPlaneStore,
   assert.equal(await store.getIdempotencyRecord("approval.resolve", `${prefix}-mismatched-event-key`), null);
 }
 
+async function exerciseFencedWriterLeaseContract(
+  store: ControlPlaneStore,
+  prefix: string,
+  clock: MutableStoreClock,
+): Promise<void> {
+  const base = clock.current();
+  const expiredCreation = run(`${prefix}_already_expired`, "running");
+  const expiredCreationBundle = workspaceBundle(
+    expiredCreation.id,
+    `${prefix}_already_expired`,
+    new Date(base - 1_000).toISOString(),
+  );
+  expiredCreationBundle.lease.heartbeatAt = new Date(base - 2_000).toISOString();
+  await assert.rejects(
+    store.createRunBundle({ run: expiredCreation, ...expiredCreationBundle }),
+    /expiry must be after observed storage time/i,
+  );
+  assert.equal(await store.getRun(expiredCreation.id), null);
+  const overlongCreation = run(`${prefix}_overlong_lease`, "running");
+  const overlongBundle = workspaceBundle(
+    overlongCreation.id,
+    `${prefix}_overlong_lease`,
+    new Date(base + 24 * 60 * 60 * 1000 + 1).toISOString(),
+  );
+  overlongBundle.lease.heartbeatAt = new Date(base).toISOString();
+  await assert.rejects(
+    store.createRunBundle({ run: overlongCreation, ...overlongBundle }),
+    /may not exceed 24 hours/i,
+  );
+  assert.equal(await store.getRun(overlongCreation.id), null);
+
+  const terminalClaimRun = run(`${prefix}_terminal_workspace_claim`, "failed");
+  await store.createRun(terminalClaimRun);
+  const terminalClaimBundle = workspaceBundle(
+    terminalClaimRun.id,
+    `${prefix}_terminal_workspace_claim`,
+    new Date(base + 60_000).toISOString(),
+  );
+  terminalClaimBundle.lease.heartbeatAt = new Date(base).toISOString();
+  await assert.rejects(
+    store.createWorkspaceLease(terminalClaimBundle.workspace, terminalClaimBundle.lease),
+    /only by a queued run/i,
+  );
+  assert.equal(await store.getWorkspace(terminalClaimBundle.workspace.id), null);
+  assert.equal((await store.getRun(terminalClaimRun.id))?.workspaceId, null);
+
+  const initialHeartbeat = new Date(base).toISOString();
+  const initialExpiry = new Date(base + 60_000).toISOString();
+  const item = run(`${prefix}_fenced`, "running");
+  const bundle = workspaceBundle(item.id, `${prefix}_fenced`, initialExpiry);
+  bundle.lease.ownerId = `${prefix}-worker-a`;
+  bundle.lease.heartbeatAt = initialHeartbeat;
+  const created = await store.createRunBundle({ run: item, ...bundle });
+  const initial = created.lease!;
+  assert.equal(initial.fencingToken, 1);
+  assert.equal(initial.ownerId, `${prefix}-worker-a`);
+  assert.equal(initial.state, "active");
+  assert.equal(initial.acquiredAt, initialHeartbeat);
+  assert.equal(initial.quarantinedAt, null);
+  assert.equal(initial.quarantineReason, null);
+
+  clock.set(base + 10_000);
+  const renewed = await store.renewWorkspaceLease({
+    workspaceId: initial.workspaceId,
+    runId: initial.runId,
+    ownerId: initial.ownerId,
+    fencingToken: initial.fencingToken,
+    heartbeatAt: new Date(base + 10_000).toISOString(),
+    expiresAt: new Date(base + 70_000).toISOString(),
+  });
+  assert.equal(renewed?.fencingToken, initial.fencingToken);
+  assert.equal(renewed?.heartbeatAt, new Date(base + 10_000).toISOString());
+  assert.equal(await store.renewWorkspaceLease({
+    workspaceId: initial.workspaceId,
+    runId: initial.runId,
+    ownerId: `${prefix}-stale-owner`,
+    fencingToken: initial.fencingToken,
+    heartbeatAt: new Date(base + 20_000).toISOString(),
+    expiresAt: new Date(base + 80_000).toISOString(),
+  }), null);
+  assert.equal(await store.renewWorkspaceLease({
+    workspaceId: initial.workspaceId,
+    runId: initial.runId,
+    ownerId: initial.ownerId,
+    fencingToken: initial.fencingToken + 1,
+    heartbeatAt: new Date(base + 20_000).toISOString(),
+    expiresAt: new Date(base + 80_000).toISOString(),
+  }), null);
+  assert.equal(await store.renewWorkspaceLease({
+    workspaceId: initial.workspaceId,
+    runId: initial.runId,
+    ownerId: initial.ownerId,
+    fencingToken: initial.fencingToken,
+    heartbeatAt: new Date(base + 20_000).toISOString(),
+    expiresAt: new Date(base + 65_000).toISOString(),
+  }), null, "a renewal must not shorten the expiry");
+  await assert.rejects(store.rotateWorkspaceLease({
+    ...bundle.lease,
+    ownerId: `${prefix}-worker-b`,
+    heartbeatAt: new Date(base + 20_000).toISOString(),
+    expiresAt: new Date(base + 80_000).toISOString(),
+  }), /unexpired writer lease cannot be rotated/i);
+
+  clock.set(base + 30_000);
+  const quarantineInput = {
+    workspaceId: initial.workspaceId,
+    runId: initial.runId,
+    ownerId: initial.ownerId,
+    fencingToken: initial.fencingToken,
+    quarantinedAt: new Date(base + 30_000).toISOString(),
+    reason: "runner heartbeat expired; awaiting sandbox cleanup",
+  };
+  assert.equal(await store.quarantineWorkspaceLease({ ...quarantineInput, fencingToken: initial.fencingToken + 1 }), null);
+  const quarantined = await store.quarantineWorkspaceLease(quarantineInput);
+  assert.equal(quarantined?.state, "quarantined");
+  assert.equal(quarantined?.quarantineReason, quarantineInput.reason);
+  assert.equal((await store.getWorkspace(initial.workspaceId))?.status, "quarantined");
+  assert.equal((await store.listLeases()).some((lease) => lease.workspaceId === initial.workspaceId), false);
+  assert.equal((await store.listReconciliationCandidates(new Date(base + 31_000).toISOString())).quarantinedLeases
+    .some((lease) => lease.workspaceId === initial.workspaceId), true);
+  assert.deepEqual(await store.quarantineWorkspaceLease(quarantineInput), quarantined);
+  await assert.rejects(store.quarantineWorkspaceLease({ ...quarantineInput, reason: "different evidence" }), /different evidence/i);
+  assert.equal(await store.renewWorkspaceLease({
+    workspaceId: initial.workspaceId,
+    runId: initial.runId,
+    ownerId: initial.ownerId,
+    fencingToken: initial.fencingToken,
+    heartbeatAt: new Date(base + 40_000).toISOString(),
+    expiresAt: new Date(base + 100_000).toISOString(),
+  }), null);
+  assert.equal(await store.releaseWorkspaceLease({ ...quarantineInput, fencingToken: initial.fencingToken + 1 }), false);
+  assert.equal(await store.releaseWorkspaceLease(initial), true);
+  assert.equal(await store.getWorkspaceLease(initial.workspaceId), null);
+  assert.equal((await store.getWorkspace(initial.workspaceId))?.status, "released");
+
+  await assert.rejects(store.rotateWorkspaceLease({
+    workspaceId: initial.workspaceId,
+    runId: initial.runId,
+    ownerId: `${prefix}-already-expired-rotation`,
+    mode: "writer",
+    heartbeatAt: new Date(base + 28_000).toISOString(),
+    expiresAt: new Date(base + 29_000).toISOString(),
+  }), /expiry must be after observed storage time/i);
+
+  const expiringRequest: WriterLeaseRequest = {
+    workspaceId: initial.workspaceId,
+    runId: initial.runId,
+    ownerId: `${prefix}-worker-b`,
+    mode: "writer",
+    heartbeatAt: new Date(base + 30_000).toISOString(),
+    expiresAt: new Date(base + 40_000).toISOString(),
+  };
+  const expiring = await store.rotateWorkspaceLease(expiringRequest);
+  assert.equal(expiring.fencingToken, initial.fencingToken + 1);
+  await assert.rejects(store.rotateWorkspaceLease({
+    ...expiringRequest,
+    ownerId: `${prefix}-future-claimant`,
+    heartbeatAt: new Date(base + 50_000).toISOString(),
+    expiresAt: new Date(base + 110_000).toISOString(),
+  }), /unexpired writer lease cannot be rotated/i, "a future caller heartbeat cannot rotate a wall-clock-active lease");
+  assert.equal((await store.renewWorkspaceLease({
+    workspaceId: expiring.workspaceId,
+    runId: expiring.runId,
+    ownerId: expiring.ownerId,
+    fencingToken: expiring.fencingToken,
+    heartbeatAt: new Date(base + 35_000).toISOString(),
+    expiresAt: new Date(base + 40_000).toISOString(),
+  }))?.fencingToken, expiring.fencingToken);
+
+  clock.set(base + 41_000);
+  assert.equal(await store.renewWorkspaceLease({
+    workspaceId: expiring.workspaceId,
+    runId: expiring.runId,
+    ownerId: expiring.ownerId,
+    fencingToken: expiring.fencingToken,
+    heartbeatAt: new Date(base + 36_000).toISOString(),
+    expiresAt: new Date(base + 120_000).toISOString(),
+  }), null, "a wall-clock-expired lease cannot renew with a stale caller heartbeat");
+  const rotationAttempts = await Promise.allSettled([
+    store.rotateWorkspaceLease({
+      ...expiringRequest,
+      ownerId: `${prefix}-worker-c`,
+      heartbeatAt: new Date(base + 41_000).toISOString(),
+      expiresAt: new Date(base + 101_000).toISOString(),
+    }),
+    store.rotateWorkspaceLease({
+      ...expiringRequest,
+      ownerId: `${prefix}-worker-d`,
+      heartbeatAt: new Date(base + 41_000).toISOString(),
+      expiresAt: new Date(base + 101_000).toISOString(),
+    }),
+  ]);
+  assert.equal(rotationAttempts.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(rotationAttempts.filter((result) => result.status === "rejected").length, 1);
+  const rotated = rotationAttempts.find((result) => result.status === "fulfilled")!.value;
+  assert.equal(rotated.fencingToken, expiring.fencingToken + 1);
+  assert.equal(await store.releaseWorkspaceLease(expiring), false, "an expired stale token cannot release after rotation");
+  assert.equal(await store.releaseWorkspaceLease(rotated), true);
+
+  const leaseOutbox = (await store.listPendingOutbox()).filter((event) => event.aggregateId === initial.workspaceId);
+  assert.ok(leaseOutbox.some((event) => event.topic === "workspace.lease.quarantined"));
+  assert.ok(leaseOutbox.some((event) => event.topic === "workspace.lease.rotated"));
+  assert.ok(leaseOutbox.some((event) => event.topic === "workspace.lease.released"));
+}
+
+async function exerciseArtifactBatchContract(store: ControlPlaneStore, prefix: string): Promise<void> {
+  const ownerRun = run(`${prefix}_artifact_owner`, "running");
+  const foreignRun = run(`${prefix}_artifact_foreign`, "running");
+  await store.createRun(ownerRun);
+  await store.createRun(foreignRun);
+  const createdAt = new Date().toISOString();
+  const artifact = (suffix: string, runId = ownerRun.id): Artifact => ({
+    id: `${prefix}_artifact_${suffix}`,
+    runId,
+    kind: "test-evidence",
+    uri: `artifact://${prefix}/${suffix}`,
+    checksum: `sha256:${prefix}:${suffix}`,
+    mediaType: "application/json",
+    createdAt,
+  });
+  const batch = [artifact("one"), artifact("two")];
+  const created = await store.createArtifactBatch(batch);
+  assert.equal(created.replayed, false);
+  assert.deepEqual(created.artifacts, batch);
+  const replay = await store.createArtifactBatch(batch);
+  assert.equal(replay.replayed, true);
+  assert.deepEqual(replay.artifacts, batch);
+  assert.equal((await store.listArtifacts(ownerRun.id)).length, 2);
+  assert.equal((await store.listPendingOutbox()).filter((event) =>
+    batch.some((item) => item.id === event.aggregateId) && event.topic === "artifact.created"
+  ).length, 2);
+
+  const changedFields: Array<keyof Omit<Artifact, "id">> = [
+    "runId", "kind", "uri", "checksum", "mediaType", "createdAt",
+  ];
+  for (const field of changedFields) {
+    const changed: Artifact = {
+      ...batch[0],
+      [field]: field === "runId"
+        ? foreignRun.id
+        : field === "createdAt"
+          ? new Date(Date.parse(createdAt) + 1_000).toISOString()
+          : `${batch[0][field]}-changed`,
+    };
+    await assert.rejects(store.createArtifactBatch([changed]), /different content/i);
+  }
+
+  const rollbackCandidate = artifact("rollback-new");
+  await assert.rejects(store.createArtifactBatch([
+    rollbackCandidate,
+    { ...batch[0], checksum: "sha256:changed-mid-batch" },
+  ]), /different content/i);
+  assert.equal((await store.listArtifacts(ownerRun.id)).some((item) => item.id === rollbackCandidate.id), false);
+  assert.equal((await store.listPendingOutbox()).some((event) => event.aggregateId === rollbackCandidate.id), false);
+
+  const foreignExisting = artifact("owned-by-foreign", foreignRun.id);
+  await store.createArtifact(foreignExisting);
+  const foreignRollbackCandidate = artifact("foreign-rollback-new");
+  await assert.rejects(store.createArtifactBatch([
+    foreignRollbackCandidate,
+    { ...foreignExisting, runId: ownerRun.id },
+  ]), /different content/i);
+  assert.equal((await store.listArtifacts(ownerRun.id)).some((item) => item.id === foreignRollbackCandidate.id), false);
+  assert.equal((await store.listPendingOutbox()).some((event) => event.aggregateId === foreignRollbackCandidate.id), false);
+
+  const mixedRunCandidate = artifact("mixed-run-new");
+  await assert.rejects(store.createArtifactBatch([
+    mixedRunCandidate,
+    artifact("mixed-run-foreign", foreignRun.id),
+  ]), /same run/i);
+  assert.equal((await store.listArtifacts(ownerRun.id)).some((item) => item.id === mixedRunCandidate.id), false);
+  await assert.rejects(store.createArtifactBatch([batch[0], batch[0]]), /duplicate id/i);
+  await assert.rejects(store.createArtifactBatch([]), /between 1 and 1000/i);
+
+  const concurrentBatch = [artifact("concurrent-one"), artifact("concurrent-two")];
+  const concurrent = await Promise.all([
+    store.createArtifactBatch(concurrentBatch),
+    store.createArtifactBatch(concurrentBatch),
+  ]);
+  assert.equal(concurrent.filter((result) => result.replayed).length, 1);
+  assert.equal(concurrent.filter((result) => !result.replayed).length, 1);
+  assert.equal((await store.listArtifacts(ownerRun.id)).filter((item) =>
+    concurrentBatch.some((artifact) => artifact.id === item.id)
+  ).length, 2);
+}
+
 test("SQLite migrations are explicit, repeatable, and current", async () => {
   const store = new SqliteStore(":memory:");
   try {
     const first = await store.migrate();
-    assert.deepEqual(first.map((item) => [item.version, item.status]), [[1, "applied"], [2, "applied"], [3, "applied"]]);
+    assert.deepEqual(first.map((item) => [item.version, item.status]), [[1, "applied"], [2, "applied"], [3, "applied"], [4, "applied"]]);
     const second = await store.migrate();
-    assert.deepEqual(second.map((item) => item.status), ["already_applied", "already_applied", "already_applied"]);
+    assert.deepEqual(second.map((item) => item.status), ["already_applied", "already_applied", "already_applied", "already_applied"]);
     assert.deepEqual(await store.healthCheck(), { ok: true, backend: "sqlite", migrationsCurrent: true });
   } finally {
     await store.close();
@@ -210,7 +512,7 @@ test("SQLite adopts a legacy unversioned database and rejects migration checksum
 
     const adopted = new SqliteStore(path);
     const applied = await adopted.migrate();
-    assert.deepEqual(applied.map((item) => item.status), ["applied", "applied", "applied"]);
+    assert.deepEqual(applied.map((item) => item.status), ["applied", "applied", "applied", "applied"]);
     assert.equal((await adopted.healthCheck()).migrationsCurrent, true);
     await adopted.close();
 
@@ -234,6 +536,64 @@ test("SQLite rejects unknown migration ledger versions", async () => {
       .run(new Date().toISOString());
     db.close();
     assert.throws(() => new SqliteStore(path), /unknown migration version.*999/i);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("SQLite forward migration backfills and preserves an existing writer lease fence", async () => {
+  const root = mkdtempSync(join(tmpdir(), "valkyrie-fence-backfill-"));
+  const path = join(root, "version-3.sqlite");
+  const heartbeatAt = "2026-08-11T00:00:00.000Z";
+  try {
+    const db = new DatabaseSync(path);
+    db.exec(`PRAGMA foreign_keys=ON; CREATE TABLE schema_migrations (
+      version INTEGER PRIMARY KEY,name TEXT NOT NULL,checksum TEXT NOT NULL,applied_at TEXT NOT NULL
+    )`);
+    const migrations = loadMigrationFiles("sqlite").filter((migration) => migration.version <= 3);
+    for (const migration of migrations) {
+      db.exec(migration.sql);
+      db.prepare("INSERT INTO schema_migrations(version,name,checksum,applied_at) VALUES (?,?,?,?)")
+        .run(migration.version, migration.name, migration.checksum, heartbeatAt);
+    }
+    db.prepare(`INSERT INTO projects
+      (id,name,objective,current_milestone,health,linear_team,repository,vault_path,memory_namespace,created_at)
+      VALUES ('ovalo','Ovalo','Objective','Milestone','on_track','OVA','repo','vault','namespace',?)`).run(heartbeatAt);
+    db.prepare(`INSERT INTO runs
+      (id,project_id,root_runtime,workflow,status,stage_index,budget_usd,cost_usd,workspace_id,metadata_json,created_at)
+      VALUES ('legacy_fenced_run','ovalo','atomic','test','running',0,8,0,NULL,'{}',?)`).run(heartbeatAt);
+    db.prepare(`INSERT INTO workspaces(id,run_id,path,provider,status,created_at)
+      VALUES ('legacy_fenced_ws','legacy_fenced_run','/tmp/legacy-fenced','test','leased',?)`).run(heartbeatAt);
+    db.prepare(`INSERT INTO workspace_leases(workspace_id,run_id,mode,expires_at,heartbeat_at)
+      VALUES ('legacy_fenced_ws','legacy_fenced_run','writer','2026-08-11T01:00:00.000Z',?)`).run(heartbeatAt);
+    db.prepare("UPDATE runs SET workspace_id='legacy_fenced_ws' WHERE id='legacy_fenced_run'").run();
+    db.close();
+
+    const store = new SqliteStore(path);
+    const migrationOutput = await store.migrate();
+    assert.equal(migrationOutput.find((item) => item.version === 4)?.status, "applied");
+    assert.deepEqual(await store.getWorkspaceLease("legacy_fenced_ws"), {
+      workspaceId: "legacy_fenced_ws",
+      runId: "legacy_fenced_run",
+      ownerId: "legacy_fenced_run",
+      mode: "writer",
+      fencingToken: 1,
+      state: "active",
+      expiresAt: "2026-08-11T01:00:00.000Z",
+      heartbeatAt,
+      acquiredAt: heartbeatAt,
+      quarantinedAt: null,
+      quarantineReason: null,
+    });
+    await store.close();
+
+    const inspected = new DatabaseSync(path);
+    assert.equal((inspected.prepare("SELECT lease_epoch FROM workspaces WHERE id='legacy_fenced_ws'").get() as any).lease_epoch, 1);
+    assert.throws(
+      () => inspected.prepare("UPDATE workspaces SET lease_epoch=0 WHERE id='legacy_fenced_ws'").run(),
+      /lease epoch cannot decrease/i,
+    );
+    inspected.close();
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -293,10 +653,15 @@ test("SQLite migration triggers enforce run/workspace/lease ownership", async ()
       () => db.prepare("UPDATE runs SET workspace_id=? WHERE id=?").run(workspace.id, "sqlite_intruder"),
       /run workspace owner mismatch/i,
     );
+    db.prepare("UPDATE workspaces SET lease_epoch=1 WHERE id=?").run(workspace.id);
     assert.throws(
-      () => db.prepare(`INSERT INTO workspace_leases(workspace_id,run_id,mode,expires_at,heartbeat_at)
-        VALUES (?,?,?,?,?)`).run(workspace.id, "sqlite_intruder", "writer", new Date(Date.now() + 60_000).toISOString(), new Date().toISOString()),
-      /workspace lease owner mismatch/i,
+      () => db.prepare(`INSERT INTO workspace_leases
+        (workspace_id,run_id,owner_id,mode,fencing_token,state,expires_at,heartbeat_at,acquired_at)
+        VALUES (?,?,?,?,?,'active',?,?,?)`).run(
+          workspace.id, "sqlite_intruder", "intruder", "writer", 1,
+          new Date(Date.now() + 60_000).toISOString(), new Date().toISOString(), new Date().toISOString(),
+        ),
+      /workspace lease owner mismatch|invalid fenced workspace lease/i,
     );
     db.close();
   } finally {
@@ -336,6 +701,27 @@ test("run bundle is atomic, outboxed, and idempotent", async () => {
       }),
       IdempotencyConflictError,
     );
+  } finally {
+    await store.close();
+  }
+});
+
+test("SQLite writer leases are renewable, fenced, quarantinable, and monotonically rotated", async () => {
+  const clock = mutableStoreClock();
+  const store = new SqliteStore(":memory:", { now: clock.now });
+  try {
+    await seed(store);
+    await exerciseFencedWriterLeaseContract(store, "sqlite", clock);
+  } finally {
+    await store.close();
+  }
+});
+
+test("SQLite artifact batches replay exactly and roll back artifacts with their outboxes", async () => {
+  const store = new SqliteStore(":memory:");
+  try {
+    await seed(store);
+    await exerciseArtifactBatchContract(store, "sqlite");
   } finally {
     await store.close();
   }
@@ -515,20 +901,24 @@ test("run claiming is exclusive and releasing a claim preserves nextActionAt", a
 test("restart reconciliation identifies queued runs, terminal and expired leases", async () => {
   const root = mkdtempSync(join(tmpdir(), "valkyrie-restart-"));
   const path = join(root, "test.sqlite");
+  const clock = mutableStoreClock();
+  const base = clock.current();
   try {
-    let store = new SqliteStore(path);
+    let store = new SqliteStore(path, { now: clock.now });
     await seed(store);
     await store.createRun(run("run_queued"));
     const completed = run("run_terminal", "completed");
     const completedWorkspace = workspaceBundle(completed.id);
     await store.createRunBundle({ run: completed, ...completedWorkspace });
-    const active = run("run_expired", "running", new Date(Date.now() + 10_000).toISOString());
-    const expiredWorkspace = workspaceBundle(active.id, active.id, new Date(Date.now() - 1_000).toISOString());
+    const active = run("run_expired", "running", new Date(base + 20_000).toISOString());
+    const expiredWorkspace = workspaceBundle(active.id, active.id, new Date(base + 10_000).toISOString());
+    expiredWorkspace.lease.heartbeatAt = new Date(base).toISOString();
     await store.createRunBundle({ run: active, ...expiredWorkspace });
     await store.close();
 
-    store = new SqliteStore(path);
-    const candidates = await store.listReconciliationCandidates(new Date().toISOString());
+    clock.set(base + 20_000);
+    store = new SqliteStore(path, { now: clock.now });
+    const candidates = await store.listReconciliationCandidates(clock.now().toISOString());
     assert.deepEqual(candidates.queuedRuns.map((item) => item.id), ["run_queued"]);
     assert.deepEqual(candidates.terminalLeases.map((item) => item.runId), ["run_terminal"]);
     assert.deepEqual(candidates.expiredLeases.map((item) => item.runId), ["run_expired"]);
@@ -546,17 +936,84 @@ const postgresUrl = postgresContractEnabled ? process.env.TEST_DATABASE_URL : un
 if (postgresContractEnabled && !postgresUrl) {
   throw new Error("TEST_DATABASE_URL is required when RUN_POSTGRES_STORAGE_CONTRACT_TESTS=1");
 }
+
+async function preparePostgresVersion3LeaseFixture(databaseUrl: string): Promise<void> {
+  const { Pool } = await import("pg");
+  const pool = new Pool({ connectionString: databaseUrl });
+  const heartbeatAt = "2026-08-11T00:00:00.000Z";
+  try {
+    await pool.query(`CREATE TABLE schema_migrations (
+      version integer PRIMARY KEY,
+      name text NOT NULL,
+      checksum text NOT NULL,
+      applied_at timestamptz NOT NULL DEFAULT now()
+    )`);
+    for (const migration of loadMigrationFiles("postgres").filter((item) => item.version <= 3)) {
+      await pool.query("BEGIN");
+      try {
+        await pool.query(migration.sql);
+        await pool.query("INSERT INTO schema_migrations(version,name,checksum) VALUES ($1,$2,$3)", [
+          migration.version, migration.name, migration.checksum,
+        ]);
+        await pool.query("COMMIT");
+      } catch (error) {
+        await pool.query("ROLLBACK");
+        throw error;
+      }
+    }
+    await pool.query("BEGIN");
+    try {
+      await pool.query(`INSERT INTO projects
+        (id,name,objective,current_milestone,health,linear_team,repository,vault_path,memory_namespace,created_at)
+        VALUES ('ovalo','Ovalo','Objective','Milestone','on_track','OVA','repo','vault','namespace',$1)`, [heartbeatAt]);
+      await pool.query(`INSERT INTO runs
+        (id,project_id,root_runtime,workflow,status,stage_index,budget_usd,cost_usd,workspace_id,metadata_json,created_at)
+        VALUES ('pg_legacy_fenced_run','ovalo','atomic','test','running',0,8,0,NULL,'{}',$1)`, [heartbeatAt]);
+      await pool.query(`INSERT INTO workspaces(id,run_id,path,provider,status,created_at)
+        VALUES ('pg_legacy_fenced_ws','pg_legacy_fenced_run','/tmp/pg-legacy-fenced','test','leased',$1)`, [heartbeatAt]);
+      await pool.query(`INSERT INTO workspace_leases(workspace_id,run_id,mode,expires_at,heartbeat_at)
+        VALUES ('pg_legacy_fenced_ws','pg_legacy_fenced_run','writer','2026-08-11T01:00:00.000Z',$1)`, [heartbeatAt]);
+      await pool.query("UPDATE runs SET workspace_id='pg_legacy_fenced_ws' WHERE id='pg_legacy_fenced_run'");
+      await pool.query("COMMIT");
+    } catch (error) {
+      await pool.query("ROLLBACK");
+      throw error;
+    }
+  } finally {
+    await pool.end();
+  }
+}
+
 test("PostgreSQL storage contract smoke", { skip: !postgresUrl }, async () => {
-  let store = await PostgresStore.connect({ databaseUrl: postgresUrl!, autoMigrate: true, maxConnections: 8 });
+  await preparePostgresVersion3LeaseFixture(postgresUrl!);
+  const clock = mutableStoreClock();
+  let store = await PostgresStore.connect({
+    databaseUrl: postgresUrl!, autoMigrate: true, maxConnections: 8, now: clock.now,
+  });
   try {
     const migrationOutput = await store.migrate();
-    assert.deepEqual(migrationOutput.map((item) => item.version), [1, 2, 3]);
+    assert.deepEqual(migrationOutput.map((item) => item.version), [1, 2, 3, 4]);
     const repeatedMigrations = await store.migrate();
-    assert.deepEqual(repeatedMigrations.map((item) => item.status), ["already_applied", "already_applied", "already_applied"]);
+    assert.deepEqual(repeatedMigrations.map((item) => item.status), ["already_applied", "already_applied", "already_applied", "already_applied"]);
     assert.deepEqual(await store.healthCheck(), { ok: true, backend: "postgres", migrationsCurrent: true });
+    assert.deepEqual(await store.getWorkspaceLease("pg_legacy_fenced_ws"), {
+      workspaceId: "pg_legacy_fenced_ws",
+      runId: "pg_legacy_fenced_run",
+      ownerId: "pg_legacy_fenced_run",
+      mode: "writer",
+      fencingToken: 1,
+      state: "active",
+      expiresAt: "2026-08-11T01:00:00.000Z",
+      heartbeatAt: "2026-08-11T00:00:00.000Z",
+      acquiredAt: "2026-08-11T00:00:00.000Z",
+      quarantinedAt: null,
+      quarantineReason: null,
+    });
 
     await store.resetOperationalData();
     await seed(store);
+    await exerciseFencedWriterLeaseContract(store, "postgres", clock);
+    await exerciseArtifactBatchContract(store, "postgres");
     await exerciseApprovalRequestContract(store, "postgres");
     await exerciseMismatchedApprovalEventContract(store, "postgres");
     const runsBeforeCandidates = (await store.listRuns()).length;
@@ -587,9 +1044,12 @@ test("PostgreSQL storage contract smoke", { skip: !postgresUrl }, async () => {
       direct.query("UPDATE runs SET workspace_id=$1 WHERE id=$2", [directWorkspace.id, directIntruder.id]),
       /fk_runs_workspace_owner|foreign key/i,
     );
+    await direct.query("UPDATE workspaces SET lease_epoch=1 WHERE id=$1", [directWorkspace.id]);
     await assert.rejects(
-      direct.query(`INSERT INTO workspace_leases(workspace_id,run_id,mode,expires_at,heartbeat_at)
-        VALUES ($1,$2,'writer',now()+interval '1 minute',now())`, [directWorkspace.id, directIntruder.id]),
+      direct.query(`INSERT INTO workspace_leases
+        (workspace_id,run_id,owner_id,mode,fencing_token,state,expires_at,heartbeat_at,acquired_at)
+        VALUES ($1,$2,'intruder','writer',1,'active',now()+interval '1 minute',now(),now())`,
+        [directWorkspace.id, directIntruder.id]),
       /fk_workspace_lease_owner|foreign key/i,
     );
     await direct.end();
@@ -598,8 +1058,8 @@ test("PostgreSQL storage contract smoke", { skip: !postgresUrl }, async () => {
     const conflictingWorkspace: WorkspaceRecord = {
       ...winnerWorkspace, runId: rollbackRun.id, path: "/tmp/pg-rollback",
     };
-    const conflictingLease: WorkspaceLease = {
-      workspaceId: winnerWorkspace.id, runId: rollbackRun.id, mode: "writer",
+    const conflictingLease: WriterLeaseRequest = {
+      workspaceId: winnerWorkspace.id, runId: rollbackRun.id, ownerId: "owner_pg_rollback", mode: "writer",
       heartbeatAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(),
     };
     await assert.rejects(store.createRunBundle({
@@ -675,15 +1135,21 @@ test("PostgreSQL storage contract smoke", { skip: !postgresUrl }, async () => {
     await store.createRun(run("pg_queued"));
     const terminal = run("pg_terminal", "completed");
     await store.createRunBundle({ run: terminal, ...workspaceBundle(terminal.id) });
-    const expired = run("pg_expired", "running", new Date(Date.now() + 20_000).toISOString());
+    const reconciliationBase = clock.current();
+    const expired = run("pg_expired", "running", new Date(reconciliationBase + 20_000).toISOString());
+    const expiredBundle = workspaceBundle(expired.id, expired.id, new Date(reconciliationBase + 10_000).toISOString());
+    expiredBundle.lease.heartbeatAt = new Date(reconciliationBase).toISOString();
     await store.createRunBundle({
       run: expired,
-      ...workspaceBundle(expired.id, expired.id, new Date(Date.now() - 1_000).toISOString()),
+      ...expiredBundle,
     });
 
     await store.close();
-    store = await PostgresStore.connect({ databaseUrl: postgresUrl!, autoMigrate: false, maxConnections: 4 });
-    const reconciliation = await store.listReconciliationCandidates(new Date().toISOString());
+    clock.set(reconciliationBase + 20_000);
+    store = await PostgresStore.connect({
+      databaseUrl: postgresUrl!, autoMigrate: false, maxConnections: 4, now: clock.now,
+    });
+    const reconciliation = await store.listReconciliationCandidates(clock.now().toISOString());
     assert.ok(reconciliation.queuedRuns.some((item) => item.id === "pg_queued"));
     assert.ok(reconciliation.terminalLeases.some((item) => item.runId === "pg_terminal"));
     assert.ok(reconciliation.expiredLeases.some((item) => item.runId === "pg_expired"));
@@ -701,7 +1167,9 @@ test("PostgreSQL storage contract smoke", { skip: !postgresUrl }, async () => {
     const cleanupPool = new Pool({ connectionString: postgresUrl! });
     await cleanupPool.query("DELETE FROM schema_migrations WHERE version=999");
     await cleanupPool.end();
-    store = await PostgresStore.connect({ databaseUrl: postgresUrl!, autoMigrate: false, maxConnections: 4 });
+    store = await PostgresStore.connect({
+      databaseUrl: postgresUrl!, autoMigrate: false, maxConnections: 4, now: clock.now,
+    });
   } finally {
     await store.resetOperationalData().catch(() => undefined);
     await store.close().catch(() => undefined);

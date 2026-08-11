@@ -106,8 +106,10 @@ partial transactions accidentally:
 - run, optional workspace, and writer lease creation;
 - event append plus matching outbox record;
 - conditional approval resolution, optional run patch/event, and outbox record;
-- workspace/lease acquisition and owner-checked release;
-- task/artifact/memory mutations plus outbox records.
+- workspace/lease acquisition, rotation, renewal, quarantine, and exact-fence
+  release;
+- task/memory mutations plus outbox records;
+- all-or-nothing, exact-replay artifact batches plus deterministic outbox rows.
 
 Filesystem preparation is outside the database transaction. The service discards
 an unpersisted prepared workspace after a database failure or an idempotent race.
@@ -145,15 +147,19 @@ Startup inspects:
 
 - queued runs whose native runtime start was never confirmed;
 - approvals resolved while their run still awaits application;
-- leases left on terminal runs;
-- expired writer leases;
+- active leases left on terminal runs;
+- expired active writer leases and durable quarantined leases;
 - pending outbox rows.
 
-An unconfirmed queued run is failed and its lease released. Expired active writers
-are quarantined/failed. Scripted mock approvals can be safely replayed; unknown
-native-runtime approval state is marked for operator reconciliation rather than
-claiming resumability. PostgreSQL durability does not prove native runtime
-durability.
+An unconfirmed queued run is failed. Legacy/demo leases whose owner is the run may
+be released, but strict isolated-writer leases are quarantined for provider-aware
+reconciliation because a database fence alone does not prove their container is
+gone. Expired active writers are quarantined and their runs fail; quarantine
+evidence remains until an operator proves cleanup and performs an exact-fence
+release. Scripted mock
+approvals can be safely replayed; unknown native-runtime approval state is marked
+for operator reconciliation rather than claiming resumability. PostgreSQL
+durability does not prove native runtime or sandbox-process durability.
 
 ## Migration failure and rollback
 
@@ -168,6 +174,28 @@ Migration `002_storage_guarantees.sql` intentionally fails if historical rows
 violate one-workspace/one-writer or related integrity constraints. Repair the data
 under a separate reviewed plan; do not remove the constraints to make deployment
 appear green.
+
+Migration `004_fenced_writer_leases.sql` is also forward-only. It adds monotonic
+workspace lease epochs, exact writer-owner/fencing identity, renewal state, and
+durable quarantine evidence. Existing v3 active leases are conservatively
+backfilled with `owner_id=run_id`, fencing token `1`, and `acquired_at` equal to
+their prior heartbeat. Treat those as legacy: stop/quarantine/clean them before
+enabling any real writer. An older binary rejects the newer migration ledger, so
+a v4 rollback requires a verified pre-v4 database backup (or the independent
+SQLite data set); it is not a code-only downgrade.
+
+Fencing protects database lease mutations. It cannot revoke a stale process's
+raw filesystem access. The owning sandbox must still be stopped and its effective
+identity/policy inspected before cleanup or fence release.
+
+Lease expiry decisions use the storage adapter's control-plane clock, not the
+caller's heartbeat timestamp. Creation and renewal require an expiry after the
+observed time and no more than 24 hours ahead; rotation is allowed only after the
+store observes expiry. This prevents a future-dated caller from rotating early or
+reviving an already-expired fence. The cleanup coordinator then uses the exact-
+fence quarantine reason `writer_filesystem_cleanup_claimed` as a rotation freeze
+before artifact export. Success releases it only after container and filesystem
+cleanup; interruption leaves durable operator evidence.
 
 Application rollback is configuration-only: stop the service and select SQLite or
 a previously compatible PostgreSQL application build. Switching to SQLite exposes
@@ -208,6 +236,12 @@ General tests and HTTP/MCP smokes force temporary SQLite and strip persistent
 storage, connector, PostgreSQL-contract, and `REPOSITORY_PATH_*` settings from
 their child environments. The disposable PostgreSQL harness supplies its own
 explicit contract sentinel and database URL.
+
+Normal verification also strips all live OCI-engine/image/socket/user settings. The
+opt-in `npm run smoke:sandbox` path accepts only an explicit absolute engine CLI,
+an already-present immutable image digest, and an optional local `unix:///`
+socket plus a reviewed numeric non-root UID:GID override when host identity cannot
+be derived; it never reuses an inherited remote daemon setting.
 
 The full repository verifier runs both suites:
 

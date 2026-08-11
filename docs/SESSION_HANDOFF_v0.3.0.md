@@ -1,4 +1,4 @@
-# Session handoff — v0.3.0 plus minimum native pilot
+# Session handoff — v0.3.0 through Milestone 4 contract boundary
 
 Date: 2026-08-11
 
@@ -11,9 +11,16 @@ Date: 2026-08-11
 - Milestone 3a: authenticated, disabled-by-default **minimum native connectivity
   slice** for Atomic offline discovery, direct read-only Codex/Claude, isolated
   Hermes MCP, and bounded Project Brain retrieval/proposal/preview/rejection.
+- Milestone 4 contract slice: fenced/renewable/quarantinable writer leases,
+  private shallow Git store plus one candidate worktree, disabled digest-pinned
+  Docker-compatible provider, host-owned heartbeat/lease-loss stop, bounded
+  baseline secret scan, atomic artifact batch, and terminal cleanup orchestration.
 
-Milestone 3a does not complete Atomic model/workflow execution. No writer, PR,
-merge, deploy, Linear, or OpenViking action was added.
+The deterministic Milestone 4 slice is implemented but it is neither live-
+complete nor restart-complete on this host: no supported container/VM engine is
+installed, so the opt-in live test skips, and provider-aware durable sandbox
+reconciliation remains deferred. No Atomic/Codex/Claude writer, PR, merge,
+deploy, Linear, or OpenViking action was enabled.
 
 ## 2. Architecture preserved
 
@@ -40,14 +47,20 @@ The native pilot primarily adds or changes:
   HTTP/MCP, Project Brain, lifecycle/reconciliation, and policy coverage;
 - operations/docs: README, API, Hermes, security, verification, scope, plan,
   proposed ADR-P003, provenance, and this continuation handoff.
+- Milestone 4: store adapters plus migration 004, `writer-workspace.ts`,
+  `oci-sandbox-provider.ts`, `writer-lease-supervisor.ts`,
+  `governed-artifact-export.ts`, `writer-sandbox-boundary.ts`, fake OCI engine,
+  boundary/provider/storage tests, implementation plan, and proposed ADR-P004.
 
 Use `git diff --stat` and the draft PR for the exact path list.
 
 ## 4. Tests and verification evidence
 
 - TypeScript strict check: passed.
-- General suite: 77 tests; 76 passed, 0 failed, 1 optional PostgreSQL case skipped
-  in the general phase.
+- General suite: 115 total, 113 passed, 0 failed, and 2 honest optional skips
+  (PostgreSQL-in-general and live OCI). It includes the Milestone 4 storage/
+  worktree/provider/heartbeat/export/coordinator contracts.
+- Disposable PostgreSQL 16.14 suite: 19/19 passed with no skips.
 - Tests cover bounded LF framing, raw-first persistence, exact versions,
   environment filtering, malformed/oversized output, start/exit/cancel/kill races,
   non-resumable restart reconciliation, marker-only direct objectives, launch
@@ -59,9 +72,10 @@ Use `git diff --stat` and the draft PR for the exact path list.
 - Hermes MCP test: passed with 11 restricted tools; isolated-profile built-in
   tools were zero and memory/user-profile contribution was zero bytes.
 
-The final repository-wide `npm run verify` passed, including 16/16 disposable
-PostgreSQL 16.14 tests, Atomic package verification, authenticated HTTP smoke, and
-authenticated MCP smoke. Exact phase evidence is in `docs/VERIFICATION.md`.
+The final repository-wide `npm run verify` passed and includes the expanded
+disposable PostgreSQL lease/artifact contract, Atomic package verification,
+authenticated HTTP smoke, and authenticated MCP smoke. Exact phase evidence is
+in `docs/VERIFICATION.md`.
 
 ## 5. Live integrations actually exercised
 
@@ -84,14 +98,15 @@ authenticated MCP smoke. Exact phase evidence is in `docs/VERIFICATION.md`.
   Codex endpoint; it was not counted as a pass.
 
 Not exercised: live Claude model (no allow-listed `ANTHROPIC_API_KEY`), Atomic
-model workflow, Linear, OpenViking, GitHub PR API, writer container/VM, mobile
+model workflow, Linear, OpenViking, GitHub PR API, live writer container/VM, mobile
 gateway, external outbox, merge, or deployment.
 
 ## 6. Known limitations and risks
 
 - Atomic success means offline package discovery only.
 - Direct model prompts accept fixed markers only and end at `analysis_only`.
-- A workspace/worktree plus lease is not a security sandbox; native writer mode is
+- A worktree/lease alone is not a sandbox. The external provider contract is
+  implemented but live isolation is unverified and native writer mode remains
   intentionally unreachable.
 - Bearer auth is local pilot protection, not production identity/authorization or
   mobile channel attestation. Static assets and health remain public.
@@ -102,8 +117,10 @@ gateway, external outbox, merge, or deployment.
 - Project Brain filesystem promotion and database resolution are not one atomic
   transaction. Promotion previews expire after 15 minutes (30-second future skew
   tolerance), and the pilot MCP cannot promote.
-- No external outbox publisher/retention job, writer heartbeat/fencing,
-  container policy, artifact secret scan, or connector credential broker exists.
+- No external outbox publisher/retention job, durable sandbox-instance table,
+  connector credential broker, or model egress gateway exists. The implemented
+  scanner is a deterministic high-confidence baseline, not comprehensive secret
+  detection.
 - Search results are authority-labeled but may include advisory notes; only the
   accepted-canonical subset is authoritative and eligible for runtime context.
 - New POSIX server state uses an owner-only `077` umask. Files created by an older
@@ -125,6 +142,11 @@ gateway, external outbox, merge, or deployment.
 - To exercise Claude, inject a dedicated `ANTHROPIC_API_KEY` into the server shell
   and set `CLAUDE_RUNTIME_ENV_ALLOWLIST=ANTHROPIC_API_KEY`.
 - Full verification needs PostgreSQL 16 `initdb` and `pg_ctl` on `PATH`.
+- Live Milestone 4 evidence needs a manually installed/started Docker-compatible
+  engine and a reviewed, already-present image by immutable digest. Configure
+  only the exact CLI path, digest, optional local `unix:///` socket, and (only
+  when not derivable) a reviewed non-root numeric UID:GID that owns the bind
+  roots, then run `npm run smoke:sandbox`; do not supply production credentials.
 - Any remote/mobile pilot still needs a separately designed authenticated gateway;
   do not bind this prototype to a LAN/public interface as a shortcut.
 
@@ -134,8 +156,11 @@ gateway, external outbox, merge, or deployment.
 - Reconcile Atomic addendum A-01 through A-07 via ADR-P002.
 - Accept/amend/reject ADR-P003's read-only native connectivity boundary and fixed
   marker-only direct prompts.
-- Choose the external container/VM provider and network/secret policy before
-  Milestone 4 writer work.
+- Accept/amend/reject ADR-P004's private per-run Git root, fenced lease, default
+  offline Docker-compatible provider, quarantine, and baseline scan boundary.
+- Choose/install the live provider and reviewed fixture image. Decide whether a
+  remote micro-VM is mandatory before confidential work and how future model
+  egress/short-lived credential brokering will work.
 - Choose the future Hermes mobile ingress identity/authorization boundary.
 
 Public repository visibility was already Wesley's explicit decision. It does not
@@ -174,8 +199,14 @@ Repository verification:
 npm run verify
 ```
 
+Milestone 4 provider (honest skip until manually configured):
+
+```bash
+npm run smoke:sandbox
+```
+
 ## 10. Next-session prompt
 
-Copy the fenced prompt in `docs/NEXT_SESSION_PROMPT.md`. The next implementation
-boundary is the real workspace/container/VM provider; do not turn connectivity
-adapters into writers before that boundary is green.
+Copy the fenced prompt in `docs/NEXT_SESSION_PROMPT.md`. The next boundary is live
+Milestone 4 provider verification and restart/orphan hardening; do not turn
+connectivity adapters into writers before that boundary is green.

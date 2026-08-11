@@ -520,7 +520,47 @@ export class ControlPlaneService {
     let strandedApprovalsNeedingAttention = 0;
     let strandedApprovalsAlreadySettled = 0;
     let nativeOrphansFailed = 0;
+    let strictWriterLeasesQuarantined = 0;
+    let leaseReconciliationConflicts = 0;
+    const quarantinedLeasesAwaitingOperator = candidates.quarantinedLeases.length;
     const released = new Set<string>();
+
+    const settleTerminalLease = async (
+      workspaceId: string,
+      runId: string,
+      reason: string,
+    ): Promise<"released" | "quarantined" | "absent" | "conflict"> => {
+      const lease = await this.store.getWorkspaceLease(workspaceId);
+      if (!lease) return "absent";
+      if (lease.runId !== runId) return "conflict";
+      if (lease.state === "quarantined") return "quarantined";
+      const workspace = await this.store.getWorkspace(workspaceId);
+      const compatibilityLease = lease.ownerId === runId && workspace?.provider !== "isolated-git-worktree";
+      if (compatibilityLease) {
+        return await this.workspaces.releaseFence(lease) ? "released" : "conflict";
+      }
+      const quarantined = await this.store.quarantineWorkspaceLease({
+        workspaceId: lease.workspaceId,
+        runId: lease.runId,
+        ownerId: lease.ownerId,
+        fencingToken: lease.fencingToken,
+        quarantinedAt: nowIso(),
+        reason,
+      });
+      return quarantined ? "quarantined" : "conflict";
+    };
+
+    const recordSettlement = (workspaceId: string, result: "released" | "quarantined" | "absent" | "conflict") => {
+      if (result === "released") {
+        released.add(workspaceId);
+        terminalLeasesReleased += 1;
+      } else if (result === "quarantined") {
+        released.add(workspaceId);
+        strictWriterLeasesQuarantined += 1;
+      } else if (result === "conflict") {
+        leaseReconciliationConflicts += 1;
+      }
+    };
 
     for (const run of candidates.queuedRuns) {
       const completedAt = nowIso();
@@ -532,8 +572,11 @@ export class ControlPlaneService {
         metadata: { ...run.metadata, reconciliationReason: "runtime_start_not_confirmed" },
       });
       if (run.workspaceId) {
-        await this.workspaces.release(run.workspaceId, run.id);
-        released.add(run.workspaceId);
+        recordSettlement(run.workspaceId, await settleTerminalLease(
+          run.workspaceId,
+          run.id,
+          "queued_writer_requires_provider_reconciliation",
+        ));
       }
       await this.store.appendEvent({
         id: id("event"),
@@ -561,8 +604,11 @@ export class ControlPlaneService {
         metadata: { ...run.metadata, reconciliationReason: "native_process_lost_cross_process_resume_false" },
       });
       if (run.workspaceId) {
-        await this.workspaces.release(run.workspaceId, run.id);
-        released.add(run.workspaceId);
+        recordSettlement(run.workspaceId, await settleTerminalLease(
+          run.workspaceId,
+          run.id,
+          "native_writer_requires_provider_reconciliation",
+        ));
       }
       await this.store.appendEvent({
         id: id("event"),
@@ -577,13 +623,17 @@ export class ControlPlaneService {
 
     for (const lease of candidates.terminalLeases) {
       if (released.has(lease.workspaceId)) continue;
-      await this.workspaces.release(lease.workspaceId, lease.runId);
-      released.add(lease.workspaceId);
-      terminalLeasesReleased += 1;
+      recordSettlement(lease.workspaceId, await settleTerminalLease(
+        lease.workspaceId,
+        lease.runId,
+        "terminal_writer_requires_provider_reconciliation",
+      ));
     }
 
-    for (const lease of candidates.expiredLeases) {
-      if (released.has(lease.workspaceId)) continue;
+    for (const candidateLease of candidates.expiredLeases) {
+      if (released.has(candidateLease.workspaceId)) continue;
+      const lease = await this.store.getWorkspaceLease(candidateLease.workspaceId);
+      if (!lease || lease.state !== "active" || Date.parse(lease.expiresAt) > Date.now()) continue;
       const run = await this.store.getRun(lease.runId);
       const completedAt = nowIso();
       if (run && !["completed", "failed", "cancelled"].includes(run.status)) {
@@ -604,7 +654,17 @@ export class ControlPlaneService {
         });
         expiredLeasesQuarantined += 1;
       }
-      await this.workspaces.release(lease.workspaceId, lease.runId);
+      const quarantined = await this.store.quarantineWorkspaceLease({
+        workspaceId: lease.workspaceId,
+        runId: lease.runId,
+        ownerId: lease.ownerId,
+        fencingToken: lease.fencingToken,
+        quarantinedAt: completedAt,
+        reason: "writer_lease_expired_during_startup_reconciliation",
+      });
+      if (!quarantined) {
+        throw new Error(`Expired writer lease ${lease.workspaceId} changed before quarantine`);
+      }
       released.add(lease.workspaceId);
     }
 
@@ -659,7 +719,10 @@ export class ControlPlaneService {
       strandedApprovalsNeedingAttention,
       strandedApprovalsAlreadySettled,
       nativeOrphansFailed,
+      quarantinedLeasesAwaitingOperator,
       pendingOutbox: candidates.pendingOutbox.length,
+      strictWriterLeasesQuarantined,
+      leaseReconciliationConflicts,
     };
   }
 
@@ -787,7 +850,16 @@ export class ControlPlaneService {
       budget: { currency: "USD", maxCostUsd: run.budgetUsd, enforcement: "runtime-specific; wall-clock bound always applies to native connectivity runs" },
       finalAction: "analysis_only",
       workspace: { owner: "control-plane", id: workspace.id, path: workspace.path, provider: workspace.provider },
-      writerLease: { holderRunId: lease.runId, workspaceId: lease.workspaceId, mode: lease.mode, expiresAt: lease.expiresAt },
+      writerLease: {
+        holderRunId: lease.runId,
+        workspaceId: lease.workspaceId,
+        ownerId: lease.ownerId,
+        fencingToken: lease.fencingToken,
+        mode: lease.mode,
+        state: lease.state,
+        acquiredAt: lease.acquiredAt,
+        expiresAt: lease.expiresAt,
+      },
       approvalBoundary: "No PR, merge, deployment, destructive database change, secret expansion, or canonical-memory promotion.",
       authorities: {
         roadmap: "Linear (not live in this prototype)",

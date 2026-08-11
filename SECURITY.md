@@ -145,18 +145,50 @@ They do not block network access, credential access, process escape, symlink
 tricks, or writes outside the worktree. The native pilot therefore has no writer
 mode and no implementation/PR action.
 
+Milestone 4 adds a separate, disabled Docker-compatible boundary for a disposable
+fixture. It never mounts the developer checkout: an exact clean base commit is
+fetched shallowly into a private per-run bare store with one relative worktree.
+The container receives that run root as its only writable host bind and receives
+separately staged context read-only. It is created with a digest-pinned image,
+`--pull never`, network and IPC `none`, read-only root, a numeric non-root user,
+built-in seccomp, all capabilities dropped, no-new-privileges, bounded resources,
+and no inherited home/cloud/SSH/provider environment. A local daemon socket can
+be selected explicitly only as a `unix:///` engine endpoint; it is used by the
+host CLI and is never mounted into the writer.
+
+Container labels and inspection bind the run, workspace, lease-owner digest,
+fencing token, image, mounts, workdir, network, and privilege policy. Lease loss
+stops the old container when exact ownership remains proven; ambiguous ownership
+is quarantined without release/reuse or a false stop claim. A stale fence cannot
+renew or release a rotated successor. After stop and an exact-fence cleanup
+freeze, only manifest-named, contained, regular, single-link files within
+configured count/byte bounds may be exported. The freeze uses the durable reason
+`writer_filesystem_cleanup_claimed`; it is transient on success and remains
+operator evidence if cleanup cannot finish. A deterministic baseline
+scan blocks high-confidence private-key/provider/token patterns before atomic
+artifact registration or display; findings retain rule IDs/fingerprints, never
+matched values. This scanner is not proof that arbitrary data contains no secret.
+
+Fake-engine tests prove orchestration, not isolation. This host has no supported
+engine, so the live test skips and the boundary is not registered as a runtime,
+HTTP route, or MCP tool. Atomic, Codex, and Claude Code remain read-only. A
+container also remains weaker than a reviewed remote micro-VM for confidential or
+hostile multi-tenant work.
+
 Before any real writing runtime:
 
-1. provide an external container/devcontainer, VM, or equivalent remote sandbox;
-2. mount only the selected worktree and context, with unrelated material absent or
-   read-only;
-3. add lease heartbeat, fencing, expiry kill, orphan quarantine, and terminal
-   cleanup;
-4. enforce filesystem and egress policy;
-5. inject short-lived least-privilege credentials after start;
-6. export and secret-scan artifacts/memory proposals;
-7. bind human approval to exact action/run/project/evidence/expiry;
-8. keep PR creation, merge, deploy, destructive database change, secret expansion,
+1. pass the opt-in live provider test on the actual deployment host and reviewed
+   immutable fixture image;
+2. add restart reconciliation against immutable engine IDs/labels and a durable
+   sandbox-instance state machine;
+3. enforce reviewed model egress policy rather than changing the default
+   no-network posture;
+4. inject short-lived least-privilege credentials after start through a separate
+   broker, never ambient host state;
+5. bind human approval to exact action/run/project/evidence/expiry;
+6. add defense-in-depth secret scanning appropriate to the repository and retain
+   only governed artifacts/memory proposals;
+7. keep PR creation, merge, deploy, destructive database change, secret expansion,
    and canonical promotion behind separate policy decisions.
 
 ## Storage and retained command data
@@ -169,6 +201,12 @@ Before any real writing runtime:
   retention, monitoring, and restore drills.
 - Migration mismatch/unavailability fails startup; there is no fallback to
   SQLite. Demo seed/reset are hard-disabled for PostgreSQL.
+- Migration 004 adds explicit lease owners, monotonic fencing epochs, and durable
+  quarantine. Existing v3 leases backfill as owner=run/token=1 and must be treated
+  as legacy until quarantined/cleaned/rotated. Older binaries reject the v4 ledger;
+  rollback requires a pre-v4 backup rather than a destructive down migration.
+- A fence protects database state, not raw filesystem writes. Terminating and
+  inspecting the exact labeled container remains mandatory before release/reuse.
 - Idempotency/outbox/events may retain objectives, native output, approval effects,
   and identifiers. Apply access controls and deletion/retention policy before
   persistent use.

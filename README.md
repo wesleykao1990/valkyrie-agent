@@ -22,12 +22,15 @@ There are two deliberately different modes.
 | Hermes | Local MCP bridge | Isolated Hermes profile, authenticated stdio MCP, and a restricted tool list |
 | Project Brain | Read accepted local Markdown; propose/review/reject/promote separately | Search, proposal, exact promotion preview, and rejection; pilot MCP cannot promote |
 | Events/evidence | Real run records around simulated stages | Raw native JSONL plus normalized events, native IDs, checksummed context/run-contract/result artifacts |
+| Writer isolation | Disabled; simulated directories/worktrees remain concurrency aids only | A real Docker-compatible boundary, fenced leases, strict private Git worktrees, and secret-scanned artifact export are contract-tested but **not connected to model runtimes**; live provider test still requires a host engine |
 
 The native pilot is a connectivity slice, not a coding pipeline. It cannot edit a
 repository, run Atomic's model workflow, create a PR, merge, deploy, call Linear,
-or use OpenViking. No container or VM writer sandbox exists yet, so all native
-final actions are fixed to `analysis_only`. A successful pilot run is connectivity
-evidence, not implementation acceptance.
+or use OpenViking. The Milestone 4 writer boundary now exists as an internal,
+disabled provider contract, but this host has no qualifying container/VM engine
+and no model runtime is connected to it. All native final actions therefore remain
+fixed to `analysis_only`. A successful pilot run is connectivity evidence, not
+implementation acceptance.
 
 ## Requirements
 
@@ -38,6 +41,9 @@ evidence, not implementation acceptance.
   `0.147.0-alpha.6.5` with working `codex login status`, and optionally Claude
   Code `2.1.81` plus an Anthropic API key.
 - Hermes CLI for the Hermes walkthrough (this pilot was exercised with `0.19.0`).
+- Optional Milestone 4 live test: a Docker-compatible CLI/daemon reachable through
+  its default local socket or one explicitly configured local `unix:///` socket,
+  plus an already-present, reviewed image referenced by immutable SHA-256 digest.
 
 The pilot fails closed when an installed runtime version differs from its pinned
 contract. Do not change an expected-version setting merely to bypass that check;
@@ -185,6 +191,86 @@ This tests Hermes on the Mac hosting the stdio MCP child. It does not yet expose
 phone-facing gateway. A phone cannot connect to `127.0.0.1` on the Mac: on a phone,
 loopback means the phone itself. Remote/mobile exposure requires a separately
 authenticated channel and is not enabled in PR #1.
+
+## Test the Milestone 4 writer boundary
+
+Milestone 4 adds a real but disabled Docker-compatible provider and an internal
+fixture coordinator. It does **not** make Atomic, Codex, or Claude Code a writer.
+The deterministic suite proves exact orchestration and failure handling; only an
+opt-in test against a real engine can provide isolation evidence.
+
+Run the safe default first:
+
+```bash
+npm run smoke:sandbox
+```
+
+On this Mac it reports an honest skip because no Docker, Podman-compatible CLI,
+Colima/Lima, OrbStack, Finch, or equivalent engine is installed. A skip is not a
+Milestone 4 live pass.
+
+To run it after manually installing and starting a supported Docker-compatible
+engine:
+
+1. Choose and review a tiny POSIX fixture image that supplies `sleep`, `/bin/sh`,
+   `id`, `grep`, and `touch`.
+2. Pull it deliberately, then obtain an immutable local repo digest. For Docker,
+   `docker image inspect --format '{{index .RepoDigests 0}}' IMAGE` prints the
+   digest reference when available.
+3. Set the exact absolute CLI path and digest, then run the smoke:
+
+```bash
+export VALKYRIE_OCI_LIVE_ENGINE=/absolute/path/to/docker
+export VALKYRIE_OCI_LIVE_IMAGE='registry.example/image@sha256:<64-hex-digest>'
+
+# Optional only when the host UID/GID cannot be derived. This must be the
+# reviewed non-root numeric owner of the bind-mounted fixture directories.
+export VALKYRIE_OCI_LIVE_USER='501:20'
+
+# Optional for Docker Desktop/rootless engines when the default socket is absent.
+# Only a local absolute unix:/// endpoint is accepted; TCP engines are rejected.
+export VALKYRIE_OCI_LIVE_SOCKET='unix:///absolute/path/to/docker.sock'
+
+npm run smoke:sandbox
+```
+
+The provider uses `--pull never`; it will not download an image for you. The live
+smoke verifies the effective ownership labels/fence, digest-pinned image, no
+network, read-only root and context, writable candidate directory, non-root user,
+built-in seccomp, dropped capabilities, no-new-privileges, resource bounds,
+absence of a host secret canary, artifact export, and ownership-aware cleanup.
+By default the smoke uses the current non-root host UID:GID so its strict private
+bind root is writable; `VALKYRIE_OCI_LIVE_USER` is an explicit reviewed override.
+It mounts no Docker socket, home directory, cloud configuration, SSH agent, or
+provider credential into the container.
+
+The full writer lifecycle is separately deterministic-tested as:
+
+```text
+clean source + exact base commit
+  → private shallow bare Git store + one relative worktree
+  → owner/fencing-token lease + heartbeat
+  → bounded container execution and owned stop
+  → exact-fence cleanup freeze
+  → bounded baseline secret scan
+  → atomic checksummed artifact registration
+  → owned container/worktree cleanup
+  → exact-fence release
+```
+
+The cleanup freeze is recorded as the transient quarantine reason
+`writer_filesystem_cleanup_claimed` and is released only after export persistence,
+container cleanup, and filesystem removal are proven. If the fence, effective
+policy, secret scan, persistence, or cleanup cannot be proven, quarantine remains
+durable and the workspace is not automatically reused. Ownership ambiguity is
+quarantined without claiming that the container stopped. The built-in scanner is
+a high-confidence deterministic baseline, not proof that arbitrary content is
+secret-free. Do not use production credentials or confidential repositories.
+
+`npm test` and `npm run verify` strip inherited live-sandbox variables, so normal
+verification cannot accidentally contact a real engine. See
+[the Milestone 4 plan](docs/IMPLEMENTATION_PLAN_M4.md) and
+[proposed ADR-P004](docs/adr/ADR-P004-external-writer-boundary.md).
 
 ## Loopback and the “invisible” database
 
