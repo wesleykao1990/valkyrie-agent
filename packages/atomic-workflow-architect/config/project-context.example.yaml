@@ -1,0 +1,28 @@
+project_id: ovalo
+linear_team: OVA
+canonical_knowledge: Projects/Ovalo
+memory_namespace: projects/ovalo
+repositories:
+  - ovalo/app
+atomic:
+  package: wesley-atomic-workflow-architect@0.2.1
+  contract_test_candidate: 0.9.12
+  live_version_validated: false
+  default_workspace_owner: control-plane
+  default_feature_workflow: auto
+  require_durable_backend_for_background_runs: true
+  generated_workflow_policy: inspect-test-approve
+bootstrap:
+  keep_agents_md_small: true
+  project_brain_required: true
+  linear_is_work_state_authority: true
+default_policy:
+  create_pr: human_approval
+  merge: human_approval
+  deploy: human_approval
+  canonical_memory_promotion: human_approval
+  max_cost_usd: 8
+  max_minutes: 90
+  max_repairs: 2
+  max_child_depth: 2
+  max_concurrency: 4

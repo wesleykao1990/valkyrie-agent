@@ -1,22 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { SqliteStore } from "../apps/control-plane/src/store.ts";
+import { SqliteStore } from "../apps/control-plane/src/sqlite-store.ts";
 import { LocalProjectBrain } from "../apps/control-plane/src/project-brain.ts";
 import { WorkspaceManager } from "../apps/control-plane/src/workspace.ts";
 import { createMockAdapters } from "../apps/control-plane/src/mock-runtimes.ts";
 import { ControlPlaneService } from "../apps/control-plane/src/service.ts";
 import { JsonlLfDecoder, selectRuntimeEnvironment } from "../apps/control-plane/src/atomic-rpc-client.ts";
 
-function setup() {
+async function setup() {
   const root = mkdtempSync(join(tmpdir(), "control-plane-compare-"));
   const brainRoot = join(root, "brain");
   mkdirSync(join(brainRoot, "Projects", "Ovalo"), { recursive: true });
   writeFileSync(join(brainRoot, "Projects", "Ovalo", "Project.md"), "# Ovalo\n", "utf8");
   const store = new SqliteStore(join(root, "test.sqlite"));
-  store.seedProjects([{
+  await store.seedProjects([{
     id: "ovalo", name: "Ovalo", objective: "Language learning", currentMilestone: "Speaking MVP", health: "on_track",
     linearTeam: "OVA", repository: "ovalo/app", vaultPath: "Projects/Ovalo", memoryNamespace: "projects/ovalo"
   }]);
@@ -27,7 +27,7 @@ function setup() {
 }
 
 test("comparison launches isolated candidates with one shared comparison ID", async () => {
-  const { root, store, service } = setup();
+  const { root, store, service } = await setup();
   try {
     const result = await service.compareRuns({
       projectId: "ovalo",
@@ -37,24 +37,48 @@ test("comparison launches isolated candidates with one shared comparison ID", as
     });
     assert.equal(result.runs.length, 3);
     assert.equal(new Set(result.runs.map((run) => run.workspaceId)).size, 3);
-    assert.equal(store.listLeases().length, 3);
-    const groups = result.runs.map((run) => service.getRun(run.id).run.metadata.comparisonId);
+    assert.equal((await store.listLeases()).length, 3);
+    const groups = await Promise.all(result.runs.map(async (run) => (await service.getRun(run.id)).run.metadata.comparisonId));
     assert.deepEqual(new Set(groups), new Set([result.comparisonId]));
   } finally {
-    store.close();
+    await store.close();
     rmSync(root, { recursive: true, force: true });
   }
 });
 
 test("steering is retained as a normalized event", async () => {
-  const { root, store, service } = setup();
+  const { root, store, service } = await setup();
   try {
     const started = await service.startRun({ projectId: "ovalo", objective: "Implement a small verified change", runtime: "codex" });
     const runId = started.run.run.id;
     await service.steerRun(runId, "Preserve the public API");
-    assert.ok(store.listEvents(runId).some((event) => event.type === "agent.message" && event.message.includes("Preserve the public API")));
+    assert.ok((await store.listEvents(runId)).some((event) => event.type === "agent.message" && event.message.includes("Preserve the public API") && event.payload.simulated === true));
   } finally {
-    store.close();
+    await store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("run creation replays the same idempotency key without another writer lease", async () => {
+  const { root, store, service } = await setup();
+  try {
+    const input = {
+      projectId: "ovalo",
+      objective: "Implement an idempotent bounded change",
+      runtime: "codex" as const,
+      idempotencyKey: "run-create-1",
+    };
+    const [first, replay] = await Promise.all([service.startRun(input), service.startRun(input)]);
+    assert.equal(replay.run.run.id, first.run.run.id);
+    assert.equal((await store.listRuns()).length, 1);
+    assert.equal((await store.listLeases()).length, 1);
+    assert.equal(readdirSync(join(root, "workspaces")).length, 1);
+    await assert.rejects(
+      () => service.startRun({ ...input, objective: "A conflicting request" }),
+      /Idempotency key/,
+    );
+  } finally {
+    await store.close();
     rmSync(root, { recursive: true, force: true });
   }
 });

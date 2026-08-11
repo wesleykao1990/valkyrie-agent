@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Approval, Artifact, Run, RuntimeCapabilities, RuntimeName } from "./types.ts";
+import type { Approval, Artifact, Run, RunEvent, RuntimeCapabilities, RuntimeName } from "./types.ts";
 import type { RuntimeAdapter, RuntimeContext } from "./runtime.ts";
-import type { SqliteStore } from "./store.ts";
+import type { ControlPlaneStore } from "./store.ts";
 import type { WorkspaceManager } from "./workspace.ts";
 import { id, nowIso } from "./ids.ts";
 
@@ -22,7 +22,7 @@ export class MockRuntimeAdapter implements RuntimeAdapter {
   public readonly name: RuntimeName;
   private stages: Stage[];
   private approvalAfter: string | null;
-  private store: SqliteStore;
+  private store: ControlPlaneStore;
   private workspaces: WorkspaceManager;
   private artifactRoot: string;
   private stageDelayMs: number;
@@ -31,7 +31,7 @@ export class MockRuntimeAdapter implements RuntimeAdapter {
     name: RuntimeName,
     stages: Stage[],
     approvalAfter: string | null,
-    store: SqliteStore,
+    store: ControlPlaneStore,
     workspaces: WorkspaceManager,
     artifactRoot: string,
     stageDelayMs: number
@@ -53,17 +53,17 @@ export class MockRuntimeAdapter implements RuntimeAdapter {
   async start(context: RuntimeContext) {
     const nativeRunId = `${this.name}-mock-${context.run.id}`;
     const first = this.stages[0];
-    this.store.updateRun(context.run.id, {
+    await this.store.updateRun(context.run.id, {
       status: "running",
       stage: first.name,
       stageIndex: 0,
       nativeRunId,
       startedAt: nowIso(),
       nextActionAt: new Date(Date.now() + this.stageDelayMs).toISOString(),
-      metadata: { ...context.run.metadata, objective: context.objective, workspacePath: context.workspacePath, adapter: "mock" }
+      metadata: { ...context.run.metadata, objective: context.objective, workspacePath: context.workspacePath, adapter: "mock", simulated: true }
     });
-    this.event(context.run.id, "run.started", `${this.name} accepted the run`, { nativeRunId });
-    this.event(context.run.id, "stage.started", first.label, { stage: first.name });
+    await this.event(context.run.id, "run.started", `${this.name} accepted the run`, { nativeRunId });
+    await this.event(context.run.id, "stage.started", first.label, { stage: first.name });
     return { runtime: this.name, nativeRunId };
   }
 
@@ -74,8 +74,8 @@ export class MockRuntimeAdapter implements RuntimeAdapter {
 
     await this.createArtifactIfNeeded(run, current);
     const nextCost = Math.min(run.budgetUsd, Number((run.costUsd + current.cost).toFixed(2)));
-    this.store.updateRun(run.id, { costUsd: nextCost });
-    this.event(run.id, "stage.completed", `${current.label} completed`, { stage: current.name, costUsd: nextCost });
+    await this.store.updateRun(run.id, { costUsd: nextCost });
+    await this.event(run.id, "stage.completed", `${current.label} completed`, { stage: current.name, costUsd: nextCost });
 
     if (this.approvalAfter === current.name) {
       const hasFreshVerifier = this.stages.some((stage) => stage.artifact === "verifier");
@@ -83,42 +83,48 @@ export class MockRuntimeAdapter implements RuntimeAdapter {
         id: id("approval"),
         runId: run.id,
         action: "prepare_pr",
-        exactEffect: "Allow the runtime to prepare a reviewable pull-request artifact. No merge, deployment, or candidate selection is permitted.",
+        exactEffect: "[SIMULATED] Allow the mock runtime to prepare a reviewable pull-request artifact. No real PR, merge, deployment, or candidate selection is permitted.",
         state: "pending",
         evidence: hasFreshVerifier
-          ? ["Typecheck passed", "Unit tests passed", "Fresh verifier found no blocking defect"]
-          : ["Focused checks passed", "Candidate remains subject to independent comparison and human review"],
+          ? ["[SIMULATED] Typecheck passed", "[SIMULATED] Unit tests passed", "[SIMULATED] Fresh verifier found no blocking defect"]
+          : ["[SIMULATED] Focused checks passed", "Candidate remains subject to independent comparison and human review"],
         requestedAt: nowIso()
       };
-      this.store.createApproval(approval);
-      this.store.updateRun(run.id, { status: "awaiting_approval", stage: "approval", nextActionAt: null });
-      this.event(run.id, "approval.requested", "Human approval is required before PR preparation", { approvalId: approval.id });
+      await this.store.requestApprovalTransaction({
+        approval,
+        event: this.eventRecord(
+          run.id,
+          "approval.requested",
+          "Human approval is required before simulated PR preparation",
+          { approvalId: approval.id },
+        ),
+      });
       return;
     }
 
     const nextIndex = run.stageIndex + 1;
     const next = this.stages[nextIndex];
     if (!next) {
-      this.complete(run);
+      await this.complete(run);
       return;
     }
 
-    this.store.updateRun(run.id, {
+    await this.store.updateRun(run.id, {
       stageIndex: nextIndex,
       stage: next.name,
       nextActionAt: new Date(Date.now() + this.stageDelayMs).toISOString()
     });
-    this.event(run.id, "stage.started", next.label, { stage: next.name });
+    await this.event(run.id, "stage.started", next.label, { stage: next.name });
   }
 
   async steer(run: Run, message: string): Promise<void> {
-    this.event(run.id, "agent.message", `Steering instruction queued: ${message}`, { direction: "user_to_agent" });
+    await this.event(run.id, "agent.message", `Steering instruction recorded by the mock runtime: ${message}`, { direction: "user_to_agent" });
   }
 
   async cancel(run: Run): Promise<void> {
-    this.store.updateRun(run.id, { status: "cancelled", completedAt: nowIso(), nextActionAt: null });
-    if (run.workspaceId) this.workspaces.release(run.workspaceId);
-    this.event(run.id, "run.cancelled", "Run cancelled by Wesley", {});
+    await this.store.updateRun(run.id, { status: "cancelled", completedAt: nowIso(), nextActionAt: null });
+    if (run.workspaceId) await this.workspaces.release(run.workspaceId, run.id);
+    await this.event(run.id, "run.cancelled", "Run cancelled by Wesley", {});
   }
 
   async resolveApproval(run: Run, approval: Approval, decision: string): Promise<void> {
@@ -127,54 +133,54 @@ export class MockRuntimeAdapter implements RuntimeAdapter {
       const nextIndex = currentIndex + 1;
       const next = this.stages[nextIndex];
       if (!next) {
-        this.complete(run);
+        await this.complete(run);
         return;
       }
-      this.store.updateRun(run.id, {
+      await this.store.updateRun(run.id, {
         status: "running", stageIndex: nextIndex, stage: next.name,
         nextActionAt: new Date(Date.now() + this.stageDelayMs).toISOString()
       });
-      this.event(run.id, "approval.resolved", "Approval granted; execution resumed", { approvalId: approval.id, decision });
-      this.event(run.id, "stage.started", next.label, { stage: next.name });
+      await this.event(run.id, "approval.resolved", "Approval granted; simulated execution resumed", { approvalId: approval.id, decision });
+      await this.event(run.id, "stage.started", next.label, { stage: next.name });
       return;
     }
 
     if (decision === "request_changes") {
       const repairIndex = Math.max(0, this.stages.findIndex((s) => s.name === "implement"));
       const repair = this.stages[repairIndex];
-      this.store.updateRun(run.id, {
+      await this.store.updateRun(run.id, {
         status: "running", stageIndex: repairIndex, stage: repair.name,
         nextActionAt: new Date(Date.now() + this.stageDelayMs).toISOString(),
         metadata: { ...run.metadata, repairRequested: true }
       });
-      this.event(run.id, "approval.resolved", "Changes requested; returning to implementation", { approvalId: approval.id, decision });
-      this.event(run.id, "stage.started", `Repair: ${repair.label}`, { stage: repair.name });
+      await this.event(run.id, "approval.resolved", "Changes requested; returning to simulated implementation", { approvalId: approval.id, decision });
+      await this.event(run.id, "stage.started", `Repair: ${repair.label}`, { stage: repair.name });
       return;
     }
 
-    this.store.updateRun(run.id, { status: "failed", completedAt: nowIso(), nextActionAt: null });
-    if (run.workspaceId) this.workspaces.release(run.workspaceId);
-    this.event(run.id, "approval.resolved", "Approval denied", { approvalId: approval.id, decision });
-    this.event(run.id, "run.failed", "Run stopped because approval was denied", {});
+    await this.store.updateRun(run.id, { status: "failed", completedAt: nowIso(), nextActionAt: null });
+    if (run.workspaceId) await this.workspaces.release(run.workspaceId, run.id);
+    await this.event(run.id, "approval.resolved", "Approval denied", { approvalId: approval.id, decision });
+    await this.event(run.id, "run.failed", "Run stopped because approval was denied", {});
   }
 
-  private complete(run: Run): void {
-    const refreshed = this.store.getRun(run.id) ?? run;
+  private async complete(run: Run): Promise<void> {
+    const refreshed = (await this.store.getRun(run.id)) ?? run;
     const completedAt = nowIso();
-    this.store.updateRun(run.id, { status: "completed", stage: "completed", completedAt, nextActionAt: null });
-    this.event(run.id, "run.completed", `${this.name} completed the run with stored evidence`, { costUsd: refreshed.costUsd });
-    if (run.workspaceId) this.workspaces.release(run.workspaceId);
+    await this.store.updateRun(run.id, { status: "completed", stage: "completed", completedAt, nextActionAt: null });
+    await this.event(run.id, "run.completed", `${this.name} completed the simulated run with stored mock evidence`, { costUsd: refreshed.costUsd });
+    if (run.workspaceId) await this.workspaces.release(run.workspaceId, run.id);
 
-    const existing = this.store.listMemoryProposals().some((p) => p.runId === run.id);
+    const existing = (await this.store.listMemoryProposals()).some((p) => p.runId === run.id);
     if (!existing) {
-      this.store.createMemoryProposal({
+      await this.store.createMemoryProposal({
         id: id("memory"), projectId: run.projectId, runId: run.id,
-        claim: `Record the verified implementation and review lesson from run ${run.id}.`,
+        claim: `Record the simulated lifecycle and review lesson from mock run ${run.id}.`,
         evidence: [
-          `Run ${run.id} completed`,
+          `[SIMULATED] Run ${run.id} completed`,
           this.stages.some((stage) => stage.artifact === "verifier")
-            ? "Deterministic checks and independent verification were recorded"
-            : "Deterministic checks were recorded; candidate selection remains a separate human decision"
+            ? "[SIMULATED] Deterministic checks and independent verification were recorded"
+            : "[SIMULATED] Deterministic checks were recorded; candidate selection remains a separate human decision"
         ],
         state: "proposed", createdAt: completedAt
       });
@@ -192,29 +198,40 @@ export class MockRuntimeAdapter implements RuntimeAdapter {
     if (stage.artifact === "checks") {
       name = "checks.json";
       mediaType = "application/json";
-      body = JSON.stringify({ typecheck: "passed", unitTests: "passed", browserCheck: "passed", generatedAt: nowIso() }, null, 2);
-      this.event(run.id, "check.passed", "Deterministic checks passed", { checks: ["typecheck", "unit_tests", "browser_check"] });
+      body = JSON.stringify({ simulated: true, typecheck: "simulated_pass", unitTests: "simulated_pass", browserCheck: "simulated_pass", generatedAt: nowIso() }, null, 2);
+      await this.event(run.id, "check.passed", "Mock deterministic checks reported simulated passes", { checks: ["typecheck", "unit_tests", "browser_check"] });
     } else if (stage.artifact === "verifier") {
       name = "verifier-report.md";
-      body = "# Fresh verifier report\n\nNo blocking correctness defect was found. One maintainability warning remains for human review.\n";
-      this.event(run.id, "check.passed", "Fresh verifier produced evidence-backed approval", { warningCount: 1 });
+      body = "# Simulated fresh verifier report\n\nThis mock did not execute a real verifier. Its scripted result reports no blocking correctness defect and one maintainability warning for human review.\n";
+      await this.event(run.id, "check.passed", "Mock fresh verifier produced simulated evidence", { warningCount: 1 });
     } else {
       name = "run-summary.md";
-      body = `# Run summary\n\nRun: ${run.id}\nRuntime: ${run.rootRuntime}\nStatus: completed\n\nThis is a prototype artifact.\n`;
+      body = `# Simulated run summary\n\nRun: ${run.id}\nRuntime: ${run.rootRuntime}\nStatus: completed\n\nThis is a scripted prototype artifact, not evidence from a live runtime.\n`;
     }
     const path = join(dir, name);
     writeFileSync(path, body, "utf8");
     const artifact: Artifact = { id: id("artifact"), runId: run.id, kind, uri: path, checksum: sha(body), mediaType, createdAt: nowIso() };
-    this.store.createArtifact(artifact);
-    this.event(run.id, "artifact.created", `${name} stored`, { artifactId: artifact.id, uri: artifact.uri, checksum: artifact.checksum });
+    await this.store.createArtifact(artifact);
+    await this.event(run.id, "artifact.created", `${name} stored`, { artifactId: artifact.id, uri: artifact.uri, checksum: artifact.checksum });
   }
 
-  private event(runId: string, type: string, message: string, payload: Record<string, unknown>): void {
-    this.store.appendEvent({ id: id("event"), runId, type, message, payload, createdAt: nowIso() });
+  private async event(runId: string, type: string, message: string, payload: Record<string, unknown>): Promise<void> {
+    await this.store.appendEvent(this.eventRecord(runId, type, message, payload));
+  }
+
+  private eventRecord(runId: string, type: string, message: string, payload: Record<string, unknown>): Omit<RunEvent, "seq"> {
+    return {
+      id: id("event"),
+      runId,
+      type,
+      message: `[simulated] ${message}`,
+      payload: { ...payload, simulated: true, runtime: this.name },
+      createdAt: nowIso(),
+    };
   }
 }
 
-export function createMockAdapters(store: SqliteStore, workspaces: WorkspaceManager, artifactRoot: string, delay: number): Map<RuntimeName, RuntimeAdapter> {
+export function createMockAdapters(store: ControlPlaneStore, workspaces: WorkspaceManager, artifactRoot: string, delay: number): Map<RuntimeName, RuntimeAdapter> {
   const map = new Map<RuntimeName, RuntimeAdapter>();
   map.set("atomic", new MockRuntimeAdapter("atomic", [
     { name: "research", label: "Research project context", cost: 0.2 },

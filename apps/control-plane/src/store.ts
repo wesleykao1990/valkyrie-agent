@@ -1,377 +1,247 @@
-import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { createHash } from "node:crypto";
 import type { Approval, Artifact, MemoryProposal, Project, Run, RunEvent, Task } from "./types.ts";
-import { nowIso } from "./ids.ts";
 
-function parseJson<T>(value: unknown, fallback: T): T {
+export interface WorkspaceRecord {
+  id: string;
+  runId: string;
+  path: string;
+  provider: string;
+  status: string;
+  createdAt: string;
+}
+
+export interface WorkspaceLease {
+  workspaceId: string;
+  runId: string;
+  mode: string;
+  expiresAt: string;
+  heartbeatAt: string;
+}
+
+export interface OutboxEvent {
+  id: string;
+  topic: string;
+  aggregateId: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+  availableAt: string;
+  publishedAt?: string | null;
+  attempts: number;
+  lastError?: string | null;
+}
+
+export interface IdempotencyInput {
+  scope: string;
+  key: string;
+  requestHash: string;
+  expiresAt?: string | null;
+}
+
+export interface StoredIdempotencyRecord extends IdempotencyInput {
+  resourceType: string;
+  resourceId: string;
+  response: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface MigrationResult {
+  version: number;
+  name: string;
+  checksum: string;
+  status: "applied" | "already_applied";
+}
+
+export interface StoreHealth {
+  ok: boolean;
+  backend: "sqlite" | "postgres";
+  migrationsCurrent: boolean;
+}
+
+export interface RunBundleInput {
+  run: Run;
+  workspace?: WorkspaceRecord;
+  lease?: WorkspaceLease;
+  idempotency?: IdempotencyInput;
+}
+
+export interface RunBundleResult {
+  run: Run;
+  workspace?: WorkspaceRecord;
+  lease?: WorkspaceLease;
+  replayed: boolean;
+}
+
+export type MutableRunPatch = Partial<Pick<Run,
+  | "status"
+  | "stage"
+  | "stageIndex"
+  | "costUsd"
+  | "nativeRunId"
+  | "nextActionAt"
+  | "startedAt"
+  | "completedAt"
+  | "metadata"
+>>;
+
+export interface WorkspaceLeaseResult {
+  workspace: WorkspaceRecord;
+  lease: WorkspaceLease;
+  replayed: boolean;
+}
+
+export interface ApprovalResolutionInput {
+  approvalId: string;
+  state: string;
+  decision: string;
+  resolvedBy: string;
+  resolvedAt?: string;
+  runPatch?: MutableRunPatch;
+  event?: Omit<RunEvent, "seq">;
+  idempotency?: IdempotencyInput;
+}
+
+export interface ApprovalRequestInput {
+  approval: Approval;
+  event: Omit<RunEvent, "seq">;
+  idempotency?: IdempotencyInput;
+}
+
+export interface ApprovalRequestResult {
+  approval: Approval;
+  run: Run;
+  event: RunEvent;
+  replayed: boolean;
+}
+
+export interface ApprovalResolutionResult {
+  approval: Approval;
+  run: Run;
+  event?: RunEvent;
+  replayed: boolean;
+}
+
+export interface StrandedApproval {
+  approval: Approval;
+  run: Run;
+}
+
+export interface ReconciliationCandidates {
+  queuedRuns: Run[];
+  strandedApprovals: StrandedApproval[];
+  terminalLeases: WorkspaceLease[];
+  expiredLeases: WorkspaceLease[];
+  pendingOutbox: OutboxEvent[];
+}
+
+/**
+ * Storage boundary for control-plane state.
+ *
+ * Every operation is asynchronous even when backed by node:sqlite. This keeps
+ * callers independent of a driver's execution model and lets PostgreSQL use a
+ * normal connection pool without blocking tricks.
+ */
+export interface ControlPlaneStore {
+  readonly backend: "sqlite" | "postgres";
+
+  close(): Promise<void>;
+  migrate(): Promise<MigrationResult[]>;
+  healthCheck(): Promise<StoreHealth>;
+
+  resetOperationalData(): Promise<void>;
+  seedProjects(items: Array<Record<string, unknown>>): Promise<void>;
+  listProjects(): Promise<Project[]>;
+  getProject(id: string): Promise<Project | null>;
+
+  createTask(task: Task): Promise<void>;
+  listTasks(projectId?: string): Promise<Task[]>;
+  getTask(id: string): Promise<Task | null>;
+  findTaskBySimilarTitle(projectId: string, title: string): Promise<Task | null>;
+
+  createRun(run: Run): Promise<void>;
+  createRunBundle(input: RunBundleInput): Promise<RunBundleResult>;
+  updateRun(id: string, patch: MutableRunPatch): Promise<void>;
+  getRun(id: string): Promise<Run | null>;
+  listRuns(limit?: number): Promise<Run[]>;
+  listRunnableRuns(now: string): Promise<Run[]>;
+  claimRunnableRuns(now: string, claimUntil: string, workerId: string, limit?: number): Promise<Run[]>;
+  releaseRunClaim(runId: string, workerId: string): Promise<void>;
+
+  appendEvent(event: Omit<RunEvent, "seq">): Promise<RunEvent>;
+  listEvents(runId: string, afterSeq?: number): Promise<RunEvent[]>;
+
+  createWorkspace(workspace: WorkspaceRecord): Promise<void>;
+  getWorkspace(id: string): Promise<WorkspaceRecord | null>;
+  getWorkspaceForRun(runId: string): Promise<WorkspaceRecord | null>;
+  updateWorkspaceStatus(id: string, status: string): Promise<void>;
+  createLease(lease: WorkspaceLease): Promise<void>;
+  createWorkspaceLease(workspace: WorkspaceRecord, lease: WorkspaceLease): Promise<WorkspaceLeaseResult>;
+  heartbeatLease(workspaceId: string, runId: string, heartbeatAt: string, expiresAt: string): Promise<boolean>;
+  releaseLease(workspaceId: string): Promise<void>;
+  releaseWorkspaceLease(workspaceId: string, runId: string): Promise<boolean>;
+  listLeases(): Promise<WorkspaceLease[]>;
+
+  requestApprovalTransaction(input: ApprovalRequestInput): Promise<ApprovalRequestResult>;
+  getApproval(id: string): Promise<Approval | null>;
+  listApprovals(state?: string): Promise<Approval[]>;
+  resolveApproval(id: string, state: string, decision: string, resolvedBy: string): Promise<void>;
+  resolveApprovalTransaction(input: ApprovalResolutionInput): Promise<ApprovalResolutionResult>;
+
+  createArtifact(artifact: Artifact): Promise<void>;
+  listArtifacts(runId: string): Promise<Artifact[]>;
+
+  createMemoryProposal(item: MemoryProposal): Promise<void>;
+  getMemoryProposal(id: string): Promise<MemoryProposal | null>;
+  listMemoryProposals(state?: string): Promise<MemoryProposal[]>;
+  resolveMemoryProposal(id: string, state: string, reviewer: string, targetNote?: string): Promise<void>;
+
+  getIdempotencyRecord(scope: string, key: string): Promise<StoredIdempotencyRecord | null>;
+  listPendingOutbox(limit?: number): Promise<OutboxEvent[]>;
+  markOutboxPublished(id: string, publishedAt: string): Promise<boolean>;
+  markOutboxFailed(id: string, error: string, availableAt: string): Promise<boolean>;
+  listReconciliationCandidates(now: string, outboxLimit?: number): Promise<ReconciliationCandidates>;
+}
+
+export class StorageConflictError extends Error {
+  readonly code: string = "STORAGE_CONFLICT";
+  constructor(message: string) {
+    super(message);
+    this.name = "StorageConflictError";
+  }
+}
+
+export class IdempotencyConflictError extends StorageConflictError {
+  readonly code: string = "IDEMPOTENCY_CONFLICT";
+  constructor(message = "Idempotency key was already used for a different request") {
+    super(message);
+    this.name = "IdempotencyConflictError";
+  }
+}
+
+export function decodeJson<T>(value: unknown, fallback: T): T {
+  if (value !== null && typeof value === "object") return value as T;
   if (typeof value !== "string") return fallback;
   try { return JSON.parse(value) as T; } catch { return fallback; }
 }
 
-export class SqliteStore {
-  private db: DatabaseSync;
+export function isoString(value: unknown): string {
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
+}
 
-  constructor(path: string) {
-    mkdirSync(dirname(path), { recursive: true });
-    this.db = new DatabaseSync(path);
-    this.db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
-    this.migrate();
+export function nullableIsoString(value: unknown): string | null {
+  return value === null || value === undefined ? null : isoString(value);
+}
+
+export function deterministicOutboxId(topic: string, aggregateId: string, discriminator = "state"): string {
+  const digest = createHash("sha256").update(`${topic}\0${aggregateId}\0${discriminator}`).digest("hex").slice(0, 32);
+  return `outbox_${digest}`;
+}
+
+export function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
   }
-
-  close(): void { this.db.close(); }
-
-  private migrate(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS projects (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        objective TEXT NOT NULL,
-        current_milestone TEXT NOT NULL,
-        health TEXT NOT NULL,
-        linear_team TEXT NOT NULL,
-        repository TEXT NOT NULL,
-        vault_path TEXT NOT NULL,
-        memory_namespace TEXT NOT NULL,
-        created_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS tasks (
-        id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL REFERENCES projects(id),
-        source TEXT NOT NULL,
-        source_id TEXT,
-        title TEXT NOT NULL,
-        objective TEXT NOT NULL,
-        status TEXT NOT NULL,
-        priority TEXT NOT NULL,
-        created_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS runs (
-        id TEXT PRIMARY KEY,
-        task_id TEXT REFERENCES tasks(id),
-        project_id TEXT NOT NULL REFERENCES projects(id),
-        root_runtime TEXT NOT NULL,
-        workflow TEXT,
-        status TEXT NOT NULL,
-        stage TEXT,
-        stage_index INTEGER NOT NULL DEFAULT 0,
-        budget_usd REAL NOT NULL,
-        cost_usd REAL NOT NULL DEFAULT 0,
-        workspace_id TEXT,
-        native_run_id TEXT,
-        next_action_at TEXT,
-        started_at TEXT,
-        completed_at TEXT,
-        metadata_json TEXT NOT NULL DEFAULT '{}',
-        created_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS run_events (
-        seq INTEGER PRIMARY KEY AUTOINCREMENT,
-        id TEXT UNIQUE NOT NULL,
-        run_id TEXT NOT NULL REFERENCES runs(id),
-        type TEXT NOT NULL,
-        message TEXT NOT NULL,
-        payload_json TEXT NOT NULL DEFAULT '{}',
-        created_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS workspaces (
-        id TEXT PRIMARY KEY,
-        run_id TEXT NOT NULL REFERENCES runs(id),
-        path TEXT NOT NULL,
-        provider TEXT NOT NULL,
-        status TEXT NOT NULL,
-        created_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS workspace_leases (
-        workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id),
-        run_id TEXT NOT NULL REFERENCES runs(id),
-        mode TEXT NOT NULL,
-        expires_at TEXT NOT NULL,
-        heartbeat_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS approvals (
-        id TEXT PRIMARY KEY,
-        run_id TEXT NOT NULL REFERENCES runs(id),
-        action TEXT NOT NULL,
-        exact_effect TEXT NOT NULL,
-        state TEXT NOT NULL,
-        evidence_json TEXT NOT NULL DEFAULT '[]',
-        requested_at TEXT NOT NULL,
-        resolved_at TEXT,
-        resolved_by TEXT,
-        decision TEXT
-      );
-      CREATE TABLE IF NOT EXISTS artifacts (
-        id TEXT PRIMARY KEY,
-        run_id TEXT NOT NULL REFERENCES runs(id),
-        kind TEXT NOT NULL,
-        uri TEXT NOT NULL,
-        checksum TEXT NOT NULL,
-        media_type TEXT NOT NULL,
-        created_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS memory_proposals (
-        id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL REFERENCES projects(id),
-        run_id TEXT REFERENCES runs(id),
-        claim TEXT NOT NULL,
-        evidence_json TEXT NOT NULL DEFAULT '[]',
-        state TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        resolved_at TEXT,
-        reviewer TEXT,
-        target_note TEXT
-      );
-      CREATE INDEX IF NOT EXISTS idx_runs_status_next ON runs(status, next_action_at);
-      CREATE INDEX IF NOT EXISTS idx_events_run_seq ON run_events(run_id, seq);
-      CREATE INDEX IF NOT EXISTS idx_approvals_state ON approvals(state);
-      CREATE INDEX IF NOT EXISTS idx_memory_state ON memory_proposals(state);
-    `);
-  }
-
-  resetOperationalData(): void {
-    this.db.exec(`
-      DELETE FROM workspace_leases;
-      DELETE FROM workspaces;
-      DELETE FROM artifacts;
-      DELETE FROM approvals;
-      DELETE FROM run_events;
-      DELETE FROM runs;
-      DELETE FROM memory_proposals;
-      DELETE FROM tasks;
-    `);
-  }
-
-  seedProjects(items: Array<Record<string, unknown>>): void {
-    const stmt = this.db.prepare(`INSERT OR IGNORE INTO projects
-      (id,name,objective,current_milestone,health,linear_team,repository,vault_path,memory_namespace,created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`);
-    for (const item of items) {
-      stmt.run(
-        String(item.id), String(item.name), String(item.objective), String(item.currentMilestone),
-        String(item.health), String(item.linearTeam), String(item.repository), String(item.vaultPath),
-        String(item.memoryNamespace), nowIso()
-      );
-    }
-  }
-
-  listProjects(): Project[] {
-    return (this.db.prepare("SELECT * FROM projects ORDER BY name").all() as any[]).map(this.mapProject);
-  }
-
-  getProject(id: string): Project | null {
-    const row = this.db.prepare("SELECT * FROM projects WHERE id=?").get(id) as any;
-    return row ? this.mapProject(row) : null;
-  }
-
-  createTask(task: Task): void {
-    this.db.prepare(`INSERT INTO tasks
-      (id,project_id,source,source_id,title,objective,status,priority,created_at)
-      VALUES (?,?,?,?,?,?,?,?,?)`).run(
-        task.id, task.projectId, task.source, task.sourceId ?? null, task.title, task.objective,
-        task.status, task.priority, task.createdAt
-      );
-  }
-
-  listTasks(projectId?: string): Task[] {
-    const rows = projectId
-      ? this.db.prepare("SELECT * FROM tasks WHERE project_id=? ORDER BY created_at DESC").all(projectId)
-      : this.db.prepare("SELECT * FROM tasks ORDER BY created_at DESC").all();
-    return (rows as any[]).map(this.mapTask);
-  }
-
-  getTask(id: string): Task | null {
-    const row = this.db.prepare("SELECT * FROM tasks WHERE id=?").get(id) as any;
-    return row ? this.mapTask(row) : null;
-  }
-
-  findTaskBySimilarTitle(projectId: string, title: string): Task | null {
-    const normalized = title.trim().toLowerCase();
-    const rows = this.listTasks(projectId);
-    return rows.find((t) => {
-      const current = t.title.trim().toLowerCase();
-      return current === normalized || current.includes(normalized) || normalized.includes(current);
-    }) ?? null;
-  }
-
-  createRun(run: Run): void {
-    this.db.prepare(`INSERT INTO runs
-      (id,task_id,project_id,root_runtime,workflow,status,stage,stage_index,budget_usd,cost_usd,
-       workspace_id,native_run_id,next_action_at,started_at,completed_at,metadata_json,created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-        run.id, run.taskId ?? null, run.projectId, run.rootRuntime, run.workflow ?? null, run.status,
-        run.stage ?? null, run.stageIndex, run.budgetUsd, run.costUsd, run.workspaceId ?? null,
-        run.nativeRunId ?? null, run.nextActionAt ?? null, run.startedAt ?? null, run.completedAt ?? null,
-        JSON.stringify(run.metadata ?? {}), run.createdAt
-      );
-  }
-
-  updateRun(id: string, patch: Partial<Run>): void {
-    const mapping: Record<string, string> = {
-      taskId: "task_id", projectId: "project_id", rootRuntime: "root_runtime", workflow: "workflow",
-      status: "status", stage: "stage", stageIndex: "stage_index", budgetUsd: "budget_usd",
-      costUsd: "cost_usd", workspaceId: "workspace_id", nativeRunId: "native_run_id",
-      nextActionAt: "next_action_at", startedAt: "started_at", completedAt: "completed_at",
-      metadata: "metadata_json"
-    };
-    const entries = Object.entries(patch).filter(([k]) => k in mapping);
-    if (!entries.length) return;
-    const sets: string[] = [];
-    const values: unknown[] = [];
-    for (const [key, value] of entries) {
-      sets.push(`${mapping[key]}=?`);
-      values.push(key === "metadata" ? JSON.stringify(value ?? {}) : value ?? null);
-    }
-    values.push(id);
-    this.db.prepare(`UPDATE runs SET ${sets.join(", ")} WHERE id=?`).run(...values);
-  }
-
-  getRun(id: string): Run | null {
-    const row = this.db.prepare("SELECT * FROM runs WHERE id=?").get(id) as any;
-    return row ? this.mapRun(row) : null;
-  }
-
-  listRuns(limit = 100): Run[] {
-    return (this.db.prepare("SELECT * FROM runs ORDER BY created_at DESC LIMIT ?").all(limit) as any[]).map(this.mapRun);
-  }
-
-  listRunnableRuns(now: string): Run[] {
-    return (this.db.prepare(`SELECT * FROM runs
-      WHERE status='running' AND next_action_at IS NOT NULL AND next_action_at<=?
-      ORDER BY next_action_at ASC LIMIT 20`).all(now) as any[]).map(this.mapRun);
-  }
-
-  appendEvent(event: Omit<RunEvent, "seq">): RunEvent {
-    const result = this.db.prepare(`INSERT INTO run_events
-      (id,run_id,type,message,payload_json,created_at) VALUES (?,?,?,?,?,?)`).run(
-        event.id, event.runId, event.type, event.message, JSON.stringify(event.payload ?? {}), event.createdAt
-      ) as any;
-    return { ...event, seq: Number(result.lastInsertRowid) };
-  }
-
-  listEvents(runId: string, afterSeq = 0): RunEvent[] {
-    return (this.db.prepare(`SELECT * FROM run_events WHERE run_id=? AND seq>? ORDER BY seq ASC`).all(runId, afterSeq) as any[])
-      .map(this.mapEvent);
-  }
-
-  createWorkspace(workspace: { id: string; runId: string; path: string; provider: string; status: string; createdAt: string }): void {
-    this.db.prepare(`INSERT INTO workspaces (id,run_id,path,provider,status,created_at) VALUES (?,?,?,?,?,?)`)
-      .run(workspace.id, workspace.runId, workspace.path, workspace.provider, workspace.status, workspace.createdAt);
-  }
-
-  updateWorkspaceStatus(id: string, status: string): void {
-    this.db.prepare("UPDATE workspaces SET status=? WHERE id=?").run(status, id);
-  }
-
-  createLease(lease: { workspaceId: string; runId: string; mode: string; expiresAt: string; heartbeatAt: string }): void {
-    this.db.prepare(`INSERT INTO workspace_leases (workspace_id,run_id,mode,expires_at,heartbeat_at) VALUES (?,?,?,?,?)`)
-      .run(lease.workspaceId, lease.runId, lease.mode, lease.expiresAt, lease.heartbeatAt);
-  }
-
-  releaseLease(workspaceId: string): void {
-    this.db.prepare("DELETE FROM workspace_leases WHERE workspace_id=?").run(workspaceId);
-  }
-
-  listLeases(): any[] {
-    return this.db.prepare("SELECT * FROM workspace_leases ORDER BY heartbeat_at DESC").all() as any[];
-  }
-
-  createApproval(approval: Approval): void {
-    this.db.prepare(`INSERT INTO approvals
-      (id,run_id,action,exact_effect,state,evidence_json,requested_at,resolved_at,resolved_by,decision)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
-        approval.id, approval.runId, approval.action, approval.exactEffect, approval.state,
-        JSON.stringify(approval.evidence), approval.requestedAt, approval.resolvedAt ?? null,
-        approval.resolvedBy ?? null, approval.decision ?? null
-      );
-  }
-
-  getApproval(id: string): Approval | null {
-    const row = this.db.prepare("SELECT * FROM approvals WHERE id=?").get(id) as any;
-    return row ? this.mapApproval(row) : null;
-  }
-
-  listApprovals(state?: string): Approval[] {
-    const rows = state
-      ? this.db.prepare("SELECT * FROM approvals WHERE state=? ORDER BY requested_at DESC").all(state)
-      : this.db.prepare("SELECT * FROM approvals ORDER BY requested_at DESC").all();
-    return (rows as any[]).map(this.mapApproval);
-  }
-
-  resolveApproval(id: string, state: string, decision: string, resolvedBy: string): void {
-    this.db.prepare(`UPDATE approvals SET state=?, decision=?, resolved_by=?, resolved_at=? WHERE id=?`)
-      .run(state, decision, resolvedBy, nowIso(), id);
-  }
-
-  createArtifact(artifact: Artifact): void {
-    this.db.prepare(`INSERT INTO artifacts (id,run_id,kind,uri,checksum,media_type,created_at) VALUES (?,?,?,?,?,?,?)`)
-      .run(artifact.id, artifact.runId, artifact.kind, artifact.uri, artifact.checksum, artifact.mediaType, artifact.createdAt);
-  }
-
-  listArtifacts(runId: string): Artifact[] {
-    return (this.db.prepare("SELECT * FROM artifacts WHERE run_id=? ORDER BY created_at").all(runId) as any[])
-      .map((r) => ({ id: r.id, runId: r.run_id, kind: r.kind, uri: r.uri, checksum: r.checksum, mediaType: r.media_type, createdAt: r.created_at }));
-  }
-
-  createMemoryProposal(item: MemoryProposal): void {
-    this.db.prepare(`INSERT INTO memory_proposals
-      (id,project_id,run_id,claim,evidence_json,state,created_at,resolved_at,reviewer,target_note)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
-        item.id, item.projectId, item.runId ?? null, item.claim, JSON.stringify(item.evidence), item.state,
-        item.createdAt, item.resolvedAt ?? null, item.reviewer ?? null, item.targetNote ?? null
-      );
-  }
-
-  getMemoryProposal(id: string): MemoryProposal | null {
-    const row = this.db.prepare("SELECT * FROM memory_proposals WHERE id=?").get(id) as any;
-    return row ? this.mapMemoryProposal(row) : null;
-  }
-
-  listMemoryProposals(state?: string): MemoryProposal[] {
-    const rows = state
-      ? this.db.prepare("SELECT * FROM memory_proposals WHERE state=? ORDER BY created_at DESC").all(state)
-      : this.db.prepare("SELECT * FROM memory_proposals ORDER BY created_at DESC").all();
-    return (rows as any[]).map(this.mapMemoryProposal);
-  }
-
-  resolveMemoryProposal(id: string, state: string, reviewer: string, targetNote?: string): void {
-    this.db.prepare(`UPDATE memory_proposals SET state=?, reviewer=?, target_note=?, resolved_at=? WHERE id=?`)
-      .run(state, reviewer, targetNote ?? null, nowIso(), id);
-  }
-
-  private mapProject = (r: any): Project => ({
-    id: r.id, name: r.name, objective: r.objective, currentMilestone: r.current_milestone,
-    health: r.health, linearTeam: r.linear_team, repository: r.repository, vaultPath: r.vault_path,
-    memoryNamespace: r.memory_namespace, createdAt: r.created_at
-  });
-
-  private mapTask = (r: any): Task => ({
-    id: r.id, projectId: r.project_id, source: r.source, sourceId: r.source_id, title: r.title,
-    objective: r.objective, status: r.status, priority: r.priority, createdAt: r.created_at
-  });
-
-  private mapRun = (r: any): Run => ({
-    id: r.id, taskId: r.task_id, projectId: r.project_id, rootRuntime: r.root_runtime,
-    workflow: r.workflow, status: r.status, stage: r.stage, stageIndex: Number(r.stage_index),
-    budgetUsd: Number(r.budget_usd), costUsd: Number(r.cost_usd), workspaceId: r.workspace_id,
-    nativeRunId: r.native_run_id, nextActionAt: r.next_action_at, startedAt: r.started_at,
-    completedAt: r.completed_at, metadata: parseJson(r.metadata_json, {}), createdAt: r.created_at
-  });
-
-  private mapEvent = (r: any): RunEvent => ({
-    seq: Number(r.seq), id: r.id, runId: r.run_id, type: r.type, message: r.message,
-    payload: parseJson(r.payload_json, {}), createdAt: r.created_at
-  });
-
-  private mapApproval = (r: any): Approval => ({
-    id: r.id, runId: r.run_id, action: r.action, exactEffect: r.exact_effect, state: r.state,
-    evidence: parseJson(r.evidence_json, []), requestedAt: r.requested_at, resolvedAt: r.resolved_at,
-    resolvedBy: r.resolved_by, decision: r.decision
-  });
-
-  private mapMemoryProposal = (r: any): MemoryProposal => ({
-    id: r.id, projectId: r.project_id, runId: r.run_id, claim: r.claim,
-    evidence: parseJson(r.evidence_json, []), state: r.state, createdAt: r.created_at,
-    resolvedAt: r.resolved_at, reviewer: r.reviewer, targetNote: r.target_note
-  });
+  return JSON.stringify(value);
 }

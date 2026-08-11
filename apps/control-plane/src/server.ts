@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { existsSync, readFileSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
 import type { ControlPlaneService } from "./service.ts";
-import type { SqliteStore } from "./store.ts";
+import type { ControlPlaneStore } from "./store.ts";
 import { readJson, sendError, sendJson } from "./http.ts";
 
 const media: Record<string, string> = {
@@ -12,10 +12,16 @@ const media: Record<string, string> = {
   ".svg": "image/svg+xml"
 };
 
-export function createControlPlaneServer(service: ControlPlaneService, store: SqliteStore, publicDir: string) {
+export function createControlPlaneServer(
+  service: ControlPlaneService,
+  store: ControlPlaneStore,
+  publicDir: string,
+  options: { enableDemoReset?: boolean } = {},
+) {
+  const enableSqliteDemoReset = store.backend === "sqlite" && (options.enableDemoReset ?? true);
   return createServer(async (req, res) => {
     try {
-      await route(req, res, service, store, publicDir);
+      await route(req, res, service, store, publicDir, enableSqliteDemoReset);
     } catch (error) {
       console.error(error);
       sendError(res, error, 400);
@@ -23,24 +29,40 @@ export function createControlPlaneServer(service: ControlPlaneService, store: Sq
   });
 }
 
-async function route(req: IncomingMessage, res: ServerResponse, service: ControlPlaneService, store: SqliteStore, publicDir: string) {
+async function route(
+  req: IncomingMessage,
+  res: ServerResponse,
+  service: ControlPlaneService,
+  store: ControlPlaneStore,
+  publicDir: string,
+  enableDemoReset: boolean,
+) {
   const method = req.method ?? "GET";
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname;
 
-  if (method === "GET" && path === "/health") return sendJson(res, 200, { ok: true, service: "wesley-agent-control-plane", prototype: true });
-  if (method === "GET" && path === "/api/portfolio") return sendJson(res, 200, service.portfolio());
-  if (method === "GET" && path === "/api/projects") return sendJson(res, 200, service.listProjects());
-  if (method === "GET" && path === "/api/tasks") return sendJson(res, 200, service.listTasks(url.searchParams.get("projectId") ?? undefined));
-  if (method === "GET" && path === "/api/runs") return sendJson(res, 200, service.listRuns());
-  if (method === "GET" && path === "/api/approvals") return sendJson(res, 200, service.listApprovals());
-  if (method === "GET" && path === "/api/memory/proposals") return sendJson(res, 200, service.listMemoryProposals());
+  if (method === "GET" && path === "/health") {
+    const health = await store.healthCheck();
+    const ok = health.ok && health.migrationsCurrent;
+    return sendJson(res, ok ? 200 : 503, {
+      ok,
+      service: "wesley-agent-control-plane",
+      prototype: true,
+      storage: { backend: health.backend, migrationsCurrent: health.migrationsCurrent },
+    });
+  }
+  if (method === "GET" && path === "/api/portfolio") return sendJson(res, 200, await service.portfolio());
+  if (method === "GET" && path === "/api/projects") return sendJson(res, 200, await service.listProjects());
+  if (method === "GET" && path === "/api/tasks") return sendJson(res, 200, await service.listTasks(url.searchParams.get("projectId") ?? undefined));
+  if (method === "GET" && path === "/api/runs") return sendJson(res, 200, await service.listRuns());
+  if (method === "GET" && path === "/api/approvals") return sendJson(res, 200, await service.listApprovals());
+  if (method === "GET" && path === "/api/memory/proposals") return sendJson(res, 200, await service.listMemoryProposals());
 
   let match = path.match(/^\/api\/projects\/([^/]+)\/brief$/);
-  if (method === "GET" && match) return sendJson(res, 200, service.projectBrief(decodeURIComponent(match[1])));
+  if (method === "GET" && match) return sendJson(res, 200, await service.projectBrief(decodeURIComponent(match[1])));
 
   match = path.match(/^\/api\/runs\/([^/]+)$/);
-  if (method === "GET" && match) return sendJson(res, 200, service.getRun(decodeURIComponent(match[1])));
+  if (method === "GET" && match) return sendJson(res, 200, await service.getRun(decodeURIComponent(match[1])));
 
   match = path.match(/^\/api\/runs\/([^/]+)\/events$/);
   if (method === "GET" && match) return streamEvents(req, res, store, decodeURIComponent(match[1]), Number(url.searchParams.get("after") ?? 0));
@@ -48,15 +70,16 @@ async function route(req: IncomingMessage, res: ServerResponse, service: Control
   if (method === "GET" && path === "/api/memory/search") {
     const projectId = url.searchParams.get("projectId") ?? "";
     const q = url.searchParams.get("q") ?? "";
-    return sendJson(res, 200, service.searchMemory(projectId, q));
+    return sendJson(res, 200, await service.searchMemory(projectId, q));
   }
 
-  if (method === "POST" && path === "/api/ideas") return sendJson(res, 200, service.captureIdea(await readJson(req)));
+  if (method === "POST" && path === "/api/ideas") return sendJson(res, 200, await service.captureIdea(await readJson(req)));
   if (method === "POST" && path === "/api/runs") return sendJson(res, 202, await service.startRun(await readJson(req)));
   if (method === "POST" && path === "/api/runs/compare") return sendJson(res, 202, await service.compareRuns(await readJson(req)));
-  if (method === "POST" && path === "/api/memory/proposals") return sendJson(res, 201, service.proposeMemory(await readJson(req)));
+  if (method === "POST" && path === "/api/memory/proposals") return sendJson(res, 201, await service.proposeMemory(await readJson(req)));
   if (method === "POST" && path === "/api/demo/reset") {
-    service.resetDemo(true);
+    if (!enableDemoReset) return sendJson(res, 403, { error: "Demo reset is disabled" });
+    await service.resetDemo(true);
     return sendJson(res, 200, { ok: true });
   }
 
@@ -72,20 +95,20 @@ async function route(req: IncomingMessage, res: ServerResponse, service: Control
   match = path.match(/^\/api\/approvals\/([^/]+)\/resolve$/);
   if (method === "POST" && match) {
     const body = await readJson(req);
-    return sendJson(res, 200, await service.resolveApproval(decodeURIComponent(match[1]), String(body.decision ?? "deny"), "wesley"));
+    return sendJson(res, 200, await service.resolveApproval(decodeURIComponent(match[1]), String(body.decision ?? ""), "wesley"));
   }
 
   match = path.match(/^\/api\/memory\/proposals\/([^/]+)\/resolve$/);
   if (method === "POST" && match) {
     const body = await readJson(req);
-    return sendJson(res, 200, service.resolveMemoryProposal(decodeURIComponent(match[1]), body.decision === "promote" ? "promote" : "reject"));
+    return sendJson(res, 200, await service.resolveMemoryProposal(decodeURIComponent(match[1]), String(body.decision ?? "")));
   }
 
   if (method === "GET") return serveStatic(res, publicDir, path);
   sendJson(res, 404, { error: "Not found" });
 }
 
-function streamEvents(req: IncomingMessage, res: ServerResponse, store: SqliteStore, runId: string, initialSeq: number) {
+function streamEvents(req: IncomingMessage, res: ServerResponse, store: ControlPlaneStore, runId: string, initialSeq: number) {
   res.writeHead(200, {
     "content-type": "text/event-stream",
     "cache-control": "no-cache",
@@ -93,19 +116,32 @@ function streamEvents(req: IncomingMessage, res: ServerResponse, store: SqliteSt
     "x-accel-buffering": "no"
   });
   let last = initialSeq;
-  const flush = () => {
-    const events = store.listEvents(runId, last);
-    for (const event of events) {
-      last = event.seq;
-      res.write(`id: ${event.seq}\n`);
-      res.write(`event: ${event.type}\n`);
-      res.write(`data: ${JSON.stringify(event)}\n\n`);
+  let flushing = false;
+  let closed = false;
+  const flush = async () => {
+    if (flushing || closed) return;
+    flushing = true;
+    try {
+      const events = await store.listEvents(runId, last);
+      for (const event of events) {
+        last = event.seq;
+        res.write(`id: ${event.seq}\n`);
+        res.write(`event: ${event.type}\n`);
+        res.write(`data: ${JSON.stringify(event)}\n\n`);
+      }
+    } finally {
+      flushing = false;
     }
   };
-  flush();
-  const timer = setInterval(flush, 750);
+  const poll = () => { void flush().catch((error) => res.destroy(error instanceof Error ? error : new Error(String(error)))); };
+  poll();
+  const timer = setInterval(poll, 750);
   const keepAlive = setInterval(() => res.write(": keep-alive\n\n"), 15_000);
-  req.on("close", () => { clearInterval(timer); clearInterval(keepAlive); });
+  req.on("close", () => {
+    closed = true;
+    clearInterval(timer);
+    clearInterval(keepAlive);
+  });
 }
 
 function serveStatic(res: ServerResponse, publicDir: string, requestPath: string) {

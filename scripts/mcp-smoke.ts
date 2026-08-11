@@ -78,12 +78,26 @@ try {
   const listed = await rpc("tools/list");
   const projects = await rpc("tools/call", { name: "projects_list", arguments: {} });
   const memory = await rpc("tools/call", { name: "memory_search", arguments: { projectId: "ovalo", query: "terminology latency" } });
+  const runArguments = {
+    projectId: "ovalo",
+    objective: "Exercise idempotent MCP run creation",
+    runtime: "codex",
+    maxCostUsd: 2,
+    idempotencyKey: "mcp-smoke-run-create",
+  };
+  const firstRun = await rpc("tools/call", { name: "runs_start", arguments: runArguments });
+  const replayedRun = await rpc("tools/call", { name: "runs_start", arguments: runArguments });
   const toolNames = new Set((listed.tools ?? []).map((tool: any) => tool.name));
+  const runStartTool = (listed.tools ?? []).find((tool: any) => tool.name === "runs_start");
   if (initialized.serverInfo?.name !== "wesley-agent-control-plane") throw new Error("Unexpected MCP server identity");
   if (!toolNames.has("runs_start") || !toolNames.has("memory_promote")) throw new Error("Expected MCP tools were not listed");
+  if (!runStartTool?.inputSchema?.properties?.idempotencyKey) throw new Error("runs_start did not advertise optional idempotencyKey");
   if (!projects.content?.[0]?.text?.includes("Ovalo")) throw new Error("projects_list did not return seeded projects");
   if (!memory.content?.[0]?.text?.toLowerCase().includes("terminology")) throw new Error("memory_search did not return accepted project context");
-  console.log(`MCP smoke passed: ${listed.tools.length} tools, portfolio and memory calls succeeded.`);
+  const firstRunId = JSON.parse(firstRun.content?.[0]?.text ?? "null")?.run?.run?.id;
+  const replayedRunId = JSON.parse(replayedRun.content?.[0]?.text ?? "null")?.run?.run?.id;
+  if (!firstRunId || firstRunId !== replayedRunId) throw new Error("runs_start did not safely replay the idempotent request");
+  console.log(`MCP smoke passed: ${listed.tools.length} tools, portfolio/memory calls, and idempotent run replay succeeded.`);
 } finally {
   mcp.kill("SIGTERM");
   server.kill("SIGTERM");

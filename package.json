@@ -1,9 +1,9 @@
 {
   "name": "wesley-agent-control-plane-prototype",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "Zero-dependency prototype of a Hermes-fronted, Linear-backed multi-agent control plane.",
+  "description": "Local-first prototype of a Hermes-fronted, Linear-backed multi-agent control plane.",
   "engines": {
     "node": ">=22.16.0"
   },
@@ -11,11 +11,23 @@
     "start": "node --experimental-strip-types apps/control-plane/src/index.ts",
     "dev": "node --watch --experimental-strip-types apps/control-plane/src/index.ts",
     "mcp": "node --experimental-strip-types apps/mcp-server/src/index.ts",
+    "typecheck": "tsc --noEmit --noCheck false",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "test:postgres": "node --experimental-strip-types scripts/test-postgres-storage.ts",
+    "migrate": "node --experimental-strip-types scripts/migrate-storage.ts",
+    "verify:atomic": "npm --prefix packages/atomic-workflow-architect run verify:all",
     "reset": "node --experimental-strip-types scripts/reset-demo.ts",
     "mcp:quiet": "node --experimental-strip-types apps/mcp-server/src/index.ts",
     "smoke:mcp": "node --experimental-strip-types scripts/mcp-smoke.ts",
-    "verify": "npm test && npm run smoke:http && npm run smoke:mcp",
+    "verify": "npm run typecheck && npm test && npm run test:postgres && npm run verify:atomic && npm run smoke:http && npm run smoke:mcp",
     "smoke:http": "node --experimental-strip-types scripts/http-smoke.ts"
+  },
+  "optionalDependencies": {
+    "pg": "8.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "@types/pg": "8.21.0",
+    "typescript": "5.8.3"
   }
 }

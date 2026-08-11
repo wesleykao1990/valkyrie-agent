@@ -106,6 +106,7 @@ export interface StartRunInput {
   runtime?: RuntimeName;
   workflow?: string;
   maxCostUsd?: number;
+  idempotencyKey?: string;
   approvalPolicy?: {
     preparePr?: "human" | "automatic";
   };

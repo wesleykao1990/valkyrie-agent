@@ -6,7 +6,7 @@ const tools = [
   tool("projects_list", "List all registered projects and portfolio health.", {}),
   tool("project_get_brief", "Get current roadmap, runs, accepted decisions, approvals, and freshness for one project.", { projectId: stringProp("Project ID") }, ["projectId"]),
   tool("idea_capture", "Check for duplicates and capture an idea for a project.", { projectId: stringProp("Project ID"), title: stringProp("Idea title") }, ["projectId", "title"]),
-  tool("runs_start", "Start a bounded agent run under control-plane policy.", { projectId: stringProp("Project ID"), objective: stringProp("Objective"), runtime: enumProp(["atomic", "codex", "claude", "prime", "hermes"]), maxCostUsd: numberProp("Maximum cost in USD") }, ["projectId", "objective"]),
+  tool("runs_start", "Start a bounded agent run under control-plane policy.", { projectId: stringProp("Project ID"), objective: stringProp("Objective"), runtime: enumProp(["atomic", "codex", "claude", "prime", "hermes"]), maxCostUsd: numberProp("Maximum cost in USD"), idempotencyKey: stringProp("Optional idempotency key for safe run-create retries") }, ["projectId", "objective"]),
   tool("runs_list", "List recent runs.", {}),
   tool("run_get", "Get one run with events, evidence, approvals, and artifacts.", { runId: stringProp("Run ID") }, ["runId"]),
   tool("run_steer", "Send a bounded steering instruction when the runtime supports it.", { runId: stringProp("Run ID"), message: stringProp("Steering instruction") }, ["runId", "message"]),
@@ -73,7 +73,7 @@ async function handle(request: RpcRequest) {
       return respond(request.id, {
         protocolVersion: request.params?.protocolVersion ?? "2024-11-05",
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "wesley-agent-control-plane", version: "0.2.2" }
+        serverInfo: { name: "wesley-agent-control-plane", version: "0.3.0" }
       });
     }
     if (request.method === "notifications/initialized" || request.method === "notifications/cancelled") return;

@@ -79,6 +79,26 @@ try {
     "three approval gates",
   );
   const pending = approvals.filter((item) => item.state === "pending" && runIds.includes(item.runId));
+  const invalidApproval = await fetch(`${api}/api/approvals/${pending[0].id}/resolve`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ decision: "approve_eventually" }),
+  });
+  if (invalidApproval.status !== 400 || !(await invalidApproval.text()).includes("decision must be approve")) {
+    throw new Error("Invalid approval decision was not rejected without persistence");
+  }
+  const missingApproval = await fetch(`${api}/api/approvals/${pending[0].id}/resolve`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  if (missingApproval.status !== 400 || !(await missingApproval.text()).includes("decision must be approve")) {
+    throw new Error("Missing approval decision was not rejected without persistence");
+  }
+  const stillPending = await json<any[]>("/api/approvals");
+  if (stillPending.find((item) => item.id === pending[0].id)?.state !== "pending") {
+    throw new Error("Invalid approval decision mutated approval state");
+  }
   for (const approval of pending) {
     await json(`/api/approvals/${approval.id}/resolve`, "POST", { decision: "approve" });
   }
@@ -103,6 +123,18 @@ try {
     "three governed memory proposals",
   );
   const proposal = proposals.find((item) => item.state === "proposed" && runIds.includes(item.runId));
+  const invalidMemory = await fetch(`${api}/api/memory/proposals/${proposal.id}/resolve`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ decision: "promote_eventually" }),
+  });
+  if (invalidMemory.status !== 400 || !(await invalidMemory.text()).includes("decision must be promote")) {
+    throw new Error("Invalid memory decision was not rejected without persistence");
+  }
+  const stillProposed = await json<any[]>("/api/memory/proposals");
+  if (stillProposed.find((item) => item.id === proposal.id)?.state !== "proposed") {
+    throw new Error("Invalid memory decision mutated proposal state");
+  }
   const promoted = await json<any>(`/api/memory/proposals/${proposal.id}/resolve`, "POST", { decision: "promote" });
   if (promoted.state !== "promoted") throw new Error("Memory proposal was not promoted through the review endpoint");
   if (!promoted.targetNote || !existsSync(join(brainDir, promoted.targetNote))) {

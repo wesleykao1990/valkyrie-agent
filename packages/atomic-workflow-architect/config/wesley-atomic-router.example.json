@@ -1,0 +1,22 @@
+{
+  "enabled": true,
+  "minimumScore": 3,
+  "forcePrefixes": [
+    "atomic:",
+    "workflow:"
+  ],
+  "bypassPrefixes": [
+    "direct:",
+    "inline:",
+    "no-workflow:"
+  ],
+  "projectKeywords": [
+    "ovalo",
+    "signal ledger",
+    "ai workflow watch"
+  ],
+  "routeRpcInput": true,
+  "routeInteractiveInput": true,
+  "defaultWorkspaceOwner": "control-plane",
+  "requireDurableBackendForBackgroundRuns": true
+}

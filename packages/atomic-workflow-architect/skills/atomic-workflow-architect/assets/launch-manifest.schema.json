@@ -1,0 +1,304 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:wesley:atomic:launch-manifest:1.0.0",
+  "title": "Wesley Atomic launch manifest",
+  "description": "Stable control-plane handoff to one Atomic root runtime. Presence of a valid manifest does not itself authorize or start execution.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "project_id",
+    "task_id",
+    "request",
+    "request_class",
+    "intent",
+    "root_runtime",
+    "context_pack_ref",
+    "contract_ref",
+    "workflow",
+    "workspace_owner",
+    "workspace_id",
+    "workspace_ref",
+    "writer_lease",
+    "sandbox_policy_id",
+    "durability_required",
+    "crossProcessResume",
+    "final_action",
+    "budget",
+    "bounds",
+    "model_policy",
+    "approvals",
+    "idempotency_key",
+    "correlation_id"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "run_id": {
+      "$ref": "#/$defs/stableId"
+    },
+    "project_id": {
+      "$ref": "#/$defs/stableId"
+    },
+    "task_id": {
+      "$ref": "#/$defs/stableId"
+    },
+    "request": {
+      "type": "string",
+      "minLength": 1
+    },
+    "request_class": {
+      "enum": [
+        "idea",
+        "project",
+        "feature",
+        "bug",
+        "migration-or-refactor",
+        "review-or-research",
+        "design",
+        "small-direct-edit",
+        "queue-of-items"
+      ]
+    },
+    "intent": {
+      "enum": [
+        "explore",
+        "decide",
+        "plan-or-specify",
+        "implement",
+        "compare",
+        "repair",
+        "review-only"
+      ]
+    },
+    "root_runtime": {
+      "const": "atomic"
+    },
+    "context_pack_ref": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "contract_ref": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "path",
+        "version",
+        "content_hash",
+        "trust_state"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "path": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "version": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "content_hash": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "trust_state": {
+          "enum": [
+            "installed",
+            "generated-draft",
+            "project-approved",
+            "package-reviewed"
+          ]
+        }
+      }
+    },
+    "workspace_owner": {
+      "enum": [
+        "control-plane",
+        "atomic"
+      ]
+    },
+    "workspace_id": {
+      "$ref": "#/$defs/stableId"
+    },
+    "workspace_ref": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "writer_lease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lease_id",
+        "holder_run_id",
+        "workspace_id",
+        "mode",
+        "expires_at"
+      ],
+      "properties": {
+        "lease_id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "holder_run_id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "mode": {
+          "const": "exclusive-writer"
+        },
+        "expires_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3})?Z$"
+        }
+      }
+    },
+    "sandbox_policy_id": {
+      "$ref": "#/$defs/stableId"
+    },
+    "durability_required": {
+      "type": "boolean"
+    },
+    "crossProcessResume": {
+      "type": "boolean"
+    },
+    "final_action": {
+      "enum": [
+        "analysis_only",
+        "plan_only",
+        "stop_after_checks",
+        "stop_before_pr",
+        "prepare_draft_pr",
+        "create_draft_pr",
+        "merge",
+        "deploy",
+        "publish"
+      ]
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "currency",
+        "max_cost_usd"
+      ],
+      "properties": {
+        "currency": {
+          "const": "USD"
+        },
+        "max_cost_usd": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_duration_minutes",
+        "max_turns",
+        "max_repairs",
+        "max_child_depth",
+        "max_concurrency"
+      ],
+      "properties": {
+        "max_duration_minutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_turns": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_repairs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_child_depth": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_concurrency": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "model_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "planner",
+        "worker",
+        "reviewers",
+        "fallbacks"
+      ],
+      "properties": {
+        "planner": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "worker": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reviewers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "fallbacks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        }
+      }
+    },
+    "approvals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "action",
+          "exact_effect",
+          "required"
+        ],
+        "properties": {
+          "action": {
+            "$ref": "#/$defs/nonEmptyString"
+          },
+          "exact_effect": {
+            "$ref": "#/$defs/nonEmptyString"
+          },
+          "required": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "idempotency_key": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "correlation_id": {
+      "$ref": "#/$defs/nonEmptyString"
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stableId": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    }
+  }
+}
