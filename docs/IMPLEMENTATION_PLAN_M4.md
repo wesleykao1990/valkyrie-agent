@@ -1,9 +1,9 @@
 # Milestone 4 external writer-boundary plan
 
-Date: 2026-08-11
-Status: deterministic contract slice implemented; live external isolation and
-provider-aware restart reconciliation remain blocked until a supported
-container/VM engine is installed and passes the opt-in smoke test
+Date: 2026-08-12
+Status: complete for the disabled local boundary. Colima/Docker live verification,
+durable migration-005 lifecycle state, provider-aware restart reconciliation,
+and bounded context-integrity checks are implemented and verified.
 
 ## Run contract
 
@@ -38,9 +38,8 @@ Acceptance evidence:
 ## Non-goals and final-action boundary
 
 - This milestone does not enable Atomic, Codex, or Claude Code writer mode. That
-  requires a live provider PASS on the deployment host and a separately reviewed
-  runtime launch contract.
-- It does not install a host container/VM engine, inject provider credentials,
+  requires a separately reviewed Milestone 5 runtime launch contract.
+- It does not inject provider credentials,
   open network egress, create a PR, merge, deploy, promote memory, or change a
   production database.
 - The control plane owns the top-level worktree, container, lease, and artifact
@@ -66,12 +65,14 @@ Acceptance evidence:
    ownership-aware cleanup.
 5. Add governed artifact export and secret scanning before storage/display.
 6. Add a disabled-by-default sandbox boundary coordinator and opt-in live smoke.
-7. Document setup, rollback, failure/quarantine behavior, and the exact remaining
-   manual engine/image requirements.
+7. Add durable sandbox-instance lifecycle state plus exact-label engine restart
+   reconciliation, and keep unowned engine objects untouched.
+8. Document setup, rollback, failure/quarantine behavior, and local engine/image
+   evidence.
 
 ## Storage and migration posture
 
-Migration `004_fenced_writer_leases` is forward-only. Existing leases are
+Migrations `004_fenced_writer_leases` and `005_sandbox_instances` are forward-only. Existing leases are
 backfilled with their run as owner and fencing token 1. Each workspace stores a
 monotonic lease epoch so an expired/released lease can be rotated without allowing
 an older process to renew or release the successor. Quarantine evidence is
@@ -97,10 +98,10 @@ identifiers and state transitions only.
 - Remove only the independently initialized, run-owned Git root after the exact lease
   is terminal and the container is gone. Never recursively delete an unresolved
   or out-of-root path.
-- Migration 004 is forward-only and older binaries intentionally reject an
-  unknown v4 ledger. A binary rollback therefore requires a pre-v4 database
-  backup (or a separate pre-v4 SQLite dataset); there is no destructive down
-  migration.
+- Migrations 004/005 are forward-only and older binaries intentionally reject
+  their newer ledger. A binary rollback therefore requires a verified pre-v5
+  database backup (or a separate compatible SQLite dataset); there is no
+  destructive down migration.
 
 ## Security impact
 
@@ -116,9 +117,9 @@ identifiers and state transitions only.
 - Secret detection is a release gate. A match records only rule identifiers and
   hashes, deletes any temporary export, and quarantines the run; matched secret
   text is never logged.
-- This host currently has no Docker, Podman, Lima, Colima, OrbStack, or equivalent
-  engine. Deterministic contracts can pass here, but live isolation must report a
-  skip/block rather than a success.
+- This host uses Colima 0.10.3, Lima 2.2.0, Docker CLI 29.7.2, and local Docker
+  Engine 29.5.2. The opt-in live test passed against the immutable ARM64 Alpine
+  fixture digest recorded in `docs/VERIFICATION.md`.
 - Existing v3 active leases backfill with `ownerId=runId`, fencing token 1, and
   `acquiredAt=heartbeatAt`. Treat them as legacy evidence to quarantine, clean,
   and rotate before enabling a real writer. Database fencing alone cannot stop a

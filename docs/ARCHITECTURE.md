@@ -88,7 +88,7 @@ This boundary is not a writer sandbox. Milestone 4 now provides the separate,
 disabled contract below, but it must pass a real-engine smoke on the deployment
 host before any native adapter may edit a repository.
 
-## Disabled external writer boundary
+## Verified external writer boundary (disabled by default)
 
 The internal Milestone 4 fixture path is deliberately not registered as an HTTP,
 MCP, or runtime adapter capability. It composes these separate authorities:
@@ -119,11 +119,13 @@ MCP, or runtime adapter capability. It composes these separate authorities:
    exact lease release. Ambiguous ownership or cleanup leaves durable quarantine
    evidence instead of automatic reuse.
 
-The real provider is disabled by default. Deterministic fake-engine tests prove
-the slice but not kernel/network isolation or process-restart recovery. This
-development host has no qualifying engine, so the opt-in live test skips;
-provider-aware durable sandbox reconciliation is still absent and writer runtimes
-remain unavailable.
+The provider remains disabled by default and unregistered as a runtime/API/MCP
+capability. In addition to deterministic fake-engine tests, local Colima/Docker
+passed the opt-in kernel/network policy smoke with an immutable ARM64 Alpine
+fixture. Migration 005 records the sandbox lifecycle and provider-aware restart
+reconciliation cleans only exact immutable IDs/labels, quarantines drift or
+uncertainty, and leaves unmatched managed objects untouched. Model writer
+runtimes remain unavailable until the separate Milestone 5 composition.
 
 ## Prototype substitution
 
@@ -131,8 +133,8 @@ The production architecture uses PostgreSQL and a read-only OpenViking trial. Th
 downloadable prototype defaults to SQLite and local Markdown retrieval so it can
 run without external credentials. PostgreSQL now exists behind the store contract;
 OpenViking and writer runtimes remain disabled continuation work. The writer
-boundary is contract-tested behind proposed ADR-P004 but not live-verified or
-composed into a model adapter. Read-only native connectivity adapters exist only
+boundary is contract-tested and locally live-verified behind proposed ADR-P004,
+but is not composed into a model adapter. Read-only native connectivity adapters exist only
 behind explicit feature flags and the proposed ADR-P003 boundary.
 
 

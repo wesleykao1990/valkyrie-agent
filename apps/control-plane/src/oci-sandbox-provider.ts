@@ -125,6 +125,35 @@ export interface OciPreflightResult {
   reason?: "disabled" | "engine-unavailable";
 }
 
+export interface OciSandboxContract {
+  provider: "docker-compatible";
+  imageRef: string;
+  policyHash: string;
+}
+
+export interface OciReconciliationExpectation {
+  runId: string;
+  workspaceId: string;
+  leaseOwnerId: string;
+  fencingToken: number;
+  engineId: string | null;
+  imageRef: string;
+  policyHash: string;
+  workspaceDigest: string;
+  contextDigest: string;
+  workdirDigest: string;
+  cleanupAttempts: number;
+}
+
+export interface OciReconciliationResult {
+  runId: string | null;
+  workspaceId: string | null;
+  containerId: string | null;
+  outcome: "cleaned" | "absent" | "quarantined" | "unmatched";
+  reason: string;
+  cleanupAttempted: boolean;
+}
+
 /**
  * Deliberately evidence-only. Output and environment values are never retained.
  * Execute argv is represented by a digest so a caller cannot leak a token through
@@ -132,7 +161,7 @@ export interface OciPreflightResult {
  */
 export interface OciCommandTranscriptEntry {
   sequence: number;
-  operation: "preflight" | "create" | "start" | "inspect" | "execute" | "stop" | "kill" | "cleanup";
+  operation: "preflight" | "inventory" | "create" | "start" | "inspect" | "execute" | "stop" | "kill" | "cleanup";
   command: string;
   args: string[];
   exitCode: number | null;
@@ -404,6 +433,10 @@ export class OciSandboxProvider {
     return this.transcriptEntries.map((entry) => ({ ...entry, args: [...entry.args] }));
   }
 
+  contract(): OciSandboxContract {
+    return { provider: "docker-compatible", imageRef: this.options.image, policyHash: this.policyHash() };
+  }
+
   async preflight(): Promise<OciPreflightResult> {
     if (!this.enabled) {
       return { enabled: false, available: false, engine: "docker-compatible", reason: "disabled" };
@@ -424,6 +457,97 @@ export class OciSandboxProvider {
     } catch {
       return { enabled: true, available: false, engine: "docker-compatible", reason: "engine-unavailable" };
     }
+  }
+
+  async reconcileOrphans(expectations: readonly OciReconciliationExpectation[]): Promise<OciReconciliationResult[]> {
+    this.assertEnabled();
+    const preflight = await this.preflight();
+    if (!preflight.available) throw new Error("OCI engine is unavailable for restart reconciliation");
+    const runIds = new Set<string>();
+    for (const expected of expectations) {
+      if (runIds.has(expected.runId)) throw new Error("Duplicate sandbox reconciliation run ID");
+      runIds.add(expected.runId);
+      this.validateReconciliationExpectation(expected);
+    }
+    const inventory = await this.invoke(
+      "inventory",
+      ["ps", "--all", "--filter", "label=valkyrie.managed=true", "--format", "{{.ID}}"],
+      this.timeouts.inspectMs,
+      this.maxEngineOutputBytes,
+    );
+    const ids = inventory.stdout.split("\n").filter(Boolean);
+    if (ids.length > 1_000 || new Set(ids).size !== ids.length || ids.some((id) => !CONTAINER_ID.test(id))) {
+      throw new Error("OCI managed-container inventory is malformed or exceeds its bound");
+    }
+    const inspected = new Map<string, DockerInspect>();
+    for (const id of ids) inspected.set(id, await this.inspectRaw(id));
+    const consumed = new Set<string>();
+    const results: OciReconciliationResult[] = [];
+    for (const expected of expectations) {
+      const candidates = [...inspected.entries()].filter(([, item]) => this.matchesReconciliationLabels(item, expected));
+      if (expected.engineId && !candidates.some(([id]) => id === expected.engineId)) {
+        results.push(this.recordReconciliation(expected, null, "absent", "engine_id_absent", false));
+        continue;
+      }
+      if (candidates.length === 0) {
+        results.push(this.recordReconciliation(expected, null, "absent", "engine_object_absent", false));
+        continue;
+      }
+      if (candidates.length !== 1) {
+        results.push(this.recordReconciliation(expected, null, "quarantined", "multiple_matching_engine_objects", false));
+        continue;
+      }
+      const [containerId, item] = candidates[0];
+      consumed.add(containerId);
+      if (expected.cleanupAttempts >= 3) {
+        results.push(this.recordReconciliation(expected, containerId, "quarantined", "cleanup_retry_exhausted", false));
+        continue;
+      }
+      try {
+        this.assertReconciliationPolicy(item, expected);
+      } catch {
+        results.push(this.recordReconciliation(expected, containerId, "quarantined", "ownership_or_policy_mismatch", false));
+        continue;
+      }
+      const running = item.State?.Running === true;
+      if (running) {
+        try {
+          await this.invoke(
+            "stop",
+            ["stop", "--time", String(Math.max(1, Math.ceil(this.timeouts.stopMs / 1_000))), containerId],
+            this.timeouts.stopMs,
+            this.maxEngineOutputBytes,
+          );
+        } catch {
+          try {
+            await this.invoke("kill", ["kill", containerId], this.timeouts.killMs, this.maxEngineOutputBytes);
+          } catch {
+            results.push(this.recordReconciliation(expected, containerId, "quarantined", "restart_stop_failed", true));
+            continue;
+          }
+        }
+      }
+      try {
+        await this.invoke(
+          "cleanup",
+          ["rm", "--force", "--volumes", containerId],
+          this.timeouts.cleanupMs,
+          this.maxEngineOutputBytes,
+        );
+        results.push(this.recordReconciliation(expected, containerId, "cleaned", "restart_orphan_removed", true));
+      } catch {
+        results.push(this.recordReconciliation(expected, containerId, "quarantined", "restart_remove_failed", true));
+      }
+    }
+    for (const id of ids) {
+      if (!consumed.has(id)) {
+        results.push({
+          runId: null, workspaceId: null, containerId: id, outcome: "unmatched",
+          reason: "managed_engine_object_without_database_instance", cleanupAttempted: false,
+        });
+      }
+    }
+    return results;
   }
 
   async start(input: OciSandboxStartInput): Promise<OciSandboxHandle> {
@@ -466,6 +590,8 @@ export class OciSandboxProvider {
       workspaceId: input.workspaceId,
       leaseOwnerDigest: sha(input.leaseOwnerId),
       fencingToken: input.fencingToken,
+      imageRef: this.options.image,
+      policyHash: this.policyHash(),
       containerName,
       workspaceDigest,
       contextDigest,
@@ -521,6 +647,8 @@ export class OciSandboxProvider {
         workspaceId: input.workspaceId,
         leaseOwnerDigest: sha(input.leaseOwnerId),
         fencingToken: input.fencingToken,
+        imageRef: this.options.image,
+        policyHash: this.policyHash(),
         containerId,
         containerName,
         workspaceDigest,
@@ -538,6 +666,8 @@ export class OciSandboxProvider {
         workspaceId: input.workspaceId,
         leaseOwnerDigest: sha(input.leaseOwnerId),
         fencingToken: input.fencingToken,
+        imageRef: this.options.image,
+        policyHash: this.policyHash(),
         containerId,
         containerName,
         workspaceDigest,
@@ -667,6 +797,8 @@ export class OciSandboxProvider {
       workspaceId: handle.workspaceId,
       leaseOwnerDigest: sha(handle.leaseOwnerId),
       fencingToken: handle.fencingToken,
+      imageRef: this.options.image,
+      policyHash: this.policyHash(),
       containerId: handle.containerId,
       containerName: handle.containerName,
       workspaceDigest: handle.workspaceDigest,
@@ -754,6 +886,7 @@ export class OciSandboxProvider {
       "--label", `valkyrie.workspace-id=${workspaceId}`,
       "--label", `valkyrie.lease-owner-sha256=${sha(leaseOwnerId)}`,
       "--label", `valkyrie.lease-fencing-token=${fencingToken}`,
+      "--label", `valkyrie.policy-sha256=${this.policyHash()}`,
       "--label", `valkyrie.workspace-sha256=${workspaceDigest}`,
       "--label", `valkyrie.context-sha256=${contextDigest}`,
       "--label", `valkyrie.workdir-sha256=${workingDirectoryDigest}`,
@@ -801,22 +934,7 @@ export class OciSandboxProvider {
   }
 
   private async inspectOwnership(handle: OciSandboxHandle): Promise<OwnershipInspection> {
-    const result = await this.invoke(
-      "inspect",
-      ["inspect", "--type", "container", handle.containerId],
-      this.timeouts.inspectMs,
-      this.maxEngineOutputBytes,
-    );
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(result.stdout);
-    } catch {
-      throw new Error("OCI inspect returned malformed JSON");
-    }
-    if (!Array.isArray(parsed) || parsed.length !== 1 || !parsed[0] || typeof parsed[0] !== "object") {
-      throw new Error("OCI inspect must return exactly one container");
-    }
-    const item = parsed[0] as DockerInspect;
+    const item = await this.inspectRaw(handle.containerId);
     const labels = item.Config?.Labels;
     if (
       item.Id !== handle.containerId
@@ -827,6 +945,7 @@ export class OciSandboxProvider {
       || labels["valkyrie.workspace-id"] !== handle.workspaceId
       || labels["valkyrie.lease-owner-sha256"] !== sha(handle.leaseOwnerId)
       || labels["valkyrie.lease-fencing-token"] !== String(handle.fencingToken)
+      || labels["valkyrie.policy-sha256"] !== this.policyHash()
       || labels["valkyrie.workspace-sha256"] !== handle.workspaceDigest
       || labels["valkyrie.context-sha256"] !== handle.contextDigest
       || labels["valkyrie.workdir-sha256"] !== handle.workingDirectoryDigest
@@ -895,6 +1014,157 @@ export class OciSandboxProvider {
     return { running, ready: running && (health === undefined || health === "healthy") };
   }
 
+  private async inspectRaw(containerId: string): Promise<DockerInspect> {
+    const result = await this.invoke(
+      "inspect",
+      ["inspect", "--type", "container", containerId],
+      this.timeouts.inspectMs,
+      this.maxEngineOutputBytes,
+    );
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(result.stdout);
+    } catch {
+      throw new Error("OCI inspect returned malformed JSON");
+    }
+    if (!Array.isArray(parsed) || parsed.length !== 1 || !parsed[0] || typeof parsed[0] !== "object") {
+      throw new Error("OCI inspect must return exactly one container");
+    }
+    return parsed[0] as DockerInspect;
+  }
+
+  private validateReconciliationExpectation(expected: OciReconciliationExpectation): void {
+    if (!RUN_ID.test(expected.runId) || !RUN_ID.test(expected.workspaceId) || !RUN_ID.test(expected.leaseOwnerId)) {
+      throw new Error("Sandbox reconciliation identity is invalid");
+    }
+    if (!Number.isSafeInteger(expected.fencingToken) || expected.fencingToken < 1) {
+      throw new Error("Sandbox reconciliation fence is invalid");
+    }
+    if (expected.engineId !== null && !CONTAINER_ID.test(expected.engineId)) {
+      throw new Error("Sandbox reconciliation engine ID is invalid");
+    }
+    if (expected.imageRef !== this.options.image || expected.policyHash !== this.policyHash()) {
+      throw new Error("Sandbox reconciliation provider contract does not match this provider");
+    }
+    if ([expected.workspaceDigest, expected.contextDigest, expected.workdirDigest].some((value) => !CONTAINER_ID.test(value))) {
+      throw new Error("Sandbox reconciliation path digest is invalid");
+    }
+    if (!Number.isSafeInteger(expected.cleanupAttempts) || expected.cleanupAttempts < 0 || expected.cleanupAttempts > 1_000) {
+      throw new Error("Sandbox reconciliation cleanup attempts are invalid");
+    }
+  }
+
+  private matchesReconciliationLabels(item: DockerInspect, expected: OciReconciliationExpectation): boolean {
+    const labels = item.Config?.Labels;
+    return typeof item.Id === "string"
+      && !!labels
+      && labels["valkyrie.managed"] === "true"
+      && labels["valkyrie.run-id"] === expected.runId
+      && labels["valkyrie.workspace-id"] === expected.workspaceId
+      && labels["valkyrie.lease-owner-sha256"] === sha(expected.leaseOwnerId)
+      && labels["valkyrie.lease-fencing-token"] === String(expected.fencingToken)
+      && labels["valkyrie.policy-sha256"] === expected.policyHash;
+  }
+
+  private assertReconciliationPolicy(item: DockerInspect, expected: OciReconciliationExpectation): void {
+    const labels = item.Config?.Labels;
+    if (!this.matchesReconciliationLabels(item, expected)
+        || item.Config?.Image !== expected.imageRef
+        || labels?.["valkyrie.workspace-sha256"] !== expected.workspaceDigest
+        || labels?.["valkyrie.context-sha256"] !== expected.contextDigest
+        || labels?.["valkyrie.workdir-sha256"] !== expected.workdirDigest
+        || item.Config?.User !== this.user) {
+      throw new Error("OCI restart ownership labels do not match durable state");
+    }
+    const expectedNetwork = this.network.mode === "none" ? "none" : this.network.name;
+    const effectiveNetworks = item.NetworkSettings?.Networks;
+    const expectedTmpfs = `rw,nosuid,nodev,noexec,size=${this.resources.tmpfsBytes}`;
+    if (item.HostConfig?.NetworkMode !== expectedNetwork
+        || !effectiveNetworks || Object.keys(effectiveNetworks).length !== 1 || !(expectedNetwork in effectiveNetworks)
+        || item.HostConfig?.IpcMode !== "none" || item.HostConfig?.Privileged !== false
+        || item.HostConfig?.RestartPolicy?.Name !== "no" || item.HostConfig?.RestartPolicy?.MaximumRetryCount !== 0
+        || item.HostConfig?.ReadonlyRootfs !== true || item.HostConfig?.Memory !== this.resources.memoryBytes
+        || item.HostConfig?.NanoCpus !== Math.round(this.resources.cpus * 1_000_000_000)
+        || item.HostConfig?.PidsLimit !== this.resources.pidsLimit
+        || !Array.isArray(item.HostConfig?.CapDrop) || item.HostConfig?.CapDrop.length !== 1
+        || item.HostConfig.CapDrop[0] !== "ALL"
+        || !Array.isArray(item.HostConfig?.SecurityOpt) || item.HostConfig?.SecurityOpt.length !== 2
+        || !item.HostConfig.SecurityOpt.includes("no-new-privileges:true")
+        || !item.HostConfig.SecurityOpt.includes("seccomp=builtin")
+        || !item.HostConfig?.Tmpfs || Object.keys(item.HostConfig.Tmpfs as Record<string, unknown>).length !== 1
+        || (item.HostConfig.Tmpfs as Record<string, unknown>)["/tmp"] !== expectedTmpfs
+        || item.HostConfig?.Init !== true) {
+      throw new Error("OCI restart resource or privilege policy does not match durable state");
+    }
+    const mounts = (item.Mounts ?? []).filter((mount) => mount.Type !== "tmpfs");
+    const workspace = mounts.find((mount) => mount.Destination === "/workspace");
+    const context = mounts.find((mount) => mount.Destination === "/run-context");
+    if (mounts.length !== 2 || workspace?.Type !== "bind" || workspace.RW !== true
+        || context?.Type !== "bind" || context.RW !== false
+        || typeof workspace.Source !== "string" || typeof context.Source !== "string"
+        || sha(workspace.Source) !== expected.workspaceDigest || sha(context.Source) !== expected.contextDigest) {
+      throw new Error("OCI restart mount policy does not match durable state");
+    }
+    const workspaceRoot = realpathSync(resolve(this.options.workspaceRoot));
+    const contextRoot = realpathSync(resolve(this.options.contextRoot));
+    if (!isContained(workspaceRoot, resolve(workspace.Source)) || !isContained(contextRoot, resolve(context.Source))) {
+      throw new Error("OCI restart mount escaped its configured root");
+    }
+    const workingDir = item.Config?.WorkingDir;
+    const relativeWorkdir = workingDir === "/workspace"
+      ? "."
+      : typeof workingDir === "string" && workingDir.startsWith("/workspace/")
+        ? workingDir.slice("/workspace/".length)
+        : null;
+    if (!relativeWorkdir || sha(relativeWorkdir) !== expected.workdirDigest) {
+      throw new Error("OCI restart working directory does not match durable state");
+    }
+  }
+
+  private recordReconciliation(
+    expected: OciReconciliationExpectation,
+    containerId: string | null,
+    outcome: "cleaned" | "absent" | "quarantined",
+    reason: string,
+    cleanupAttempted: boolean,
+  ): OciReconciliationResult {
+    const root = mkdirPrivateTree(resolve(this.options.stateRoot), []);
+    const destination = mkdirPrivateTree(root, [outcome === "quarantined" ? "quarantine" : "completed"]);
+    const name = `${sha(expected.runId)}.json`;
+    const activeRecord = join(root, "active", name);
+    const destinationRecord = join(destination, name);
+    const value = {
+      schemaVersion: 1,
+      runId: expected.runId,
+      workspaceId: expected.workspaceId,
+      leaseOwnerDigest: sha(expected.leaseOwnerId),
+      fencingToken: expected.fencingToken,
+      imageRef: expected.imageRef,
+      policyHash: expected.policyHash,
+      ...(containerId ? { containerId } : {}),
+      workspaceDigest: expected.workspaceDigest,
+      contextDigest: expected.contextDigest,
+      workingDirectoryDigest: expected.workdirDigest,
+      status: `restart_${outcome}`,
+      reason,
+      cleanupAttempted,
+    };
+    if (existsSync(activeRecord)) {
+      replaceJson(activeRecord, value);
+      if (existsSync(destinationRecord)) rmSync(destinationRecord, { force: true });
+      renameSync(activeRecord, destinationRecord);
+    } else if (existsSync(destinationRecord)) replaceJson(destinationRecord, value);
+    else writeJsonExclusive(destinationRecord, value);
+    return {
+      runId: expected.runId,
+      workspaceId: expected.workspaceId,
+      containerId,
+      outcome,
+      reason,
+      cleanupAttempted,
+    };
+  }
+
   private async emergencyStop(handle: OciSandboxHandle): Promise<void> {
     try {
       await this.invoke(
@@ -937,6 +1207,8 @@ export class OciSandboxProvider {
       workspaceId: handle.workspaceId,
       leaseOwnerDigest: sha(handle.leaseOwnerId),
       fencingToken: handle.fencingToken,
+      imageRef: this.options.image,
+      policyHash: this.policyHash(),
       containerId: handle.containerId,
       containerName: handle.containerName,
       workspaceDigest: handle.workspaceDigest,
@@ -984,6 +1256,8 @@ export class OciSandboxProvider {
       workspaceId,
       leaseOwnerDigest: sha(leaseOwnerId),
       fencingToken,
+      imageRef: this.options.image,
+      policyHash: this.policyHash(),
       containerName,
       workspaceDigest,
       contextDigest,
@@ -1007,6 +1281,8 @@ export class OciSandboxProvider {
       workspaceId: handle.workspaceId,
       leaseOwnerDigest: sha(handle.leaseOwnerId),
       fencingToken: handle.fencingToken,
+      imageRef: this.options.image,
+      policyHash: this.policyHash(),
       containerId: handle.containerId,
       containerName: handle.containerName,
       workspaceDigest: handle.workspaceDigest,
@@ -1020,6 +1296,23 @@ export class OciSandboxProvider {
     const name = `${sha(runId)}.json`;
     const root = resolve(this.options.stateRoot);
     return ["active", "quarantine", "completed"].some((kind) => existsSync(join(root, kind, name)));
+  }
+
+  private policyHash(): string {
+    return sha(JSON.stringify({
+      schemaVersion: 1,
+      imageRef: this.options.image,
+      user: this.user,
+      network: this.network,
+      resources: this.resources,
+      idleCommand: this.idleCommand,
+      rootReadonly: true,
+      ipc: "none",
+      init: true,
+      capDrop: ["ALL"],
+      securityOpt: ["no-new-privileges:true", "seccomp=builtin"],
+      tmpfs: { destination: "/tmp", options: "rw,nosuid,nodev,noexec", bytes: this.resources.tmpfsBytes },
+    }));
   }
 
   private withLifecycleLock<T>(runId: string, operation: () => Promise<T> | T): Promise<T> {

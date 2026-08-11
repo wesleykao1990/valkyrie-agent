@@ -149,6 +149,7 @@ Startup inspects:
 - approvals resolved while their run still awaits application;
 - active leases left on terminal runs;
 - expired active writer leases and durable quarantined leases;
+- nonterminal durable sandbox instances plus exact provider engine inventory;
 - pending outbox rows.
 
 An unconfirmed queued run is failed. Legacy/demo leases whose owner is the run may
@@ -159,7 +160,10 @@ evidence remains until an operator proves cleanup and performs an exact-fence
 release. Scripted mock
 approvals can be safely replayed; unknown native-runtime approval state is marked
 for operator reconciliation rather than claiming resumability. PostgreSQL
-durability does not prove native runtime or sandbox-process durability.
+durability does not prove native runtime durability. Migration 005 lets the
+internal writer boundary reconcile tested DB-only, engine-only, active, policy-
+drift, and fence-rotation sandbox cases by exact ownership. Ambiguous or unmatched
+provider objects remain untouched and quarantined for review.
 
 ## Migration failure and rollback
 
@@ -181,8 +185,12 @@ durable quarantine evidence. Existing v3 active leases are conservatively
 backfilled with `owner_id=run_id`, fencing token `1`, and `acquired_at` equal to
 their prior heartbeat. Treat those as legacy: stop/quarantine/clean them before
 enabling any real writer. An older binary rejects the newer migration ledger, so
-a v4 rollback requires a verified pre-v4 database backup (or the independent
-SQLite data set); it is not a code-only downgrade.
+a rollback requires a verified database backup compatible with the selected
+binary (or the independent SQLite data set); it is not a code-only downgrade.
+
+Migration `005_sandbox_instances.sql` adds durable provider lifecycle and
+ownership records used for restart reconciliation. It is forward-only too, so a
+rollback from the current schema requires a verified pre-v5 backup.
 
 Fencing protects database lease mutations. It cannot revoke a stale process's
 raw filesystem access. The owning sandbox must still be stopped and its effective

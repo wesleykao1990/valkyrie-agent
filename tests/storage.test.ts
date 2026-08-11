@@ -61,6 +61,124 @@ function workspaceBundle(runId: string, suffix = runId, expiresAt = new Date(Dat
   return { workspace, lease };
 }
 
+async function exerciseSandboxInstanceContract(store: ControlPlaneStore, prefix: string, clock: MutableStoreClock): Promise<void> {
+  const instanceRun = run(`${prefix}_sandbox_instance`);
+  const bundle = workspaceBundle(
+    instanceRun.id,
+    instanceRun.id,
+    new Date(clock.current() + 60_000).toISOString(),
+  );
+  bundle.workspace.provider = "isolated-git-worktree";
+  bundle.lease.heartbeatAt = new Date(clock.current()).toISOString();
+  const created = await store.createRunBundle({ run: instanceRun, ...bundle });
+  const lease = created.lease!;
+  const initialAt = new Date(clock.current()).toISOString();
+  const input = {
+    runId: instanceRun.id,
+    workspaceId: bundle.workspace.id,
+    leaseOwnerId: lease.ownerId,
+    fencingToken: lease.fencingToken,
+    provider: "docker-compatible" as const,
+    imageRef: `fixture.invalid/writer@sha256:${"a".repeat(64)}`,
+    policyHash: "b".repeat(64),
+    workspaceDigest: "c".repeat(64),
+    contextDigest: "d".repeat(64),
+    contextContentHash: "0".repeat(64),
+    workdirDigest: "e".repeat(64),
+    createdAt: initialAt,
+    updatedAt: initialAt,
+  };
+  assert.equal((await store.createSandboxInstance(input)).state, "provisioning");
+  assert.deepEqual(await store.createSandboxInstance(input), await store.getSandboxInstance(instanceRun.id));
+  await assert.rejects(store.createSandboxInstance({ ...input, policyHash: "f".repeat(64) }), /different lifecycle evidence/i);
+
+  const common = {
+    runId: input.runId,
+    workspaceId: input.workspaceId,
+    ownerId: input.leaseOwnerId,
+    fencingToken: input.fencingToken,
+  };
+  const engineId = "1".repeat(64);
+  clock.set(clock.current() + 1_000);
+  const readyAt = new Date(clock.current()).toISOString();
+  const ready = await store.transitionSandboxInstance({
+    ...common, expectedState: "provisioning", state: "ready", engineId, updatedAt: readyAt,
+  });
+  assert.equal(ready?.engineId, engineId);
+  assert.equal((await store.transitionSandboxInstance({
+    ...common, expectedState: "provisioning", state: "ready", engineId, updatedAt: readyAt,
+  })), null, "state transitions must be compare-and-set");
+  clock.set(clock.current() + 1_000);
+  assert.equal((await store.transitionSandboxInstance({
+    ...common, expectedState: "ready", state: "running", updatedAt: new Date(clock.current()).toISOString(),
+  }))?.state, "running");
+  clock.set(clock.current() + 1_000);
+  const cleanupAt = new Date(clock.current()).toISOString();
+  assert.equal((await store.transitionSandboxInstance({
+    ...common, expectedState: "running", state: "freezing", updatedAt: cleanupAt, cleanupAttemptedAt: cleanupAt,
+  }))?.cleanupAttempts, 1);
+  clock.set(clock.current() + 1_000);
+  assert.equal((await store.transitionSandboxInstance({
+    ...common, expectedState: "freezing", state: "exporting", updatedAt: new Date(clock.current()).toISOString(),
+  }))?.state, "exporting");
+  clock.set(clock.current() + 1_000);
+  assert.equal((await store.transitionSandboxInstance({
+    ...common, expectedState: "exporting", state: "cleaned", updatedAt: new Date(clock.current()).toISOString(),
+  }))?.state, "cleaned");
+  await assert.rejects(store.transitionSandboxInstance({
+    ...common, expectedState: "cleaned", state: "quarantined", updatedAt: new Date(clock.current()).toISOString(),
+    quarantineReason: "too_late",
+  }), /not allowed/i);
+
+  const quarantineRun = run(`${prefix}_sandbox_quarantine`);
+  const quarantineBundle = workspaceBundle(
+    quarantineRun.id,
+    quarantineRun.id,
+    new Date(clock.current() + 60_000).toISOString(),
+  );
+  quarantineBundle.workspace.provider = "isolated-git-worktree";
+  quarantineBundle.lease.heartbeatAt = new Date(clock.current()).toISOString();
+  const quarantineCreated = await store.createRunBundle({ run: quarantineRun, ...quarantineBundle });
+  const quarantineLease = quarantineCreated.lease!;
+  const quarantineInput = {
+    ...input,
+    runId: quarantineRun.id,
+    workspaceId: quarantineBundle.workspace.id,
+    leaseOwnerId: quarantineLease.ownerId,
+    fencingToken: quarantineLease.fencingToken,
+    createdAt: new Date(clock.current()).toISOString(),
+    updatedAt: new Date(clock.current()).toISOString(),
+  };
+  await store.createSandboxInstance(quarantineInput);
+  clock.set(clock.current() + 1_000);
+  const quarantineAt = new Date(clock.current()).toISOString();
+  const quarantined = await store.transitionSandboxInstance({
+    runId: quarantineInput.runId,
+    workspaceId: quarantineInput.workspaceId,
+    ownerId: quarantineInput.leaseOwnerId,
+    fencingToken: quarantineInput.fencingToken,
+    expectedState: "provisioning",
+    state: "quarantined",
+    updatedAt: quarantineAt,
+    cleanupAttemptedAt: quarantineAt,
+    quarantineReason: "restart_engine_object_absent",
+  });
+  assert.equal(quarantined?.quarantineReason, "restart_engine_object_absent");
+  assert.deepEqual((await store.listSandboxInstances(["quarantined"])).map((item) => item.runId), [quarantineRun.id]);
+  const outboxTopics = (await store.listPendingOutbox()).filter((item) => item.aggregateId === instanceRun.id)
+    .map((item) => item.topic);
+  for (const state of ["provisioning", "ready", "running", "freezing", "exporting", "cleaned"]) {
+    assert.ok(outboxTopics.includes(`sandbox.instance.${state}`));
+  }
+  assert.equal(await store.releaseWorkspaceLease({
+    workspaceId: input.workspaceId, runId: input.runId, ownerId: input.leaseOwnerId, fencingToken: input.fencingToken,
+  }), true);
+  assert.equal(await store.releaseWorkspaceLease({
+    workspaceId: quarantineInput.workspaceId, runId: quarantineInput.runId,
+    ownerId: quarantineInput.leaseOwnerId, fencingToken: quarantineInput.fencingToken,
+  }), true);
+}
+
 async function seed(store: ControlPlaneStore): Promise<void> {
   await store.seedProjects([projectSeed]);
 }
@@ -471,9 +589,9 @@ test("SQLite migrations are explicit, repeatable, and current", async () => {
   const store = new SqliteStore(":memory:");
   try {
     const first = await store.migrate();
-    assert.deepEqual(first.map((item) => [item.version, item.status]), [[1, "applied"], [2, "applied"], [3, "applied"], [4, "applied"]]);
+    assert.deepEqual(first.map((item) => [item.version, item.status]), [[1, "applied"], [2, "applied"], [3, "applied"], [4, "applied"], [5, "applied"]]);
     const second = await store.migrate();
-    assert.deepEqual(second.map((item) => item.status), ["already_applied", "already_applied", "already_applied", "already_applied"]);
+    assert.deepEqual(second.map((item) => item.status), ["already_applied", "already_applied", "already_applied", "already_applied", "already_applied"]);
     assert.deepEqual(await store.healthCheck(), { ok: true, backend: "sqlite", migrationsCurrent: true });
   } finally {
     await store.close();
@@ -512,7 +630,7 @@ test("SQLite adopts a legacy unversioned database and rejects migration checksum
 
     const adopted = new SqliteStore(path);
     const applied = await adopted.migrate();
-    assert.deepEqual(applied.map((item) => item.status), ["applied", "applied", "applied", "applied"]);
+    assert.deepEqual(applied.map((item) => item.status), ["applied", "applied", "applied", "applied", "applied"]);
     assert.equal((await adopted.healthCheck()).migrationsCurrent, true);
     await adopted.close();
 
@@ -712,6 +830,17 @@ test("SQLite writer leases are renewable, fenced, quarantinable, and monotonical
   try {
     await seed(store);
     await exerciseFencedWriterLeaseContract(store, "sqlite", clock);
+  } finally {
+    await store.close();
+  }
+});
+
+test("SQLite sandbox instances enforce exact fenced lifecycle transitions", async () => {
+  const clock = mutableStoreClock();
+  const store = new SqliteStore(":memory:", { now: clock.now });
+  try {
+    await seed(store);
+    await exerciseSandboxInstanceContract(store, "sqlite", clock);
   } finally {
     await store.close();
   }
@@ -992,9 +1121,9 @@ test("PostgreSQL storage contract smoke", { skip: !postgresUrl }, async () => {
   });
   try {
     const migrationOutput = await store.migrate();
-    assert.deepEqual(migrationOutput.map((item) => item.version), [1, 2, 3, 4]);
+    assert.deepEqual(migrationOutput.map((item) => item.version), [1, 2, 3, 4, 5]);
     const repeatedMigrations = await store.migrate();
-    assert.deepEqual(repeatedMigrations.map((item) => item.status), ["already_applied", "already_applied", "already_applied", "already_applied"]);
+    assert.deepEqual(repeatedMigrations.map((item) => item.status), ["already_applied", "already_applied", "already_applied", "already_applied", "already_applied"]);
     assert.deepEqual(await store.healthCheck(), { ok: true, backend: "postgres", migrationsCurrent: true });
     assert.deepEqual(await store.getWorkspaceLease("pg_legacy_fenced_ws"), {
       workspaceId: "pg_legacy_fenced_ws",
@@ -1013,6 +1142,7 @@ test("PostgreSQL storage contract smoke", { skip: !postgresUrl }, async () => {
     await store.resetOperationalData();
     await seed(store);
     await exerciseFencedWriterLeaseContract(store, "postgres", clock);
+    await exerciseSandboxInstanceContract(store, "postgres", clock);
     await exerciseArtifactBatchContract(store, "postgres");
     await exerciseApprovalRequestContract(store, "postgres");
     await exerciseMismatchedApprovalEventContract(store, "postgres");

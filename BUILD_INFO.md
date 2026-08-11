@@ -2,7 +2,7 @@
 
 - Package: Wesley Agent Control Plane Prototype
 - Repository release: 0.3.0
-- Built: 11 August 2026
+- Built: 12 August 2026
 - Minimum runtime: Node.js 22.16
 - Full-verification database: disposable PostgreSQL 16
 - External credentials bundled: none
@@ -24,11 +24,11 @@
 - Milestone 3a: authenticated, disabled-by-default native connectivity for
   Atomic offline discovery, direct marker-only Codex/Claude Code probes,
   isolated Hermes MCP, and governed Project Brain retrieval/preview/rejection.
-- Milestone 4 deterministic slice: fenced writer leases, a private per-run Git root,
-  a disabled digest-pinned OCI provider, host-owned lease heartbeat, governed
-  artifact export, and cleanup/quarantine orchestration. Live provider evidence
-  remains blocked until a supported external container/VM engine is installed;
-  durable sandbox-instance restart reconciliation is also still required.
+- Milestone 4: fenced writer leases, a private per-run Git root, a disabled
+  digest-pinned OCI provider, host-owned lease heartbeat, checksummed read-only
+  context, governed artifact export, durable sandbox-instance lifecycle/restart
+  reconciliation, and cleanup/quarantine orchestration. The local Colima/Docker
+  provider passed the opt-in live smoke with an immutable Alpine fixture digest.
 
 ## Verification entry point
 

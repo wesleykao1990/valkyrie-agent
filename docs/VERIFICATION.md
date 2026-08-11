@@ -1,7 +1,7 @@
 # Verification record
 
 Package version: 0.3.0
-Current pilot date: 2026-08-11
+Current pilot date: 2026-08-12
 
 ## Untouched continuation baseline
 
@@ -31,9 +31,9 @@ the imported Atomic package verifier/typecheck, HTTP lifecycle smoke, and stdio
 MCP smoke. Current phase evidence:
 
 - `npm run typecheck`: passed with TypeScript 5.8.3 and `noCheck=false`.
-- `npm test`: 115 tests total; 113 passed, 0 failed, 2 honest opt-in cases
+- `npm test`: 123 tests total; 121 passed, 0 failed, 2 honest opt-in cases
   skipped in this general phase (PostgreSQL contract and live OCI provider).
-- `npm run test:postgres`: PostgreSQL 16.14 disposable cluster; 19 passed, 0
+- `npm run test:postgres`: PostgreSQL 16.14 disposable cluster; 20 passed, 0
   failed/skipped. The script created a temporary cluster under `/tmp`, bound a
   random loopback port, supplied its own URL/sentinel, stopped PostgreSQL, and
   removed the cluster.
@@ -115,10 +115,16 @@ and reconciliation.
 
 ### Milestone 4 writer-boundary contracts
 
-- Forward migration 004 on SQLite/PostgreSQL: v3 backfill, owner/run/workspace
+- Forward migrations 004 and 005 on SQLite/PostgreSQL: v3 lease backfill,
+  owner/run/workspace
   constraints, monotonic fencing epochs, exact-fence renewal/release/quarantine,
   expired rotation, stale-owner/token rejection, quarantine persistence, and
   rollback/concurrency parity.
+- Durable sandbox-instance state binds engine ID, run, workspace, lease owner and
+  fence, immutable image, policy/path digests, context-content hash, lifecycle
+  state, cleanup attempts, and bounded quarantine evidence. CAS transitions and
+  outbox events cover provisioning, ready, running, freezing, exporting, cleaned,
+  and quarantined states with adapter parity.
 - Atomic/idempotent artifact batches: exact replay, every-field conflict,
   duplicate/mixed/foreign-run rejection, and late artifact/outbox rollback.
 - Strict writer workspace: clean exact base commit, independent shallow bare Git
@@ -147,6 +153,11 @@ and reconciliation.
   container/worktree terminal cleanup, and durable secret/persistence/unsafe-
   cleanup quarantine. It accepts only `workflow=sandbox-fixture` and is not
   registered through HTTP, MCP, or a runtime adapter.
+- Restart reconciliation inventories only explicitly Valkyrie-labelled engine
+  objects, then requires exact immutable ID, lease, image, policy, mount, network,
+  privilege, and path ownership before cleanup. DB-only, engine-only, active,
+  policy-drift, unmatched, and late-start/fence-rotation cases fail closed;
+  unrelated or ambiguous engine objects are left untouched.
 
 ## Milestone 4 live provider evidence
 
@@ -154,20 +165,35 @@ and reconciliation.
 npm run smoke:sandbox
 ```
 
-Current outcome: **skipped, not passed**. This macOS host has no Docker, Podman,
-nerdctl, Colima/Lima, Apple container CLI, OrbStack, Multipass, Finch,
-devcontainer CLI, or detected VM engine. `/usr/bin/sandbox-exec` is not the
-accepted external container/VM boundary.
+Current outcome: **passed, 1/1 with no skip**, against a local Colima VM and its
+Docker-compatible daemon. Installed and exercised versions were Colima `0.10.3`,
+Lima `2.2.0`, Docker CLI `29.7.2`, and Docker Engine `29.5.2` on Linux/ARM64.
+The reviewed fixture was official Alpine `3.22.5` pinned as:
 
-The opt-in test requires `VALKYRIE_OCI_LIVE_ENGINE` as an absolute CLI path and
-`VALKYRIE_OCI_LIVE_IMAGE` as an already-present immutable digest; an explicit
-local `VALKYRIE_OCI_LIVE_SOCKET=unix:///...` is optional. It derives the current
+```text
+alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+```
+
+The successful live invocation was:
+
+```bash
+env VALKYRIE_OCI_LIVE_ENGINE=/opt/homebrew/bin/docker \
+  VALKYRIE_OCI_LIVE_IMAGE='alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce' \
+  VALKYRIE_OCI_LIVE_ROOT="$HOME/.valkyrie/oci-live-tmp" \
+  VALKYRIE_OCI_LIVE_SOCKET="unix://$HOME/.colima/default/docker.sock" \
+  npm run smoke:sandbox
+```
+
+The opt-in test requires `VALKYRIE_OCI_LIVE_ENGINE` as an absolute CLI path,
+`VALKYRIE_OCI_LIVE_IMAGE` as an already-present immutable digest, and an existing
+owner-private, non-symlink `VALKYRIE_OCI_LIVE_ROOT` visible to the selected
+engine; an explicit local `VALKYRIE_OCI_LIVE_SOCKET=unix:///...` is optional. It derives the current
 non-root host UID:GID for strict bind ownership; on a host that cannot expose
 those values, set a reviewed numeric `VALKYRIE_OCI_LIVE_USER=uid:gid`. When
 configured it checks actual non-root execution, writable candidate path,
 read-only root/context, no `eth0`/default route, absence of a host secret canary,
 artifact export, and positive container absence after owned cleanup in addition
-to inspected policy. Normal `npm test`/`npm run verify` strip all four variables
+to inspected policy. Normal `npm test`/`npm run verify` strip all five variables
 so inherited shell state cannot accidentally launch it.
 
 Fake-engine success is contract evidence only. No Atomic, Codex, or Claude Code
@@ -242,9 +268,10 @@ The Milestone 3 final review left non-blocking deployment advisories: earlier ig
 state can retain permissive modes (new POSIX server state now uses umask `077`);
 general memory search can return explicitly advisory results; the ignored Atomic
 install lacks a committed transitive lock; and SIGKILL/descendant cleanup belongs
-  to the external container/VM boundary. Milestone 4 adds bounded container
-  cleanup for a tracked provider, but hard host crash and daemon/descendant
-  reconciliation still need live validation and durable sandbox-instance state.
+to the external container/VM boundary. Milestone 4 now adds bounded container
+cleanup, durable sandbox-instance state, and provider-aware restart reconciliation
+for the tracked local provider. A hard host/VM failure during a real model run and
+descendant behavior under a broader writer workload remain Milestone 5 evidence.
 
 ## Live integrations not exercised
 
@@ -252,8 +279,7 @@ install lacks a committed transitive lock; and SIGKILL/descendant cleanup belong
 - Atomic provider/model workflow, HIL answer mapping, steering, pause/resume, or
   durable DBOS/PostgreSQL native resume.
 - Telegram/phone channel or remote Hermes gateway.
-- Live real-engine writer isolation and any model-backed repository writer,
-  GitHub PR API, merge, deployment, Linear,
+- Any model-backed repository writer, GitHub PR API, merge, deployment, Linear,
   OpenViking, or external outbox publisher.
 - Production credentials, destructive database action, or canonical memory
   promotion in the live native smoke.

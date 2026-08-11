@@ -7,7 +7,7 @@
 5. Read `docs/IMPLEMENTATION_PLAN_M1_M2.md` for completed storage/package work,
    `docs/IMPLEMENTATION_PLAN_M3_MINIMUM.md` for the opt-in native connectivity
    slice, and `docs/IMPLEMENTATION_PLAN_M4.md` plus proposed ADR-P004 for the
-   disabled external-writer boundary and its remaining live/restart gates.
+   disabled external-writer boundary and its completed local live/restart evidence.
 6. For Atomic-specific work only, then read `packages/atomic-workflow-architect/START_HERE.md`, its `skills/atomic-workflow-architect/SKILL.md`, and the relevant integration guide. That package is a module, not the whole Project OS, and it is not a live runtime.
 7. Read `docs/STORAGE.md` before selecting PostgreSQL. Install locked dependencies
    with `npm ci`, then run `npm run verify` (full verification requires local

@@ -80,10 +80,12 @@ infra/postgres/001_initial.sql
 infra/postgres/002_storage_guarantees.sql
 infra/postgres/003_run_workspace_ownership.sql
 infra/postgres/004_fenced_writer_leases.sql
+infra/postgres/005_sandbox_instances.sql
 infra/sqlite/001_initial.sql
 infra/sqlite/002_storage_guarantees.sql
 infra/sqlite/003_legacy_ownership_guards.sql
 infra/sqlite/004_fenced_writer_leases.sql
+infra/sqlite/005_sandbox_instances.sql
 package-lock.json
 package.json
 packages/atomic-workflow-architect/AGENTS.md

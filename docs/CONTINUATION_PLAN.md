@@ -83,10 +83,10 @@ DBOS/PostgreSQL durability contract through a process-kill/restart test.
 
 ## Milestone 4 — Real workspace boundary
 
-Status: deterministic contract slice implemented; live provider verification is
-blocked on this host because no supported container/VM engine is installed, and
-durable provider-aware restart reconciliation remains incomplete. Writer runtime
-registration remains disabled.
+Status: complete for the disabled local non-production boundary. Colima/Docker
+passed the opt-in live provider smoke with an immutable ARM64 Alpine image, and
+migration 005 plus exact-label provider reconciliation cover restart/orphan
+states. Writer runtime registration remains a separate Milestone 5 action.
 
 - [x] Private shallow Git store plus one relative worktree per fixture candidate;
   no developer checkout/shared Git directory and no duplicate Atomic top-level
@@ -101,11 +101,13 @@ registration remains disabled.
   atomic idempotent registration, opaque references, terminal cleanup, and
   quarantine behavior.
 - [x] Deterministic fake-engine/workspace/lease/artifact/coordinator tests.
-- [ ] Opt-in provider smoke passes against a real engine and reviewed immutable
-  fixture image on the deployment host. Until then, this milestone is not live-
-  complete and no model writer may be enabled.
-- [ ] Durable sandbox-instance lifecycle state and provider-aware restart/orphan
-  reconciliation by immutable engine ID and exact ownership labels.
+- [x] Opt-in provider smoke passes against local Colima/Docker and the reviewed
+  immutable `alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce`
+  ARM64 fixture image.
+- [x] Durable sandbox-instance lifecycle state and provider-aware restart/orphan
+  reconciliation by immutable engine ID and exact ownership/policy labels.
+- [x] Caller-supplied context staging is separate, read-only in the container,
+  bounded/checksummed before execution, and rechecked before export.
 - [ ] Remote micro-VM or equivalent stronger isolation for confidential/high-risk
   work; scoped model egress and short-lived credential broker.
 

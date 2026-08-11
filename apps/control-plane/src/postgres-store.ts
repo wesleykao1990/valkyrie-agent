@@ -12,6 +12,8 @@ import {
   observeStoreClock,
   StorageConflictError,
   validateArtifactBatchInput,
+  validateSandboxInstanceCreate,
+  validateSandboxInstanceTransition,
   validateWorkspaceLeaseFence,
   validateWorkspaceLeaseQuarantine,
   validateWorkspaceLeaseRenewal,
@@ -30,6 +32,10 @@ import {
   type ReconciliationCandidates,
   type RunBundleInput,
   type RunBundleResult,
+  type SandboxInstance,
+  type SandboxInstanceCreateInput,
+  type SandboxInstanceState,
+  type SandboxInstanceTransitionInput,
   type StoreHealth,
   type StoreClock,
   type StoredIdempotencyRecord,
@@ -208,7 +214,7 @@ export class PostgresStore implements ControlPlaneStore {
   async resetOperationalData(): Promise<void> {
     await this.transaction(async (client) => {
       await client.query(`TRUNCATE TABLE
-        idempotency_keys,outbox_events,workspace_leases,artifacts,approvals,run_events,
+        idempotency_keys,outbox_events,sandbox_instances,workspace_leases,artifacts,approvals,run_events,
         memory_proposals,workspaces,runs,tasks RESTART IDENTITY`);
     });
   }
@@ -678,6 +684,102 @@ export class PostgresStore implements ControlPlaneStore {
       .map(this.mapLease);
   }
 
+  async createSandboxInstance(input: SandboxInstanceCreateInput): Promise<SandboxInstance> {
+    validateSandboxInstanceCreate(input);
+    return this.transaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext('sandbox-instance'),hashtext($1))", [input.runId]);
+      const existing = await this.getSandboxInstanceRow(client, input.runId, true);
+      if (existing) {
+        if (existing.state === "provisioning" && existing.engineId === null && existing.cleanupAttempts === 0
+            && existing.workspaceId === input.workspaceId && existing.leaseOwnerId === input.leaseOwnerId
+            && existing.fencingToken === input.fencingToken && existing.provider === input.provider
+            && existing.imageRef === input.imageRef && existing.policyHash === input.policyHash
+            && existing.workspaceDigest === input.workspaceDigest && existing.contextDigest === input.contextDigest
+            && existing.contextContentHash === input.contextContentHash && existing.workdirDigest === input.workdirDigest
+            && existing.createdAt === input.createdAt
+            && existing.updatedAt === input.updatedAt) return existing;
+        throw new StorageConflictError("Sandbox instance already exists with different lifecycle evidence");
+      }
+      const run = (await client.query("SELECT workspace_id FROM runs WHERE id=$1 FOR UPDATE", [input.runId])).rows[0];
+      const workspace = (await client.query("SELECT run_id FROM workspaces WHERE id=$1 FOR UPDATE", [input.workspaceId])).rows[0];
+      const lease = await this.getLeaseRow(client, input.workspaceId, true);
+      if (!run || run.workspace_id !== input.workspaceId || !workspace || workspace.run_id !== input.runId
+          || !lease || lease.state !== "active" || lease.runId !== input.runId
+          || lease.ownerId !== input.leaseOwnerId || lease.fencingToken !== input.fencingToken) {
+        throw new StorageConflictError("Sandbox instance does not own the current exact writer lease");
+      }
+      const result = await client.query(`INSERT INTO sandbox_instances
+        (run_id,workspace_id,lease_owner_id,fencing_token,provider,engine_id,image_ref,policy_hash,
+         workspace_digest,context_digest,context_content_hash,workdir_digest,state,cleanup_attempts,last_cleanup_at,
+         quarantine_reason,created_at,updated_at)
+        VALUES ($1,$2,$3,$4,$5,NULL,$6,$7,$8,$9,$10,$11,'provisioning',0,NULL,NULL,$12,$13) RETURNING *`, [
+        input.runId, input.workspaceId, input.leaseOwnerId, input.fencingToken, input.provider,
+        input.imageRef, input.policyHash, input.workspaceDigest, input.contextDigest, input.contextContentHash, input.workdirDigest,
+        input.createdAt, input.updatedAt,
+      ]);
+      await this.insertOutbox(client, "sandbox.instance.provisioning", input.runId, {
+        runId: input.runId, workspaceId: input.workspaceId, ownerId: input.leaseOwnerId,
+        fencingToken: input.fencingToken, provider: input.provider, policyHash: input.policyHash,
+      }, `${input.runId}:provisioning`);
+      return this.mapSandboxInstance(result.rows[0]);
+    });
+  }
+
+  async getSandboxInstance(runId: string): Promise<SandboxInstance | null> {
+    return this.getSandboxInstanceRow(this.pool, runId);
+  }
+
+  async listSandboxInstances(states?: SandboxInstanceState[]): Promise<SandboxInstance[]> {
+    if (states && states.length === 0) return [];
+    const allowed: SandboxInstanceState[] = ["provisioning", "ready", "running", "freezing", "exporting", "cleaned", "quarantined"];
+    if (states?.some((state) => !allowed.includes(state))) throw new StorageConflictError("Unknown sandbox instance state");
+    const result = states
+      ? await this.pool.query("SELECT * FROM sandbox_instances WHERE state = ANY($1::text[]) ORDER BY created_at,run_id", [states])
+      : await this.pool.query("SELECT * FROM sandbox_instances ORDER BY created_at,run_id");
+    return result.rows.map(this.mapSandboxInstance);
+  }
+
+  async transitionSandboxInstance(input: SandboxInstanceTransitionInput): Promise<SandboxInstance | null> {
+    validateSandboxInstanceTransition(input);
+    return this.transaction(async (client) => {
+      const current = await this.getSandboxInstanceRow(client, input.runId, true);
+      if (!current || current.workspaceId !== input.workspaceId || current.leaseOwnerId !== input.ownerId
+          || current.fencingToken !== input.fencingToken || current.state !== input.expectedState) return null;
+      if (Date.parse(input.updatedAt) < Date.parse(current.updatedAt)) {
+        throw new StorageConflictError("Sandbox transition time cannot move backwards");
+      }
+      if (current.engineId && input.engineId && current.engineId !== input.engineId) {
+        throw new StorageConflictError("Sandbox engine ID is immutable once observed");
+      }
+      const engineId = input.engineId ?? current.engineId;
+      if (!["provisioning", "quarantined"].includes(input.state) && !engineId) {
+        throw new StorageConflictError("Sandbox lifecycle requires an immutable engine ID after provisioning");
+      }
+      const cleanupAttempts = current.cleanupAttempts + (input.cleanupAttemptedAt ? 1 : 0);
+      if (cleanupAttempts > 1_000) throw new StorageConflictError("Sandbox cleanup retry bound was exhausted");
+      const updated = await client.query(`UPDATE sandbox_instances
+        SET state=$1,engine_id=$2,cleanup_attempts=$3,last_cleanup_at=COALESCE($4,last_cleanup_at),
+            quarantine_reason=$5,updated_at=$6
+        WHERE run_id=$7 AND workspace_id=$8 AND lease_owner_id=$9 AND fencing_token=$10 AND state=$11 RETURNING *`, [
+        input.state, engineId, cleanupAttempts, input.cleanupAttemptedAt ?? null,
+        input.state === "quarantined" ? input.quarantineReason : null, input.updatedAt,
+        input.runId, input.workspaceId, input.ownerId, input.fencingToken, input.expectedState,
+      ]);
+      if (updated.rowCount !== 1) return null;
+      await this.insertOutbox(client, `sandbox.instance.${input.state}`, input.runId, {
+        runId: input.runId, workspaceId: input.workspaceId, ownerId: input.ownerId,
+        fencingToken: input.fencingToken, state: input.state, engineId,
+        cleanupAttempts, quarantineReason: input.quarantineReason ?? null,
+      }, `${input.runId}:${input.state}`);
+      return this.mapSandboxInstance(updated.rows[0]);
+    });
+  }
+
+  private async getSandboxInstanceRow(client: Queryable, runId: string, lock = false): Promise<SandboxInstance | null> {
+    const row = (await client.query(`SELECT * FROM sandbox_instances WHERE run_id=$1${lock ? " FOR UPDATE" : ""}`, [runId])).rows[0];
+    return row ? this.mapSandboxInstance(row) : null;
+  }
+
   private async getLeaseRow(client: Queryable, workspaceId: string, lock = false): Promise<WorkspaceLease | null> {
     const row = (await client.query(`SELECT * FROM workspace_leases WHERE workspace_id=$1${lock ? " FOR UPDATE" : ""}`, [workspaceId])).rows[0];
     return row ? this.mapLease(row) : null;
@@ -1073,6 +1175,17 @@ export class PostgresStore implements ControlPlaneStore {
     expiresAt: isoString(row.expires_at), heartbeatAt: isoString(row.heartbeat_at),
     acquiredAt: isoString(row.acquired_at), quarantinedAt: nullableIsoString(row.quarantined_at),
     quarantineReason: row.quarantine_reason,
+  });
+
+  private mapSandboxInstance = (row: any): SandboxInstance => ({
+    runId: String(row.run_id), workspaceId: String(row.workspace_id), leaseOwnerId: String(row.lease_owner_id),
+    fencingToken: Number(row.fencing_token), provider: "docker-compatible", engineId: row.engine_id ? String(row.engine_id) : null,
+    imageRef: String(row.image_ref), policyHash: String(row.policy_hash), workspaceDigest: String(row.workspace_digest),
+    contextDigest: String(row.context_digest), contextContentHash: String(row.context_content_hash),
+    workdirDigest: String(row.workdir_digest), state: String(row.state) as SandboxInstanceState,
+    cleanupAttempts: Number(row.cleanup_attempts), lastCleanupAt: nullableIsoString(row.last_cleanup_at),
+    quarantineReason: row.quarantine_reason ? String(row.quarantine_reason) : null,
+    createdAt: isoString(row.created_at), updatedAt: isoString(row.updated_at),
   });
 
   private mapApproval = (row: any): Approval => ({

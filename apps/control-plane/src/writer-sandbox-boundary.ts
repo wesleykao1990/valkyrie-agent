@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, realpathSync } from "node:fs";
-import { basename, dirname, resolve, sep } from "node:path";
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import type { Artifact, Project, Run } from "./types.ts";
-import type { ControlPlaneStore, WorkspaceLease } from "./store.ts";
+import type { ControlPlaneStore, SandboxInstanceState, WorkspaceLease } from "./store.ts";
 import {
   ArtifactSecretDetectedError,
   exportGovernedArtifacts,
@@ -12,7 +12,10 @@ import {
 import type {
   OciCleanupResult,
   OciPreflightResult,
+  OciReconciliationExpectation,
+  OciReconciliationResult,
   OciRunResult,
+  OciSandboxContract,
   OciSandboxHandle,
   OciSandboxStartInput,
 } from "./oci-sandbox-provider.ts";
@@ -24,11 +27,21 @@ import {
 } from "./writer-workspace.ts";
 
 export interface WriterSandboxProvider {
+  contract(): OciSandboxContract;
   preflight(): Promise<OciPreflightResult>;
   start(input: OciSandboxStartInput): Promise<OciSandboxHandle>;
   execute(handle: OciSandboxHandle, command: readonly string[]): Promise<OciRunResult>;
   stop(handle: OciSandboxHandle): Promise<OciCleanupResult | { status: "stopped" }>;
   cleanup(handle: OciSandboxHandle): Promise<OciCleanupResult>;
+  reconcileOrphans(expectations: readonly OciReconciliationExpectation[]): Promise<OciReconciliationResult[]>;
+}
+
+export interface WriterSandboxReconciliationSummary {
+  instancesExamined: number;
+  engineObjectsCleaned: number;
+  engineObjectsAbsent: number;
+  instancesQuarantined: number;
+  runsFailed: number;
 }
 
 export interface WriterSandboxBoundaryOptions {
@@ -125,6 +138,42 @@ function assertArtifactRootDisjoint(artifactRoot: string, runRoot: string, conte
   }
 }
 
+function checksumContextDirectory(input: string): string {
+  const requested = resolve(input);
+  const rootStat = lstatSync(requested);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error("Writer context must be a regular non-symlink directory");
+  }
+  const root = realpathSync(requested);
+  const files: Array<{ relativePath: string; path: string; size: number }> = [];
+  let totalBytes = 0;
+  const visit = (directory: string): void => {
+    for (const name of readdirSync(directory).sort()) {
+      const path = join(directory, name);
+      const stat = lstatSync(path);
+      if (stat.isSymbolicLink()) throw new Error("Writer context cannot contain symbolic links");
+      const real = realpathSync(path);
+      if (!real.startsWith(`${root}${sep}`)) throw new Error("Writer context escaped its staging root");
+      if (stat.isDirectory()) {
+        visit(real);
+        continue;
+      }
+      if (!stat.isFile() || stat.nlink !== 1) throw new Error("Writer context must contain only single-link regular files");
+      totalBytes += stat.size;
+      if (files.length >= 128 || stat.size > 1024 * 1024 || totalBytes > 4 * 1024 * 1024) {
+        throw new Error("Writer context exceeds its file or byte bound");
+      }
+      files.push({ relativePath: relative(root, real).split(sep).join("/"), path: real, size: stat.size });
+    }
+  };
+  visit(root);
+  const hash = createHash("sha256");
+  for (const file of files.sort((left, right) => left.relativePath.localeCompare(right.relativePath))) {
+    hash.update(file.relativePath).update("\0").update(String(file.size)).update("\0").update(readFileSync(file.path));
+  }
+  return hash.digest("hex");
+}
+
 /**
  * Internal Milestone 4 fixture coordinator. It is deliberately not registered as
  * a runtime or exposed through HTTP/MCP. A live provider must pass separately
@@ -144,6 +193,85 @@ export class WriterSandboxBoundary {
     if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(options.ownerId)) {
       throw new Error("Writer sandbox owner ID is invalid");
     }
+  }
+
+  async reconcileStartup(): Promise<WriterSandboxReconciliationSummary> {
+    const states: SandboxInstanceState[] = ["provisioning", "ready", "running", "freezing", "exporting"];
+    const instances = await this.options.store.listSandboxInstances(states);
+    const results = await this.options.provider.reconcileOrphans(instances.map((instance) => ({
+      runId: instance.runId,
+      workspaceId: instance.workspaceId,
+      leaseOwnerId: instance.leaseOwnerId,
+      fencingToken: instance.fencingToken,
+      engineId: instance.engineId,
+      imageRef: instance.imageRef,
+      policyHash: instance.policyHash,
+      workspaceDigest: instance.workspaceDigest,
+      contextDigest: instance.contextDigest,
+      workdirDigest: instance.workdirDigest,
+      cleanupAttempts: instance.cleanupAttempts,
+    })));
+    const unmatched = results.filter((result) => result.outcome === "unmatched");
+    if (unmatched.length > 0) {
+      throw new Error("Restart reconciliation found a managed engine object without durable sandbox ownership");
+    }
+    const byRun = new Map(results.filter((result) => result.runId).map((result) => [result.runId!, result]));
+    if (byRun.size !== instances.length) throw new Error("Restart reconciliation did not return exactly one result per sandbox instance");
+    let engineObjectsCleaned = 0;
+    let engineObjectsAbsent = 0;
+    let instancesQuarantined = 0;
+    let runsFailed = 0;
+    for (const instance of instances) {
+      const result = byRun.get(instance.runId)!;
+      if (result.workspaceId !== instance.workspaceId) throw new Error("Restart reconciliation workspace ownership changed");
+      if (result.outcome === "cleaned") engineObjectsCleaned += 1;
+      if (result.outcome === "absent") engineObjectsAbsent += 1;
+      const currentLease = await this.options.store.getWorkspaceLease(instance.workspaceId);
+      if (currentLease) {
+        if (currentLease.runId !== instance.runId || currentLease.ownerId !== instance.leaseOwnerId
+            || currentLease.fencingToken !== instance.fencingToken) {
+          throw new Error("Restart reconciliation found a successor or mismatched writer lease");
+        }
+        if (currentLease.state === "active") {
+          const quarantined = await this.options.store.quarantineWorkspaceLease({
+            ...fence(currentLease),
+            quarantinedAt: this.clock().toISOString(),
+            reason: `provider_restart_${result.reason}`,
+          });
+          if (!quarantined) throw new Error("Restart reconciliation lost the exact lease quarantine race");
+        }
+      }
+      const transitionAt = this.clock().toISOString();
+      const transitioned = await this.options.store.transitionSandboxInstance({
+        workspaceId: instance.workspaceId,
+        runId: instance.runId,
+        ownerId: instance.leaseOwnerId,
+        fencingToken: instance.fencingToken,
+        expectedState: instance.state,
+        state: "quarantined",
+        updatedAt: transitionAt,
+        ...(result.cleanupAttempted ? { cleanupAttemptedAt: transitionAt } : {}),
+        quarantineReason: `provider_restart_${result.reason}`,
+      });
+      if (!transitioned) throw new Error("Restart reconciliation lost the sandbox lifecycle transition");
+      instancesQuarantined += 1;
+      const run = await this.options.store.getRun(instance.runId);
+      if (run && !["completed", "failed", "cancelled"].includes(run.status)) {
+        await this.options.store.updateRun(run.id, {
+          status: "failed",
+          stage: "workspace_quarantined",
+          completedAt: transitionAt,
+          nextActionAt: null,
+          metadata: {
+            ...run.metadata,
+            reconciliationReason: `provider_restart_${result.reason}`,
+            sandboxEngineCleanupProven: result.outcome === "cleaned" || result.outcome === "absent",
+          },
+        });
+        runsFailed += 1;
+      }
+    }
+    return { instancesExamined: instances.length, engineObjectsCleaned, engineObjectsAbsent, instancesQuarantined, runsFailed };
   }
 
   async runFixture(input: WriterSandboxFixtureInput): Promise<WriterSandboxFixtureResult> {
@@ -177,6 +305,7 @@ export class WriterSandboxBoundary {
     let startAttempted = false;
     let quarantinePersisted = false;
     let cleanupFreezePersisted = false;
+    let sandboxInstanceCreated = false;
 
     try {
       prepared = await this.options.workspaces.create({
@@ -187,6 +316,25 @@ export class WriterSandboxBoundary {
         baseRef: input.baseRef,
       });
       const lease = prepared.persistedLease;
+      const sandboxContract = this.options.provider.contract();
+      const sandboxCreatedAt = this.clock().toISOString();
+      const contextContentHash = checksumContextDirectory(input.contextPath);
+      await this.options.store.createSandboxInstance({
+        runId: input.run.id,
+        workspaceId: prepared.workspaceId,
+        leaseOwnerId: lease.ownerId,
+        fencingToken: lease.fencingToken,
+        provider: sandboxContract.provider,
+        imageRef: sandboxContract.imageRef,
+        policyHash: sandboxContract.policyHash,
+        workspaceDigest: sha(realpathSync(prepared.runRoot)),
+        contextDigest: sha(realpathSync(input.contextPath)),
+        contextContentHash,
+        workdirDigest: sha("worktree"),
+        createdAt: sandboxCreatedAt,
+        updatedAt: sandboxCreatedAt,
+      });
+      sandboxInstanceCreated = true;
       // Supervision begins at the durable lease boundary, before any other
       // storage or provider operation. Provider startup is bounded but may be
       // slower than the lease TTL; a late handle is checked against this same
@@ -236,6 +384,8 @@ export class WriterSandboxBoundary {
         contextPath: input.contextPath,
         workingDirectoryRelativePath: "worktree",
       });
+      await this.transitionSandbox(lease, "provisioning", "ready", handle.containerId);
+      await this.transitionSandbox(lease, "ready", "running");
       // A lease can be lost while provider.start() is in flight. The returned
       // handle remains non-executable until this post-start fence check. The
       // shared catch path then stops/cleans a late handle when ownership is
@@ -247,6 +397,10 @@ export class WriterSandboxBoundary {
       const command = await this.options.provider.execute(handle, input.command);
       await supervisor.pulse();
       supervisor.assertHealthy();
+      if (checksumContextDirectory(input.contextPath) !== contextContentHash) {
+        throw new WriterSandboxQuarantinedError("context_integrity_changed");
+      }
+      await this.transitionSandbox(lease, "running", "freezing");
 
       const stopped = await this.options.provider.stop(handle);
       if (stopped.status === "quarantined") {
@@ -255,6 +409,7 @@ export class WriterSandboxBoundary {
       await supervisor.stop();
       cleanupFreezePersisted = await this.claimFilesystemCleanup(lease);
       if (!cleanupFreezePersisted) throw new Error("Writer lease changed before export could be frozen");
+      await this.transitionSandbox(lease, "freezing", "exporting");
       const exports = exportGovernedArtifacts(input.artifacts, {
         workspacePath: prepared.worktreePath,
         artifactRoot: this.options.artifactRoot,
@@ -286,6 +441,7 @@ export class WriterSandboxBoundary {
       leaseReleased = await this.options.store.releaseWorkspaceLease(fence(lease));
       if (!leaseReleased) throw new Error("Writer lease changed before terminal release");
       cleanupFreezePersisted = false;
+      await this.transitionSandbox(lease, "exporting", "cleaned");
 
       const completedAt = this.clock().toISOString();
       const refreshed = await this.options.store.getRun(input.run.id) ?? input.run;
@@ -365,6 +521,21 @@ export class WriterSandboxBoundary {
           }
         }
         if (cleanupFreezePersisted && quarantineReason) quarantinePersisted = true;
+        if (sandboxInstanceCreated) {
+          const instance = await this.options.store.getSandboxInstance(input.run.id);
+          if (instance && !["cleaned", "quarantined"].includes(instance.state)) {
+            const transitionAt = this.clock().toISOString();
+            const transitioned = await this.options.store.transitionSandboxInstance({
+              ...fence(lease),
+              expectedState: instance.state,
+              state: "quarantined",
+              updatedAt: transitionAt,
+              ...(startAttempted ? { cleanupAttemptedAt: transitionAt } : {}),
+              quarantineReason: quarantineReason ?? safeFailureCode(error).toLowerCase(),
+            });
+            if (!transitioned) throw new Error("Sandbox instance changed before failure quarantine");
+          }
+        }
       }
 
       const current = await this.options.store.getRun(input.run.id);
@@ -405,5 +576,21 @@ export class WriterSandboxBoundary {
 
   private claimFilesystemCleanup(lease: WorkspaceLease): Promise<boolean> {
     return this.quarantine(lease, WRITER_FILESYSTEM_CLEANUP_CLAIM_REASON);
+  }
+
+  private async transitionSandbox(
+    lease: WorkspaceLease,
+    expectedState: SandboxInstanceState,
+    state: SandboxInstanceState,
+    engineId?: string,
+  ): Promise<void> {
+    const transitioned = await this.options.store.transitionSandboxInstance({
+      ...fence(lease),
+      expectedState,
+      state,
+      updatedAt: this.clock().toISOString(),
+      ...(engineId ? { engineId } : {}),
+    });
+    if (!transitioned) throw new Error(`Sandbox instance lost its ${expectedState} -> ${state} transition`);
   }
 }

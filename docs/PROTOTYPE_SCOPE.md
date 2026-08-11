@@ -36,13 +36,15 @@ Pilot: proposed ADR-P003 read-only native connectivity slice
 - Forward migration 004 and SQLite/PostgreSQL parity for explicit writer-lease
   owners, monotonic fencing tokens, heartbeat renewal, exact release, durable
   quarantine, and idempotent transactional artifact batches.
+- Forward migration 005 and SQLite/PostgreSQL parity for durable exact-fenced
+  sandbox-instance lifecycle and provider restart evidence.
 - Internal disabled writer-boundary contract: a private shallow Git store plus one
   relative worktree, a Docker-compatible OCI provider with effective-policy
   inspection and no ambient credentials, host-owned heartbeat and ownership-
   aware lease-loss stop/quarantine, bounded manifest export, deterministic
-  baseline secret scanning, cleanup, and quarantine. Fake/provider orchestration
-  is tested; real isolation and provider-aware restart recovery are not yet
-  exercised on this host.
+  baseline secret scanning, cleanup, and quarantine. Fake/provider orchestration,
+  provider-aware restart recovery, and the explicit local Colima/Docker live
+  fixture smoke pass; model-writer composition remains disabled.
 
 ## Default behavior remains simulated
 

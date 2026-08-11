@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdtempSync,
@@ -11,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { SqliteStore } from "../apps/control-plane/src/sqlite-store.ts";
 import {
@@ -29,9 +30,16 @@ import type {
   OciSandboxHandle,
   OciSandboxStartInput,
 } from "../apps/control-plane/src/oci-sandbox-provider.ts";
+import { OciSandboxProvider } from "../apps/control-plane/src/oci-sandbox-provider.ts";
 import type { Project, Run } from "../apps/control-plane/src/types.ts";
 
 const git = "/usr/bin/git";
+const fakeOciEngine = resolve("scripts/fake-oci-engine.ts");
+const fixtureImage = `fixture.invalid/valkyrie-runner@sha256:${"1".repeat(64)}`;
+
+function digest(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
 
 function gitRun(repository: string, args: string[]): string {
   const result = spawnSync(git, ["-C", repository, ...args], {
@@ -124,6 +132,14 @@ class FixtureProvider implements WriterSandboxProvider {
     this.available = available;
   }
 
+  contract() {
+    return {
+      provider: "docker-compatible" as const,
+      imageRef: `fixture.invalid/writer@sha256:${"a".repeat(64)}`,
+      policyHash: "b".repeat(64),
+    };
+  }
+
   async preflight() {
     this.events.push("preflight");
     return this.available
@@ -168,6 +184,10 @@ class FixtureProvider implements WriterSandboxProvider {
     this.events.push("cleanup");
     handle.status = "cleaned";
     return { status: "cleaned" };
+  }
+
+  async reconcileOrphans() {
+    return [];
   }
 }
 
@@ -276,6 +296,7 @@ test("writer boundary orders stop, scan, atomic artifact persistence, container 
     assert.equal(result.artifacts[0].uri.includes(item.root), false);
     assert.equal((await item.store.listArtifacts(item.run.id)).length, 1);
     assert.equal((await item.store.getRun(item.run.id))?.status, "completed");
+    assert.equal((await item.store.getSandboxInstance(item.run.id))?.state, "cleaned");
     assert.equal(await item.store.getWorkspaceLease(result.workspaceId), null);
     assert.deepEqual(readdirSync(item.writerRoot).sort(), [".git-home"]);
   } finally {
@@ -309,6 +330,7 @@ test("a pre-container storage failure freezes, removes, and releases the prepare
     assert.deepEqual(events, ["preflight"]);
     const run = await item.store.getRun(item.run.id);
     assert.equal(run?.status, "failed");
+    assert.equal((await item.store.getSandboxInstance(item.run.id))?.state, "quarantined");
     assert.equal(await item.store.getWorkspaceLease(String(run?.workspaceId)), null);
     assert.deepEqual(readdirSync(item.writerRoot).sort(), [".git-home"]);
   } finally {
@@ -377,6 +399,32 @@ test("uncertain artifact persistence preserves governed exports and the frozen w
     assert.equal(existsSync(join(item.root, "artifacts", item.run.id, "evidence.txt")), true);
     assert.equal(readdirSync(item.writerRoot).some((name) => name !== ".git-home"), true);
     assert.ok(events.includes("cleanup"), "owned container cleanup is still attempted");
+  } finally {
+    await item.store.close();
+    rmSync(item.root, { recursive: true, force: true });
+  }
+});
+
+test("writer context is checksummed and host-side drift quarantines before artifact export", async () => {
+  const item = await fixture("run_boundary_context_drift");
+  const events: string[] = [];
+  const provider = new FixtureProvider(events, "unused evidence\n");
+  provider.afterExecute = async () => {
+    writeFileSync(join(item.context, "run-contract.json"), "{\"tampered\":true}\n", "utf8");
+  };
+  try {
+    await assert.rejects(boundary(item, provider, events).runFixture({
+      run: item.run,
+      project: item.project,
+      repositoryPath: item.source,
+      contextPath: item.context,
+      command: ["fixture-context-drift"],
+      artifacts: [{ relativePath: "evidence.txt", kind: "sandbox-fixture", mediaType: "text/plain" }],
+    }), (error: unknown) => error instanceof WriterSandboxQuarantinedError
+      && error.reason === "context_integrity_changed");
+    assert.equal((await item.store.getSandboxInstance(item.run.id))?.state, "quarantined");
+    assert.equal((await item.store.getWorkspaceLease(String((await item.store.getRun(item.run.id))?.workspaceId)))?.state, "quarantined");
+    assert.equal((await item.store.listArtifacts(item.run.id)).length, 0);
   } finally {
     await item.store.close();
     rmSync(item.root, { recursive: true, force: true });
@@ -573,6 +621,101 @@ test("artifact storage must be disjoint from the disposable writer and context r
     assert.equal(run?.status, "failed");
     assert.equal(await item.store.getWorkspaceLease(String(run?.workspaceId)), null);
     assert.deepEqual(readdirSync(item.writerRoot).sort(), [".git-home"]);
+  } finally {
+    await item.store.close();
+    rmSync(item.root, { recursive: true, force: true });
+  }
+});
+
+test("restart reconciliation removes the exact orphan and durably quarantines its run and lease", async () => {
+  const item = await fixture("run_boundary_restart_orphan");
+  const stateRoot = join(item.root, "oci-state");
+  const artifactRoot = join(item.root, "artifacts");
+  const options = {
+    enabled: true,
+    engineCommand: process.execPath,
+    enginePrefixArgs: ["--experimental-strip-types", fakeOciEngine, "--state", join(item.root, "fake-oci.json")],
+    image: fixtureImage,
+    user: "65532:65532",
+    workspaceRoot: item.writerRoot,
+    contextRoot: dirname(item.context),
+    artifactRoot,
+    stateRoot,
+    timeoutBounds: {
+      preflightMs: 1_000, startMs: 1_000, inspectMs: 1_000, readinessMs: 1_000,
+      runMs: 1_000, stopMs: 1_000, killMs: 1_000, cleanupMs: 1_000,
+      terminationGraceMs: 25, readinessPollMs: 25,
+    },
+  };
+  try {
+    const prepared = await item.workspaces.create({
+      runId: item.run.id,
+      project: item.project,
+      repositoryPath: item.source,
+      ownerId: "worker_fixture",
+    });
+    const lease = prepared.persistedLease;
+    const provider = new OciSandboxProvider(options);
+    const contract = provider.contract();
+    const createdAt = item.now().toISOString();
+    await item.store.createSandboxInstance({
+      runId: item.run.id,
+      workspaceId: prepared.workspaceId,
+      leaseOwnerId: lease.ownerId,
+      fencingToken: lease.fencingToken,
+      provider: contract.provider,
+      imageRef: contract.imageRef,
+      policyHash: contract.policyHash,
+      workspaceDigest: digest(realpathSync(prepared.runRoot)),
+      contextDigest: digest(realpathSync(item.context)),
+      contextContentHash: digest(readFileSync(join(item.context, "run-contract.json"), "utf8")),
+      workdirDigest: digest("worktree"),
+      createdAt,
+      updatedAt: createdAt,
+    });
+    const handle = await provider.start({
+      runId: item.run.id,
+      workspaceId: prepared.workspaceId,
+      leaseOwnerId: lease.ownerId,
+      fencingToken: lease.fencingToken,
+      workspacePath: prepared.runRoot,
+      contextPath: item.context,
+      workingDirectoryRelativePath: "worktree",
+    });
+    assert.ok(await item.store.transitionSandboxInstance({
+      workspaceId: lease.workspaceId, runId: lease.runId, ownerId: lease.ownerId,
+      fencingToken: lease.fencingToken, expectedState: "provisioning", state: "ready",
+      engineId: handle.containerId, updatedAt: item.now().toISOString(),
+    }));
+    assert.ok(await item.store.transitionSandboxInstance({
+      workspaceId: lease.workspaceId, runId: lease.runId, ownerId: lease.ownerId,
+      fencingToken: lease.fencingToken, expectedState: "ready", state: "running",
+      updatedAt: item.now().toISOString(),
+    }));
+    await item.store.updateRun(item.run.id, { status: "running", stage: "sandbox_fixture_running" });
+
+    const restartedProvider = new OciSandboxProvider(options);
+    const restartedBoundary = new WriterSandboxBoundary({
+      store: item.store,
+      workspaces: item.workspaces,
+      provider: restartedProvider,
+      artifactRoot,
+      ownerId: "worker_fixture",
+      now: item.now,
+    });
+    assert.deepEqual(await restartedBoundary.reconcileStartup(), {
+      instancesExamined: 1,
+      engineObjectsCleaned: 1,
+      engineObjectsAbsent: 0,
+      instancesQuarantined: 1,
+      runsFailed: 1,
+    });
+    assert.equal((await item.store.getSandboxInstance(item.run.id))?.state, "quarantined");
+    assert.equal((await item.store.getSandboxInstance(item.run.id))?.cleanupAttempts, 1);
+    assert.equal((await item.store.getWorkspaceLease(prepared.workspaceId))?.state, "quarantined");
+    assert.equal((await item.store.getRun(item.run.id))?.stage, "workspace_quarantined");
+    assert.equal((await item.store.getRun(item.run.id))?.metadata.sandboxEngineCleanupProven, true);
+    assert.equal(existsSync(prepared.runRoot), true, "restart cleanup preserves the workspace for operator review");
   } finally {
     await item.store.close();
     rmSync(item.root, { recursive: true, force: true });

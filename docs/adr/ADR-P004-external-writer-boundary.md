@@ -3,17 +3,17 @@
 - Status: Proposed
 - Date: 2026-08-11
 - Decision owner: Wesley Kao
-- Implementation status: deterministic contract slice implemented; writer
-  enablement remains disabled pending live provider verification and durable
-  provider-aware restart reconciliation
+- Implementation status: local live provider verification and durable
+  provider-aware restart reconciliation complete; writer enablement remains
+  disabled pending the separately flagged Milestone 5 pilot
 
 ## Context
 
 Git worktrees and database leases coordinate candidates but do not isolate a
 writing process from the host filesystem, credentials, network, or other
 processes. The accepted architecture requires an external container or VM before
-any real runtime writes. The current host has no qualifying engine, so the
-boundary must remain fail-closed while its deterministic contract is developed.
+any real runtime writes. This host now has a bounded Colima/Docker engine for the
+local non-production boundary; writer adapters remain unregistered by default.
 
 ## Proposed decision
 
@@ -46,6 +46,10 @@ boundary must remain fail-closed while its deterministic contract is developed.
 8. Do not register a writer runtime until the provider passes an opt-in live smoke
    on the actual deployment host. A fake CLI test validates orchestration, not
    isolation.
+9. Persist provisioning, ready, running, freezing, exporting, cleaned, and
+   quarantined sandbox-instance states transactionally. Restart reconciliation
+   inventories only managed labels, binds immutable engine ID plus exact run/
+   workspace/owner/fence/policy evidence, and never removes an unmatched object.
 
 ## Consequences
 
@@ -56,10 +60,10 @@ boundary must remain fail-closed while its deterministic contract is developed.
   equivalent security from every daemon/runtime configuration.
 - Named-network egress, credential brokering, image build/provenance, and remote
   micro-VM isolation remain separate decisions.
-- On this host the deterministic Milestone 4 slice is implemented but neither
-  live-verified nor restart-complete; writer mode stays unavailable until Wesley
-  installs/selects an engine, supplies a reviewed digest-pinned fixture image,
-  and provider-aware durable reconciliation is implemented.
+- On this host Milestone 4 is live-verified and restart-complete for the local
+  disabled boundary. Writer mode remains unavailable until Milestone 5 composes
+  the boundary into one disposable model pilot with explicit egress/credential
+  policy and deterministic acceptance criteria.
 
 ## Approval requested
 

@@ -22,13 +22,13 @@ There are two deliberately different modes.
 | Hermes | Local MCP bridge | Isolated Hermes profile, authenticated stdio MCP, and a restricted tool list |
 | Project Brain | Read accepted local Markdown; propose/review/reject/promote separately | Search, proposal, exact promotion preview, and rejection; pilot MCP cannot promote |
 | Events/evidence | Real run records around simulated stages | Raw native JSONL plus normalized events, native IDs, checksummed context/run-contract/result artifacts |
-| Writer isolation | Disabled; simulated directories/worktrees remain concurrency aids only | A real Docker-compatible boundary, fenced leases, strict private Git worktrees, and secret-scanned artifact export are contract-tested but **not connected to model runtimes**; live provider test still requires a host engine |
+| Writer isolation | Disabled; simulated directories/worktrees remain concurrency aids only | A real Docker-compatible boundary, fenced leases, strict private Git worktrees, and secret-scanned artifact export are contract-tested and live-verified locally, but **not connected to model runtimes** |
 
 The native pilot is a connectivity slice, not a coding pipeline. It cannot edit a
 repository, run Atomic's model workflow, create a PR, merge, deploy, call Linear,
 or use OpenViking. The Milestone 4 writer boundary now exists as an internal,
-disabled provider contract, but this host has no qualifying container/VM engine
-and no model runtime is connected to it. All native final actions therefore remain
+disabled provider contract, and its local Colima/Docker live smoke and restart
+contracts pass. No model runtime is connected to it. All native final actions remain
 fixed to `analysis_only`. A successful pilot run is connectivity evidence, not
 implementation acceptance.
 
@@ -205,12 +205,29 @@ Run the safe default first:
 npm run smoke:sandbox
 ```
 
-On this Mac it reports an honest skip because no Docker, Podman-compatible CLI,
-Colima/Lima, OrbStack, Finch, or equivalent engine is installed. A skip is not a
+Normal verification reports an honest skip because it strips every live-engine
+variable. On this Mac the explicit opt-in smoke passed against Colima `0.10.3`,
+Docker Engine `29.5.2`, and the immutable ARM64 Alpine digest recorded in
+[the verification record](docs/VERIFICATION.md). A skip on another host is not a
 Milestone 4 live pass.
 
-To run it after manually installing and starting a supported Docker-compatible
-engine:
+To reproduce it with an installed and started Docker-compatible engine:
+
+This Mac uses the following local stack:
+
+```bash
+brew install colima docker  # installs Lima as Colima's VM dependency
+colima start --runtime docker --vm-type vz --cpu 2 --memory 4 --disk 16
+docker pull alpine:3.22.5
+install -d -m 700 "$HOME/.valkyrie/oci-live-tmp"
+```
+
+The measured Homebrew footprint is about 115 MB (`colima` 10 MB, `lima` 78 MB,
+Docker CLI 27 MB). The current sparse Colima VM consumes about 1.1 GB on the host,
+has a 16 GiB virtual disk, and the Alpine image consumes 13.4 MB. Keep at least
+5 GiB free for this fixture and preferably 15 GiB or more before Milestone 5
+model images/build caches. These are measured local values, not fixed package
+guarantees.
 
 1. Choose and review a tiny POSIX fixture image that supplies `sleep`, `/bin/sh`,
    `id`, `grep`, and `touch`.
@@ -222,6 +239,7 @@ engine:
 ```bash
 export VALKYRIE_OCI_LIVE_ENGINE=/absolute/path/to/docker
 export VALKYRIE_OCI_LIVE_IMAGE='registry.example/image@sha256:<64-hex-digest>'
+export VALKYRIE_OCI_LIVE_ROOT='/absolute/private/engine-visible/test-root'
 
 # Optional only when the host UID/GID cannot be derived. This must be the
 # reviewed non-root numeric owner of the bind-mounted fixture directories.
@@ -233,6 +251,10 @@ export VALKYRIE_OCI_LIVE_SOCKET='unix:///absolute/path/to/docker.sock'
 
 npm run smoke:sandbox
 ```
+
+`VALKYRIE_OCI_LIVE_ROOT` must be an existing owner-private (`0700` on POSIX),
+non-symlink directory visible to the selected engine. This is explicit because
+macOS VM engines do not necessarily share the host's system temporary directory.
 
 The provider uses `--pull never`; it will not download an image for you. The live
 smoke verifies the effective ownership labels/fence, digest-pinned image, no

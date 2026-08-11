@@ -13,17 +13,16 @@
 - [x] Fenced writer-lease storage, private strict Git worktrees, disabled OCI
   provider contract, baseline artifact secret scan, and deterministic boundary
   orchestration tests
+- [x] Live Colima/Docker OCI pass with a reviewed digest-pinned fixture image
+- [x] Durable migration-005 sandbox lifecycle and exact-label restart/orphan
+  reconciliation with SQLite/PostgreSQL parity
 
 ## P0
 
 - [ ] Linear project/issue read adapter
 - [ ] Linear idea creation with idempotency
-- [ ] Live external writer-boundary pass on a supported engine and reviewed
-  digest-pinned fixture image
-- [ ] Durable sandbox-instance state and provider-aware restart reconciliation by
-  immutable engine ID and exact ownership labels
 - [ ] Compose a verified writer boundary into the first non-production Atomic
-  pilot; keep model writers disabled until the live pass
+  pilot; keep model writers disabled until its egress/credential policy is explicit
 - [ ] OpenViking read-only retrieval evaluation
 - [ ] Production audit log/retention policy (checksummed artifact registration is
   implemented for the fixture boundary)

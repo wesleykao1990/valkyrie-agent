@@ -2,15 +2,17 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
@@ -47,8 +49,8 @@ interface FakeState {
   behavior?: Record<string, boolean>;
 }
 
-function fixture(overrides: Partial<OciSandboxProviderOptions> = {}): Fixture {
-  const root = mkdtempSync(join(tmpdir(), "valkyrie-oci-provider-"));
+function fixture(overrides: Partial<OciSandboxProviderOptions> = {}, rootParent = tmpdir()): Fixture {
+  const root = mkdtempSync(join(rootParent, "valkyrie-oci-provider-"));
   const workspaceRoot = join(root, "workspaces");
   const contextRoot = join(root, "contexts");
   const workspace = join(workspaceRoot, "run-1");
@@ -128,6 +130,23 @@ async function start(item: Fixture, runId = "run_oci_001"): Promise<OciSandboxHa
   });
 }
 
+function reconciliationExpectation(item: Fixture, handle: OciSandboxHandle, engineId: string | null = handle.containerId) {
+  const contract = item.provider.contract();
+  return {
+    runId: handle.runId,
+    workspaceId: handle.workspaceId,
+    leaseOwnerId: handle.leaseOwnerId,
+    fencingToken: handle.fencingToken,
+    engineId,
+    imageRef: contract.imageRef,
+    policyHash: contract.policyHash,
+    workspaceDigest: handle.workspaceDigest,
+    contextDigest: handle.contextDigest,
+    workdirDigest: handle.workingDirectoryDigest,
+    cleanupAttempts: 0,
+  };
+}
+
 test("OCI sandbox is disabled by default without spawning or creating state", async () => {
   const item = fixture({ enabled: undefined });
   try {
@@ -169,6 +188,7 @@ test("OCI provider uses exact argv, two governed mounts, no network, and no host
       "--label", "valkyrie.workspace-id=ws_oci_001",
       "--label", `valkyrie.lease-owner-sha256=${digest("worker_fixture")}`,
       "--label", "valkyrie.lease-fencing-token=7",
+      "--label", `valkyrie.policy-sha256=${item.provider.contract().policyHash}`,
       "--label", `valkyrie.workspace-sha256=${digest(handle.workspacePath)}`,
       "--label", `valkyrie.context-sha256=${digest(handle.contextPath)}`,
       "--label", `valkyrie.workdir-sha256=${digest(".")}`,
@@ -473,13 +493,143 @@ test("bounded stop falls back to kill and bounded remove failure quarantines", a
   }
 });
 
+test("restart reconciliation removes only the exact durable engine instance", async () => {
+  const item = fixture();
+  try {
+    const handle = await start(item, "run_oci_restart");
+    const restarted = new OciSandboxProvider(item.options);
+    const results = await restarted.reconcileOrphans([reconciliationExpectation(item, handle)]);
+    assert.deepEqual(results, [{
+      runId: handle.runId,
+      workspaceId: handle.workspaceId,
+      containerId: handle.containerId,
+      outcome: "cleaned",
+      reason: "restart_orphan_removed",
+      cleanupAttempted: true,
+    }]);
+    assert.deepEqual(Object.keys(readState(item).containers), []);
+    assert.equal(readdirSync(join(item.stateRoot, "completed")).length, 1);
+    assert.equal(existsSync(join(item.stateRoot, "active", `${digest(handle.runId)}.json`)), false);
+  } finally {
+    rmSync(item.root, { recursive: true, force: true });
+  }
+});
+
+test("restart reconciliation recovers engine-only and database-only lifecycle gaps", async () => {
+  const engineOnly = fixture();
+  const databaseOnly = fixture();
+  try {
+    const engineHandle = await start(engineOnly, "run_oci_engine_only");
+    rmSync(join(engineOnly.stateRoot, "active"), { recursive: true, force: true });
+    const engineRestart = new OciSandboxProvider(engineOnly.options);
+    const [engineResult] = await engineRestart.reconcileOrphans([
+      reconciliationExpectation(engineOnly, engineHandle, null),
+    ]);
+    assert.equal(engineResult.outcome, "cleaned");
+    assert.equal(engineResult.containerId, engineHandle.containerId);
+
+    const databaseHandle = await start(databaseOnly, "run_oci_database_only");
+    assert.equal((await databaseOnly.provider.cleanup(databaseHandle)).status, "cleaned");
+    const databaseRestart = new OciSandboxProvider(databaseOnly.options);
+    const [databaseResult] = await databaseRestart.reconcileOrphans([
+      reconciliationExpectation(databaseOnly, databaseHandle),
+    ]);
+    assert.equal(databaseResult.outcome, "absent");
+    assert.equal(databaseResult.reason, "engine_id_absent");
+    assert.equal(databaseResult.cleanupAttempted, false);
+  } finally {
+    rmSync(engineOnly.root, { recursive: true, force: true });
+    rmSync(databaseOnly.root, { recursive: true, force: true });
+  }
+});
+
+test("restart reconciliation quarantines policy drift and never touches an unmatched managed container", async () => {
+  const drift = fixture();
+  const unmatched = fixture();
+  try {
+    const driftHandle = await start(drift, "run_oci_restart_drift");
+    updateState(drift, (state) => {
+      state.containers[driftHandle.containerId].HostConfig.NetworkMode = "bridge";
+    });
+    const driftRestart = new OciSandboxProvider(drift.options);
+    const [driftResult] = await driftRestart.reconcileOrphans([reconciliationExpectation(drift, driftHandle)]);
+    assert.equal(driftResult.outcome, "quarantined");
+    assert.equal(driftResult.reason, "ownership_or_policy_mismatch");
+    assert.ok(readState(drift).containers[driftHandle.containerId]);
+
+    const unmatchedHandle = await start(unmatched, "run_oci_unmatched");
+    const unmatchedRestart = new OciSandboxProvider(unmatched.options);
+    const [unmatchedResult] = await unmatchedRestart.reconcileOrphans([]);
+    assert.deepEqual(unmatchedResult, {
+      runId: null,
+      workspaceId: null,
+      containerId: unmatchedHandle.containerId,
+      outcome: "unmatched",
+      reason: "managed_engine_object_without_database_instance",
+      cleanupAttempted: false,
+    });
+    assert.ok(readState(unmatched).containers[unmatchedHandle.containerId]);
+    assert.equal((await unmatched.provider.cleanup(unmatchedHandle)).status, "cleaned");
+  } finally {
+    rmSync(drift.root, { recursive: true, force: true });
+    rmSync(unmatched.root, { recursive: true, force: true });
+  }
+});
+
+test("restart reconciliation fails closed on engine outage without changing durable provider state", async () => {
+  const item = fixture({ engineCommand: "/definitely/not/a/valkyrie-engine" });
+  try {
+    await assert.rejects(item.provider.reconcileOrphans([]), /unavailable/);
+    assert.equal(existsSync(item.stateRoot), false);
+    assert.equal(item.provider.transcript().every((entry) => entry.operation === "preflight"), true);
+  } finally {
+    rmSync(item.root, { recursive: true, force: true });
+  }
+});
+
+test("restart reconciliation stops retrying after the bounded cleanup-attempt limit", async () => {
+  const item = fixture();
+  try {
+    const handle = await start(item, "run_oci_retry_exhausted");
+    const expectation = { ...reconciliationExpectation(item, handle), cleanupAttempts: 3 };
+    const restarted = new OciSandboxProvider(item.options);
+    const [result] = await restarted.reconcileOrphans([expectation]);
+    assert.deepEqual(result, {
+      runId: handle.runId,
+      workspaceId: handle.workspaceId,
+      containerId: handle.containerId,
+      outcome: "quarantined",
+      reason: "cleanup_retry_exhausted",
+      cleanupAttempted: false,
+    });
+    assert.ok(readState(item).containers[handle.containerId]);
+    assert.equal(restarted.transcript().some((entry) => entry.operation === "stop" || entry.operation === "cleanup"), false);
+    assert.equal((await item.provider.cleanup(handle)).status, "cleaned");
+  } finally {
+    rmSync(item.root, { recursive: true, force: true });
+  }
+});
+
 test("live Docker-compatible sandbox is opt-in and skips honestly when unavailable", async (t) => {
   const engineCommand = process.env.VALKYRIE_OCI_LIVE_ENGINE;
   const image = process.env.VALKYRIE_OCI_LIVE_IMAGE;
   const engineSocket = process.env.VALKYRIE_OCI_LIVE_SOCKET;
-  if (!engineCommand || !image) {
-    t.skip("set VALKYRIE_OCI_LIVE_ENGINE and a locally present digest-pinned VALKYRIE_OCI_LIVE_IMAGE");
+  const configuredRoot = process.env.VALKYRIE_OCI_LIVE_ROOT;
+  if (!engineCommand || !image || !configuredRoot) {
+    t.skip("set VALKYRIE_OCI_LIVE_ENGINE, VALKYRIE_OCI_LIVE_ROOT, and a locally present digest-pinned VALKYRIE_OCI_LIVE_IMAGE");
     return;
+  }
+  if (!isAbsolute(configuredRoot)) throw new Error("VALKYRIE_OCI_LIVE_ROOT must be absolute");
+  const rootStat = lstatSync(configuredRoot);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error("VALKYRIE_OCI_LIVE_ROOT must be a non-symlink directory");
+  }
+  const liveRoot = realpathSync(configuredRoot);
+  if (liveRoot !== resolve(configuredRoot)) {
+    throw new Error("VALKYRIE_OCI_LIVE_ROOT must not traverse symbolic links");
+  }
+  if (process.platform !== "win32" && (rootStat.mode & 0o077) !== 0) {
+    throw new Error("VALKYRIE_OCI_LIVE_ROOT must grant no group or other access");
   }
   const hostUid = typeof process.getuid === "function" ? process.getuid() : undefined;
   const hostGid = typeof process.getgid === "function" ? process.getgid() : undefined;
@@ -507,7 +657,7 @@ test("live Docker-compatible sandbox is opt-in and skips honestly when unavailab
       terminationGraceMs: 250,
       readinessPollMs: 100,
     },
-  });
+  }, liveRoot);
   let handle: OciSandboxHandle | undefined;
   let cleanupProven = false;
   let startAttempted = false;
@@ -544,7 +694,7 @@ test("live Docker-compatible sandbox is opt-in and skips honestly when unavailab
         "if grep -Eq '^[^[:space:]]+[[:space:]]+00000000[[:space:]]' /proc/net/route; then exit 24; fi",
         "test -z \"${VALKYRIE_HOST_SECRET_CANARY+x}\"",
         "printf 'VALKYRIE_OCI_LIVE_OK\\n'",
-      ].join("\n"),
+      ].join("; "),
     ]);
     assert.equal(result.exitCode, 0);
     assert.equal(result.stdout, "VALKYRIE_OCI_LIVE_OK\n");

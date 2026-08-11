@@ -46,6 +46,49 @@ export interface WorkspaceLeaseQuarantine extends WorkspaceLeaseFence {
   reason: string;
 }
 
+export type SandboxInstanceState =
+  | "provisioning"
+  | "ready"
+  | "running"
+  | "freezing"
+  | "exporting"
+  | "cleaned"
+  | "quarantined";
+
+export interface SandboxInstance {
+  runId: string;
+  workspaceId: string;
+  leaseOwnerId: string;
+  fencingToken: number;
+  provider: "docker-compatible";
+  engineId: string | null;
+  imageRef: string;
+  policyHash: string;
+  workspaceDigest: string;
+  contextDigest: string;
+  contextContentHash: string;
+  workdirDigest: string;
+  state: SandboxInstanceState;
+  cleanupAttempts: number;
+  lastCleanupAt: string | null;
+  quarantineReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type SandboxInstanceCreateInput = Omit<SandboxInstance,
+  "engineId" | "state" | "cleanupAttempts" | "lastCleanupAt" | "quarantineReason"
+>;
+
+export interface SandboxInstanceTransitionInput extends WorkspaceLeaseFence {
+  expectedState: SandboxInstanceState;
+  state: SandboxInstanceState;
+  updatedAt: string;
+  engineId?: string;
+  cleanupAttemptedAt?: string;
+  quarantineReason?: string;
+}
+
 export type StoreClock = () => Date;
 export const MAX_WRITER_LEASE_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -221,6 +264,11 @@ export interface ControlPlaneStore {
   /** Returns active leases only; quarantine evidence is exposed by reconciliation/getWorkspaceLease. */
   listLeases(): Promise<WorkspaceLease[]>;
 
+  createSandboxInstance(input: SandboxInstanceCreateInput): Promise<SandboxInstance>;
+  getSandboxInstance(runId: string): Promise<SandboxInstance | null>;
+  listSandboxInstances(states?: SandboxInstanceState[]): Promise<SandboxInstance[]>;
+  transitionSandboxInstance(input: SandboxInstanceTransitionInput): Promise<SandboxInstance | null>;
+
   requestApprovalTransaction(input: ApprovalRequestInput): Promise<ApprovalRequestResult>;
   getApproval(id: string): Promise<Approval | null>;
   listApprovals(state?: string): Promise<Approval[]>;
@@ -261,6 +309,17 @@ export class IdempotencyConflictError extends StorageConflictError {
 }
 
 const maximumFencingToken = Number.MAX_SAFE_INTEGER;
+const sha256Hex = /^[a-f0-9]{64}$/;
+const immutableImageRef = /^[A-Za-z0-9][A-Za-z0-9./:_-]*@sha256:[a-f0-9]{64}$/;
+const sandboxTransitions: Record<SandboxInstanceState, ReadonlySet<SandboxInstanceState>> = {
+  provisioning: new Set(["ready", "quarantined"]),
+  ready: new Set(["running", "quarantined"]),
+  running: new Set(["freezing", "quarantined"]),
+  freezing: new Set(["exporting", "quarantined"]),
+  exporting: new Set(["cleaned", "quarantined"]),
+  cleaned: new Set(),
+  quarantined: new Set(),
+};
 
 function timestampMillis(value: string, field: string): number {
   const parsed = Date.parse(value);
@@ -317,6 +376,56 @@ export function validateWorkspaceLeaseQuarantine(input: WorkspaceLeaseQuarantine
   timestampMillis(input.quarantinedAt, "Writer lease quarantinedAt");
   if (!input.reason || input.reason !== input.reason.trim() || input.reason.length > 1_000 || /[\u0000-\u001f\u007f]/.test(input.reason)) {
     throw new StorageConflictError("Writer lease quarantine reason must be 1-1000 safe characters");
+  }
+}
+
+function validateSandboxIdentity(value: string, field: string, maximum = 256): void {
+  if (!value || value !== value.trim() || value.length > maximum || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw new StorageConflictError(`${field} must be 1-${maximum} safe characters`);
+  }
+}
+
+export function validateSandboxInstanceCreate(input: SandboxInstanceCreateInput): void {
+  validateSandboxIdentity(input.runId, "Sandbox run ID", 128);
+  validateSandboxIdentity(input.workspaceId, "Sandbox workspace ID", 128);
+  validateWorkspaceLeaseFence({
+    workspaceId: input.workspaceId,
+    runId: input.runId,
+    ownerId: input.leaseOwnerId,
+    fencingToken: input.fencingToken,
+  });
+  if (input.provider !== "docker-compatible") throw new StorageConflictError("Sandbox provider is not supported");
+  if (!immutableImageRef.test(input.imageRef)) throw new StorageConflictError("Sandbox image must be an immutable SHA-256 reference");
+  for (const [field, value] of [
+    ["policyHash", input.policyHash],
+    ["workspaceDigest", input.workspaceDigest],
+    ["contextDigest", input.contextDigest],
+    ["contextContentHash", input.contextContentHash],
+    ["workdirDigest", input.workdirDigest],
+  ] as const) {
+    if (!sha256Hex.test(value)) throw new StorageConflictError(`Sandbox ${field} must be a SHA-256 digest`);
+  }
+  const createdAt = timestampMillis(input.createdAt, "Sandbox createdAt");
+  const updatedAt = timestampMillis(input.updatedAt, "Sandbox updatedAt");
+  if (updatedAt < createdAt) throw new StorageConflictError("Sandbox updatedAt cannot precede createdAt");
+}
+
+export function validateSandboxInstanceTransition(input: SandboxInstanceTransitionInput): void {
+  validateWorkspaceLeaseFence(input);
+  validateSandboxIdentity(input.runId, "Sandbox run ID", 128);
+  validateSandboxIdentity(input.workspaceId, "Sandbox workspace ID", 128);
+  timestampMillis(input.updatedAt, "Sandbox updatedAt");
+  if (!sandboxTransitions[input.expectedState].has(input.state)) {
+    throw new StorageConflictError(`Sandbox transition ${input.expectedState} -> ${input.state} is not allowed`);
+  }
+  if (input.engineId !== undefined && !sha256Hex.test(input.engineId)) {
+    throw new StorageConflictError("Sandbox engine ID must be a SHA-256 identifier");
+  }
+  if (input.cleanupAttemptedAt !== undefined) timestampMillis(input.cleanupAttemptedAt, "Sandbox cleanupAttemptedAt");
+  if (input.state === "quarantined") {
+    validateSandboxIdentity(input.quarantineReason ?? "", "Sandbox quarantine reason", 1_000);
+  } else if (input.quarantineReason !== undefined) {
+    throw new StorageConflictError("Only a quarantined sandbox may record a quarantine reason");
   }
 }
 

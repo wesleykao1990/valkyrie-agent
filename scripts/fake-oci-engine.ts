@@ -73,6 +73,9 @@ switch (command) {
   case "inspect":
     inspectContainer(argv.at(-1));
     break;
+  case "ps":
+    listContainers(argv.slice(1));
+    break;
   case "exec":
     execute(argv.slice(2));
     break;
@@ -232,6 +235,14 @@ function inspectContainer(id: string | undefined): void {
   }
   if (!id || !state.containers[id]) process.exit(44);
   process.stdout.write(`${JSON.stringify([state.containers[id]])}\n`);
+}
+
+function listContainers(args: string[]): void {
+  const expected = ["--all", "--filter", "label=valkyrie.managed=true", "--format", "{{.ID}}"];
+  if (JSON.stringify(args) !== JSON.stringify(expected)) process.exit(64);
+  for (const container of Object.values(state.containers)) {
+    if (container.Config.Labels["valkyrie.managed"] === "true") process.stdout.write(`${container.Id}\n`);
+  }
 }
 
 function execute(commandArgs: string[]): void {
