@@ -1,45 +1,48 @@
 # Git handoff
 
-The downloadable ZIP contains a Git bundle at:
+## Hosted repository
+
+The continuation target is:
+
+```text
+https://github.com/wesleykao1990/valkyrie-agent
+```
+
+Wesley explicitly selected public visibility on 2026-08-11. The nested Atomic
+module retains its separate all-rights-reserved notice; public visibility does not
+extend the root MIT license to that subtree.
+
+The `0.3.0` work is developed on:
+
+```text
+agent/postgres-atomic-integration
+```
+
+The restored `0.2.2` handoff history is the base of `main`; the feature branch is
+intended for a draft pull request after final verification.
+
+## Original offline history
+
+The continuation input included the verified Git bundle:
 
 ```text
 handoff/Wesley_Agent_Control_Plane_Prototype_v0.2.2.bundle
 ```
 
-A Git bundle preserves the complete prototype repository history without requiring a hosted remote.
+It preserved the complete three-commit `0.2.2` history and was used to restore this
+working repository rather than starting a new project.
 
-## Clone from the bundle
-
-From the extracted package's parent directory:
+## Fresh checkout verification
 
 ```bash
-git clone Wesley_Agent_Control_Plane_Prototype_v0.2.2/handoff/Wesley_Agent_Control_Plane_Prototype_v0.2.2.bundle wesley-agent-control-plane
-cd wesley-agent-control-plane
+git clone https://github.com/wesleykao1990/valkyrie-agent.git
+cd valkyrie-agent
+npm ci
 npm run verify
 ```
 
-## Continue in the extracted source directory instead
+Full verification requires PostgreSQL 16 `initdb` and `pg_ctl` for its disposable
+local cluster.
 
-The ordinary source tree is also complete. Open its root in Codex or Claude Code and instruct the agent to read:
-
-1. `START_HERE.md`
-2. `AGENTS.md`
-3. `CLAUDE.md`
-4. `docs/DECISIONS.md`
-5. `docs/CONTINUATION_PLAN.md`
-6. `docs/PROMPT_FOR_CODEX_OR_CLAUDE.md`
-
-Then run:
-
-```bash
-npm run verify
-```
-
-## Add a hosted remote later
-
-```bash
-git remote add origin <your-private-repository-url>
-git push -u origin main
-```
-
-Do not commit secrets, provider tokens, local SQLite databases, generated workspaces, or run artifacts.
+Do not commit provider tokens, `.env`, local SQLite databases, temporary PostgreSQL
+clusters, generated workspaces, or run artifacts.

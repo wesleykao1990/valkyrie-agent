@@ -24,10 +24,12 @@ This repository is a prototype of a mobile-first multi-agent project operating s
 
 ## Prototype constraints
 
-- The current demo is dependency-free and runs directly on Node 22 with TypeScript stripping.
-- SQLite is a prototype adapter. Production target is PostgreSQL.
+- The default demo needs no external service and runs on Node 22 with TypeScript stripping.
+- SQLite is the default demo adapter; PostgreSQL is the opt-in production candidate behind the same store contract.
 - Mock runtimes demonstrate lifecycle behavior. Real runtime adapters should be added behind the existing interface.
+- The imported Atomic package is inert. Its presence does not verify or enable a live Atomic runtime.
 - Project-brain retrieval is read-only first. Automatic episodic capture is intentionally deferred.
+- Worktrees and writer leases coordinate writers but are not security sandboxes.
 
 ## Before changing code
 
@@ -36,5 +38,5 @@ This repository is a prototype of a mobile-first multi-agent project operating s
 3. Read `docs/ARCHITECTURE.md`.
 4. Read `SECURITY.md` before enabling a real runtime.
 5. Read the relevant section of `docs/CONTINUATION_PLAN.md`.
-6. Run `npm run verify` before and after the change.
+6. Run `npm run verify` before and after the change. Full verification requires disposable PostgreSQL 16 tooling.
 7. Record meaningful architectural changes as a proposed ADR; do not rewrite accepted decisions silently.

@@ -1,30 +1,43 @@
 # Build information
 
 - Package: Wesley Agent Control Plane Prototype
-- Version: 0.2.2
+- Repository release: 0.3.0
 - Built: 11 August 2026
 - Minimum runtime: Node.js 22.16
+- Full-verification database: disposable PostgreSQL 16
 - External credentials bundled: none
-- Default runtimes: local lifecycle simulations
-- Default data store: local SQLite prototype adapter
-- Production target: PostgreSQL, authenticated Hermes MCP, Linear integration, read-only OpenViking evaluation, real isolated runtime adapters
+- Default data store: local SQLite
+- Production-candidate data store: opt-in PostgreSQL
+- Default runtimes: deterministic, explicitly labelled lifecycle simulations
+- Atomic module: integrated source 0.2.0, repository derivative 0.2.1, live disabled
+- Automatic episodic memory capture: disabled
 
-## Verification performed before packaging
+## Completed milestones
+
+- Milestone 0: inventory, architecture/package comparison, implementation plan,
+  rollback/security analysis, and evidence-backed review notes.
+- Milestone 1: async store boundary, SQLite/PostgreSQL adapters, checksummed
+  migrations, transactional lifecycle aggregates/outbox, idempotency, exclusive
+  claims, restart reconciliation, and shared contract evidence.
+- Milestone 2: discoverable, inert Atomic Workflow Architect module with
+  provenance, launch schema, package bootstrap, and independent verification.
+
+## Verification entry point
 
 ```bash
+npm ci
 npm run verify
 ```
 
-This runs 10 automated tests, the full HTTP lifecycle smoke test, and the Hermes MCP smoke test from clean temporary data directories. The source also passed `tsc --noEmit`; the included Git bundle was cloned cleanly and the clone passed the same verification command.
+See `docs/VERIFICATION.md` for the recorded baseline/final evidence and
+`docs/SESSION_HANDOFF_v0.3.0.md` for the implementation handoff.
 
-## Continuation entry points
+## Next entry points
 
 1. `START_HERE.md`
-2. `.project-context.yaml`
-3. `AGENTS.md` and `CLAUDE.md`
-4. `docs/DECISIONS.md`
-5. `docs/CONTINUATION_PLAN.md`
-6. `docs/PROMPT_FOR_CODEX_OR_CLAUDE.md`
-7. `docs/GIT_HANDOFF.md`
-
-The first recommended implementation milestone is the PostgreSQL adapter, retaining SQLite as the zero-dependency demo backend.
+2. `docs/CONTINUATION_PLAN.md`
+3. `docs/NEXT_SESSION_PROMPT.md`
+4. `docs/STORAGE.md`
+5. `docs/ATOMIC_PACKAGE_PROVENANCE.md`
+6. `docs/adr/ADR-P001-transactional-storage-boundary.md`
+7. `docs/adr/ADR-P002-atomic-package-boundary.md`

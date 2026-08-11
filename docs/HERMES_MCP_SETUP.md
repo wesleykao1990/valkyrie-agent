@@ -17,7 +17,7 @@ apps/mcp-server/src/index.ts
 2. Register this executable as the local stdio MCP command in Hermes:
 
 ```text
-/absolute/path/to/Wesley_Agent_Control_Plane_Prototype_v0.2.2/bin/project-os-mcp
+/absolute/path/to/valkyrie-agent/bin/project-os-mcp
 ```
 
 The wrapper changes into the repository directory and launches Node directly, keeping stdout clean for JSON-RPC. A direct equivalent is:
@@ -66,6 +66,9 @@ Allow:
 - search project memory;
 - propose reviewed knowledge.
 
+`runs_start` callers should supply a stable `idempotencyKey` for every mobile
+retry. Use the same key only for the same logical request.
+
 Do not expose:
 
 - raw process execution;
@@ -74,5 +77,11 @@ Do not expose:
 - unrestricted filesystem mutation;
 - protected-branch merge;
 - production deployment.
+- canonical-memory promotion unless Wesley is shown the exact target/evidence and
+  explicitly approves that final action.
+
+Although the prototype server advertises `memory_promote` for contract continuity,
+omit it from the Hermes allow-list until authentication and exact-action approval
+binding exist.
 
 The production bridge must authenticate the Hermes identity and source channel, issue exact mutation previews, and attach idempotency keys to every write.

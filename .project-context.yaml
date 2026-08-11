@@ -1,5 +1,6 @@
 project_id: wesley-agent-control-plane
 project_name: Wesley Agent Control Plane Prototype
+repository_version: 0.3.0
 roadmap_authority: linear
 linear:
   team_id: null
@@ -7,6 +8,16 @@ linear:
 repositories:
   - path: .
     role: control-plane-prototype
+modules:
+  atomic_workflow_architect:
+    path: packages/atomic-workflow-architect
+    imported_version: 0.2.0
+    integration_version: 0.2.1
+    source_archive_sha256: 9188e5d4326092d4782795ac39a13ff28274643c67bfac0e14d2314022754178
+    research_basis_atomic_version: 0.9.12
+    live_compatibility_validated: false
+    live_enabled: false
+    license: private-all-rights-reserved
 canonical_knowledge:
   architecture_review: docs/Agentic_Development_Control_Plane_Architecture_Review_v0.2.2.docx
   decisions: docs/DECISIONS.md
@@ -23,3 +34,16 @@ runtime_policy:
     - claude-code
   one_root_runtime_per_run: true
   external_sandbox_required_for_real_writers: true
+storage:
+  default_backend: sqlite
+  production_candidate: postgres
+  postgres_adapter_status: contract-tested-disabled-by-default
+  migrations: checksummed-forward-only
+  outbox_dispatcher: not-implemented
+  redis: disabled
+  automatic_sqlite_to_postgres_copy: false
+milestones:
+  inventory_and_plan: complete
+  transactional_postgres_storage: complete
+  atomic_package_integration_non_live: complete
+  real_atomic_adapter: next

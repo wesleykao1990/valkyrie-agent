@@ -18,6 +18,29 @@ This repository demonstrates control-plane contracts. It is **not** a production
 - No production secret is required or bundled.
 - The Atomic RPC class is a scaffold and is not selected by the default runtime registry.
 - The Atomic scaffold passes only a minimal operating-system environment unless additional variable names are explicitly allow-listed.
+- The imported Atomic module is inert source and remains `UNLICENSED` under its
+  nested private notice. Installing it into an Atomic host would execute extension
+  code with that host process's authority; review and pin it before doing so.
+- Wesley authorized public repository visibility on 2026-08-11. That visibility
+  does not extend the root MIT grant to the nested all-rights-reserved module.
+- SQLite remains the default. PostgreSQL must be selected explicitly and never
+  receives an automatic copy of SQLite demo data.
+
+## PostgreSQL and retained command data
+
+- Use parameterized SQL and do not log `DATABASE_URL` or database error objects
+  that may embed credentials.
+- Use separate least-privilege migration and runtime roles outside a disposable
+  local environment; require TLS according to the deployment boundary.
+- Back up before forward-only migrations. A checksum mismatch or unavailable
+  database must fail startup rather than fall back to SQLite.
+- Idempotency and outbox records may retain objectives, event summaries, exact
+  approval effects, and identifiers. Apply access controls and retention before
+  production use.
+- The current outbox is durable local state, not a configured external publisher.
+  Future consumers must deduplicate stable outbox IDs and redact payloads from
+  logs.
+- Demo reset and automatic demo seeding are hard-disabled for PostgreSQL.
 
 ## Before enabling real agents
 

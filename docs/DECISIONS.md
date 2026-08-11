@@ -1,4 +1,4 @@
-# Current architecture decisions — v0.2.2
+# Current architecture decisions — through v0.3.0
 
 ## Accepted
 
@@ -58,6 +58,14 @@ Hermes chat supplies concise briefings and actions; Linear supplies the visual r
 
 Cross-project vision, research, and product rationale live in the central private vault. Code-coupled ADRs, API contracts, runbooks, and repository instructions live near the code. The Project Brain indexes both with source and revision metadata.
 
+### D-20 — Public repository with a nested license boundary
+
+Wesley explicitly authorized public visibility for `wesleykao1990/valkyrie-agent`
+on 2026-08-11. The root MIT license applies only within its grant. The nested
+`packages/atomic-workflow-architect/` `UNLICENSED`/all-rights-reserved notice is
+preserved, and public visibility does not grant additional use or redistribution
+rights for that subtree.
+
 ## Proposed / pilot-gated
 
 ### D-15 — Atomic is the default non-trivial engineering runtime
@@ -71,6 +79,14 @@ Start behind the Project Brain interface in read-only mode. Promote it only if r
 ### D-17 — Docker/devcontainer is adequate for the first non-sensitive pilot
 
 The pilot runner has no production secrets and handles a medium-risk repository task. Remote micro-VM isolation remains the escalation path for confidential or high-risk workloads.
+
+### D-18 — Transactional asynchronous storage boundary
+
+SQLite remains the default demo adapter and PostgreSQL is the opt-in production candidate. The proposed boundary, migration ownership, idempotency semantics, transactional outbox, and reconciliation behavior are detailed in `docs/adr/ADR-P001-transactional-storage-boundary.md`. This remains proposed until Wesley accepts the listed invariants and delivery semantics.
+
+### D-19 — Imported Atomic module and decision reconciliation
+
+The Atomic Workflow Architect source is integrated as an inert, independently testable module, not as the whole Project OS and not as an enabled runtime. Its imported addendum is evidence for reconciliation rather than a second canonical decision registry. See `docs/adr/ADR-P002-atomic-package-boundary.md`.
 
 ## Deferred
 
