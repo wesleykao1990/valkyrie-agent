@@ -43,6 +43,7 @@ try {
   started = true;
   const testEnvironment = {
     ...process.env,
+    RUN_POSTGRES_STORAGE_CONTRACT_TESTS: "1",
     TEST_DATABASE_URL: `postgresql://valkyrie@127.0.0.1:${port}/postgres`,
   };
   run(process.execPath, ["--experimental-strip-types", "--test", "tests/storage.test.ts"], testEnvironment);

@@ -12,7 +12,7 @@
     "dev": "node --watch --experimental-strip-types apps/control-plane/src/index.ts",
     "mcp": "node --experimental-strip-types apps/mcp-server/src/index.ts",
     "typecheck": "tsc --noEmit --noCheck false",
-    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "test": "node --experimental-strip-types scripts/test-unit.ts",
     "test:postgres": "node --experimental-strip-types scripts/test-postgres-storage.ts",
     "migrate": "node --experimental-strip-types scripts/migrate-storage.ts",
     "verify:atomic": "npm --prefix packages/atomic-workflow-architect run verify:all",

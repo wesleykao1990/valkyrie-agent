@@ -44,7 +44,7 @@ The final command performs, in order:
 Recorded result on 2026-08-11:
 
 - TypeScript: passed.
-- General suite: 31 passed, 1 opt-in PostgreSQL case skipped in this phase.
+- General suite: 33 passed, 1 opt-in PostgreSQL case skipped in this phase.
 - Disposable PostgreSQL 16.14 phase: 16 passed, 0 skipped.
 - Atomic `0.2.1`: 28 required files, 3 workflows, 16 routing cases, 5 prompt
   templates, a schema-valid launch manifest, and 5 invalid-manifest rejection
@@ -117,6 +117,10 @@ pages 22 and 24. The signed-off source file remains unchanged.
 - Root-authored diffs pass whitespace checking; imported Atomic research retains
   its original intentional Markdown line breaks.
 - No credential or production secret was added.
+- Unit, HTTP, and MCP fixture wrappers strip inherited persistent storage,
+  connector, and `REPOSITORY_PATH_*` settings from their disposable child
+  processes. The supported `npm run test:postgres` path creates the disposable
+  cluster and supplies its own explicit contract sentinel and database URL.
 
 ## Live integrations actually exercised
 

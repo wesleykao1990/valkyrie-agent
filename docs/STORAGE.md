@@ -29,8 +29,14 @@ schema is owned by `infra/sqlite/*.sql` and recorded in `schema_migrations` with
 SHA-256 checksum. A changed applied migration fails open/startup; add a new
 forward migration instead of editing history.
 
-`npm run reset` deletes operational demo records in dependency-safe order. It is
-not a production backup or migration command.
+The live browser/API reset has no confirmation dialog; it clears SQLite
+operational rows transactionally and reseeds demo tasks. The offline `npm run
+reset` command is different: after the service is stopped, it deletes the SQLite
+main, WAL, and shared-memory files under `DATA_DIR` and surfaces filesystem
+failures. It refuses to run when `CONTROL_PLANE_STORE` is not `sqlite`. The next
+start recreates and seeds the database. Neither path removes artifact/workspace
+directories or promoted Project Brain Markdown. They are not production backup
+or migration commands.
 
 ## PostgreSQL setup
 
@@ -38,13 +44,15 @@ Use PostgreSQL 16 or a deliberately tested later version. Create a dedicated
 database and least-privilege roles outside this repository. Do not put credentials
 in `.env`, shell history, Git, logs, or examples committed to the project.
 
-For a disposable local database:
+For a disposable local database, create the role and database, then inject
+`DATABASE_URL` through an appropriate local secret mechanism rather than placing
+its value in shell history:
 
 ```bash
-createdb control_plane
+createuser --pwprompt control_plane
+createdb --owner=control_plane control_plane
 
 CONTROL_PLANE_STORE=postgres \
-DATABASE_URL=postgresql://control_plane@127.0.0.1:5432/control_plane \
 npm run migrate
 ```
 
@@ -57,7 +65,6 @@ Start the service only after migration succeeds:
 
 ```bash
 CONTROL_PLANE_STORE=postgres \
-DATABASE_URL=postgresql://control_plane@127.0.0.1:5432/control_plane \
 POSTGRES_AUTO_MIGRATE=false \
 SEED_DEMO_DATA=false \
 ENABLE_DEMO_RESET=false \
@@ -67,6 +74,10 @@ npm start
 `POSTGRES_AUTO_MIGRATE=true` is available for disposable developer environments.
 Keep it false in governed deployments so migration and runtime authority can use
 separate roles and release gates.
+
+PostgreSQL mode deliberately disables automatic demo project/task seeding. A new
+database therefore exposes an empty portfolio until a governed ingestion or
+bootstrap path provisions project state. Use SQLite for the out-of-box walkthrough.
 
 Use TLS appropriate to the deployment boundary. `pg` accepts connection-string
 TLS parameters; the explicit migration command also supports
@@ -192,6 +203,11 @@ random loopback port with trust authentication, runs migration/concurrency/
 rollback/restart tests, stops the process, and removes the cluster. It never uses
 `DATABASE_URL` from an existing service. Override `INITDB_COMMAND` and
 `PG_CTL_COMMAND` only when selecting known local PostgreSQL binaries.
+
+General tests and HTTP/MCP smokes force temporary SQLite and strip persistent
+storage, connector, PostgreSQL-contract, and `REPOSITORY_PATH_*` settings from
+their child environments. The disposable PostgreSQL harness supplies its own
+explicit contract sentinel and database URL.
 
 The full repository verifier runs both suites:
 

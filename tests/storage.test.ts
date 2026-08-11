@@ -541,7 +541,11 @@ test("restart reconciliation identifies queued runs, terminal and expired leases
   }
 });
 
-const postgresUrl = process.env.TEST_DATABASE_URL;
+const postgresContractEnabled = process.env.RUN_POSTGRES_STORAGE_CONTRACT_TESTS === "1";
+const postgresUrl = postgresContractEnabled ? process.env.TEST_DATABASE_URL : undefined;
+if (postgresContractEnabled && !postgresUrl) {
+  throw new Error("TEST_DATABASE_URL is required when RUN_POSTGRES_STORAGE_CONTRACT_TESTS=1");
+}
 test("PostgreSQL storage contract smoke", { skip: !postgresUrl }, async () => {
   let store = await PostgresStore.connect({ databaseUrl: postgresUrl!, autoMigrate: true, maxConnections: 8 });
   try {

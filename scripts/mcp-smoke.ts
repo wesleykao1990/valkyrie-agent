@@ -1,23 +1,27 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
+import { buildIsolatedSmokeEnvironment } from "./smoke-environment.ts";
 
 const root = resolve(".");
-const dataDir = mkdtempSync(join(tmpdir(), "wesley-acp-smoke-"));
+const temporaryRoot = mkdtempSync(join(tmpdir(), "wesley-acp-smoke-"));
+const dataDir = join(temporaryRoot, "data");
+const brainDir = join(temporaryRoot, "project-brain");
+cpSync(join(root, "project-brain"), brainDir, { recursive: true });
 const port = 18877 + Math.floor(Math.random() * 1000);
 const api = `http://127.0.0.1:${port}`;
 
 const server = spawn(process.execPath, ["--experimental-strip-types", "apps/control-plane/src/index.ts"], {
   cwd: root,
-  env: {
-    ...process.env,
+  env: buildIsolatedSmokeEnvironment({
     HOST: "127.0.0.1",
     PORT: String(port),
     DATA_DIR: dataDir,
+    PROJECT_BRAIN_DIR: brainDir,
     DEMO_STAGE_DELAY_MS: "10",
-  },
+  }),
   stdio: ["ignore", "pipe", "pipe"],
 });
 
@@ -39,7 +43,7 @@ async function waitForHealth(): Promise<void> {
 interface Pending { resolve: (value: any) => void; reject: (error: Error) => void }
 const mcp = spawn(process.execPath, ["--experimental-strip-types", "apps/mcp-server/src/index.ts"], {
   cwd: root,
-  env: { ...process.env, CONTROL_PLANE_API: api },
+  env: buildIsolatedSmokeEnvironment({ CONTROL_PLANE_API: api }),
   stdio: ["pipe", "pipe", "pipe"],
 });
 let mcpError = "";
@@ -102,6 +106,6 @@ try {
   mcp.kill("SIGTERM");
   server.kill("SIGTERM");
   await delay(100);
-  rmSync(dataDir, { recursive: true, force: true });
+  rmSync(temporaryRoot, { recursive: true, force: true });
   if (mcpError.trim()) process.stderr.write(mcpError);
 }

@@ -3,6 +3,7 @@ import { cpSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
+import { buildIsolatedSmokeEnvironment } from "./smoke-environment.ts";
 
 const root = resolve(".");
 const temporaryRoot = mkdtempSync(join(tmpdir(), "wesley-acp-http-smoke-"));
@@ -14,14 +15,13 @@ const api = `http://127.0.0.1:${port}`;
 
 const server = spawn(process.execPath, ["--experimental-strip-types", "apps/control-plane/src/index.ts"], {
   cwd: root,
-  env: {
-    ...process.env,
+  env: buildIsolatedSmokeEnvironment({
     HOST: "127.0.0.1",
     PORT: String(port),
     DATA_DIR: dataDir,
     PROJECT_BRAIN_DIR: brainDir,
     DEMO_STAGE_DELAY_MS: "5",
-  },
+  }),
   stdio: ["ignore", "pipe", "pipe"],
 });
 

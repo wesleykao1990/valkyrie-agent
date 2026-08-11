@@ -36,7 +36,7 @@ are `apps/control-plane/src/store.ts`, `sqlite-store.ts`, `postgres-store.ts`,
 ## 4. Verification evidence
 
 - Untouched baseline: 10 tests plus HTTP/MCP smoke passed.
-- Final general suite: 31 passed; the opt-in PG case skipped there.
+- Final general suite: 33 passed; the opt-in PG case skipped there.
 - Disposable PostgreSQL 16.14: 16/16 passed.
 - Atomic module verify/typecheck: passed.
 - Full HTTP and MCP smoke: passed.

@@ -146,9 +146,12 @@ scripts/http-smoke.ts
 scripts/mcp-smoke.ts
 scripts/migrate-storage.ts
 scripts/reset-demo.ts
+scripts/smoke-environment.ts
 scripts/test-postgres-storage.ts
+scripts/test-unit.ts
 tests/comparison.test.ts
 tests/flow.test.ts
 tests/policy.test.ts
+tests/reset-demo.test.ts
 tests/storage.test.ts
 tsconfig.json
