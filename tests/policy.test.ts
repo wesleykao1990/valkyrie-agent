@@ -64,6 +64,54 @@ test("demo data and reset default on only for SQLite", () => {
   }
 });
 
+test("native runtime adapters are explicit and invalid selections fail closed", () => {
+  const names = ["ATOMIC_ADAPTER", "CODEX_ADAPTER", "CLAUDE_ADAPTER", "CLAUDE_RUNTIME_ENV_ALLOWLIST", "CONTROL_PLANE_AUTH_TOKEN"] as const;
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  try {
+    for (const name of names) delete process.env[name];
+    const defaults = loadConfig();
+    assert.deepEqual(defaults.runtimeAdapters, { atomic: "mock", codex: "mock", claude: "mock" });
+
+    process.env.CODEX_ADAPTER = "native";
+    process.env.CLAUDE_RUNTIME_ENV_ALLOWLIST = "ANTHROPIC_API_KEY";
+    assert.throws(() => loadConfig(), /bearer authentication is required/);
+    process.env.CONTROL_PLANE_AUTH_TOKEN = "0123456789abcdefghijklmnopqrstuvwxyz-ABCDE";
+    const native = loadConfig();
+    assert.equal(native.runtimeAdapters.codex, "native");
+    assert.deepEqual(native.claudeRuntimeEnvAllowlist, ["ANTHROPIC_API_KEY"]);
+
+    process.env.ATOMIC_ADAPTER = "sometimes";
+    assert.throws(() => loadConfig(), /ATOMIC_ADAPTER must be either mock or native/);
+    process.env.ATOMIC_ADAPTER = "mock";
+    process.env.CLAUDE_RUNTIME_ENV_ALLOWLIST = "BAD-NAME";
+    assert.throws(() => loadConfig(), /invalid environment variable name/);
+  } finally {
+    for (const name of names) {
+      const value = previous[name];
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
+test("non-loopback bindings require control-plane authentication", () => {
+  const names = ["HOST", "CONTROL_PLANE_AUTH_TOKEN", "CONTROL_PLANE_AUTH_TOKEN_FILE"] as const;
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  try {
+    for (const name of names) delete process.env[name];
+    process.env.HOST = "0.0.0.0";
+    assert.throws(() => loadConfig(), /non-loopback HOST/);
+    process.env.CONTROL_PLANE_AUTH_TOKEN = "0123456789abcdefghijklmnopqrstuvwxyz-ABCDE";
+    assert.equal(loadConfig().host, "0.0.0.0");
+  } finally {
+    for (const name of names) {
+      const value = previous[name];
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
 test("disposable fixture processes ignore inherited persistent storage and repository settings", () => {
   const names = [
     "CONTROL_PLANE_STORE",
@@ -72,6 +120,12 @@ test("disposable fixture processes ignore inherited persistent storage and repos
     "RUN_POSTGRES_STORAGE_CONTRACT_TESTS",
     "POSTGRES_AUTO_MIGRATE",
     "REPOSITORY_PATH_OVALO",
+    "ATOMIC_ADAPTER",
+    "CODEX_ADAPTER",
+    "CLAUDE_ADAPTER",
+    "CONTROL_PLANE_AUTH_TOKEN",
+    "CONTROL_PLANE_AUTH_TOKEN_FILE",
+    "CONTROL_PLANE_MCP_TOOL_ALLOWLIST",
   ] as const;
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   try {
@@ -81,6 +135,12 @@ test("disposable fixture processes ignore inherited persistent storage and repos
     process.env.RUN_POSTGRES_STORAGE_CONTRACT_TESTS = "1";
     process.env.POSTGRES_AUTO_MIGRATE = "true";
     process.env.REPOSITORY_PATH_OVALO = "/sensitive/repository";
+    process.env.ATOMIC_ADAPTER = "native";
+    process.env.CODEX_ADAPTER = "native";
+    process.env.CLAUDE_ADAPTER = "native";
+    process.env.CONTROL_PLANE_AUTH_TOKEN = "0123456789abcdefghijklmnopqrstuvwxyz-ABCDE";
+    process.env.CONTROL_PLANE_AUTH_TOKEN_FILE = "/sensitive/token";
+    process.env.CONTROL_PLANE_MCP_TOOL_ALLOWLIST = "projects_list";
 
     const environment = buildIsolatedSmokeEnvironment({ PORT: "19001" });
     assert.equal(environment.CONTROL_PLANE_STORE, "sqlite");
@@ -92,6 +152,12 @@ test("disposable fixture processes ignore inherited persistent storage and repos
     assert.equal(environment.TEST_DATABASE_URL, undefined);
     assert.equal(environment.RUN_POSTGRES_STORAGE_CONTRACT_TESTS, undefined);
     assert.equal(environment.REPOSITORY_PATH_OVALO, undefined);
+    assert.equal(environment.ATOMIC_ADAPTER, undefined);
+    assert.equal(environment.CODEX_ADAPTER, undefined);
+    assert.equal(environment.CLAUDE_ADAPTER, undefined);
+    assert.equal(environment.CONTROL_PLANE_AUTH_TOKEN, undefined);
+    assert.equal(environment.CONTROL_PLANE_AUTH_TOKEN_FILE, undefined);
+    assert.equal(environment.CONTROL_PLANE_MCP_TOOL_ALLOWLIST, undefined);
   } finally {
     for (const name of names) {
       const value = previous[name];

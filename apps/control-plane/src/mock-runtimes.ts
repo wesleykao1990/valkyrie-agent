@@ -50,6 +50,18 @@ export class MockRuntimeAdapter implements RuntimeAdapter {
     return { steer: true, pause: false, resume: false, approve: true, artifacts: true };
   }
 
+  async preflight() {
+    return {
+      runtime: this.name,
+      adapter: "mock" as const,
+      enabled: true,
+      available: true,
+      executionMode: "simulated" as const,
+      capabilities: this.capabilities(),
+      reason: "Deterministic scripted adapter; no native runtime process is started",
+    };
+  }
+
   async start(context: RuntimeContext) {
     const nativeRunId = `${this.name}-mock-${context.run.id}`;
     const first = this.stages[0];

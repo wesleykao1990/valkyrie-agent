@@ -1,0 +1,29 @@
+#!/usr/bin/env sh
+set -eu
+REPOSITORY_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+if [ -n "${CONTROL_PLANE_AUTH_TOKEN:-}" ]; then
+  if [ -n "${CONTROL_PLANE_AUTH_TOKEN_FILE:-}" ]; then
+    echo "Set only one of CONTROL_PLANE_AUTH_TOKEN or CONTROL_PLANE_AUTH_TOKEN_FILE." >&2
+    exit 1
+  fi
+else
+  TOKEN_FILE=${CONTROL_PLANE_AUTH_TOKEN_FILE:-"$REPOSITORY_ROOT/data/auth/control-plane.token"}
+  if [ ! -f "$TOKEN_FILE" ]; then
+    echo "Missing pilot token at $TOKEN_FILE. Run npm run setup:pilot." >&2
+    exit 1
+  fi
+  export CONTROL_PLANE_AUTH_TOKEN_FILE="$TOKEN_FILE"
+fi
+ATOMIC_BINARY=${ATOMIC_COMMAND:-"$REPOSITORY_ROOT/data/runtime/atomic/node_modules/.bin/atomic"}
+if [ ! -x "$ATOMIC_BINARY" ]; then
+  echo "Missing pinned Atomic binary at $ATOMIC_BINARY. Run npm run setup:atomic." >&2
+  exit 1
+fi
+cd "$REPOSITORY_ROOT"
+export ENABLE_DEMO_RESET=false
+export ATOMIC_ADAPTER=native
+export ATOMIC_COMMAND="$ATOMIC_BINARY"
+export ATOMIC_EXPECTED_VERSION=0.9.12
+export CODEX_ADAPTER=native
+export CLAUDE_ADAPTER=native
+exec node --experimental-strip-types apps/control-plane/src/index.ts

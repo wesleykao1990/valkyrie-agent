@@ -17,8 +17,12 @@
     "migrate": "node --experimental-strip-types scripts/migrate-storage.ts",
     "verify:atomic": "npm --prefix packages/atomic-workflow-architect run verify:all",
     "reset": "node --experimental-strip-types scripts/reset-demo.ts",
+    "setup:atomic": "npm install --ignore-scripts --no-save --prefix data/runtime/atomic @bastani/atomic@0.9.12",
+    "setup:pilot": "node --experimental-strip-types scripts/setup-local-pilot.ts",
+    "setup:hermes": "node --experimental-strip-types scripts/setup-hermes-profile.ts",
     "mcp:quiet": "node --experimental-strip-types apps/mcp-server/src/index.ts",
     "smoke:mcp": "node --experimental-strip-types scripts/mcp-smoke.ts",
+    "smoke:native": "node --experimental-strip-types scripts/live-native-smoke.ts",
     "verify": "npm run typecheck && npm test && npm run test:postgres && npm run verify:atomic && npm run smoke:http && npm run smoke:mcp",
     "smoke:http": "node --experimental-strip-types scripts/http-smoke.ts"
   },

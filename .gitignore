@@ -6,6 +6,9 @@ data/workspaces/*
 !data/workspaces/.gitkeep
 data/artifacts/*
 !data/artifacts/.gitkeep
+data/runtime/
+data/atomic/
+data/auth/
 .env
 .DS_Store
 

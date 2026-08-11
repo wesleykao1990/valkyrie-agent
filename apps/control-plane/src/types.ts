@@ -120,8 +120,23 @@ export interface RuntimeCapabilities {
   artifacts: boolean;
 }
 
+export interface RuntimePreflight {
+  runtime: RuntimeName;
+  adapter: "mock" | "native";
+  enabled: boolean;
+  available: boolean;
+  executionMode: "simulated" | "read-only";
+  command?: string;
+  version?: string;
+  authenticated?: boolean | "unknown";
+  capabilities: RuntimeCapabilities;
+  reason?: string;
+}
+
 export interface NativeRunRef {
   runtime: RuntimeName;
   nativeRunId: string;
   nativeSessionId?: string;
+  runtimeVersion?: string;
+  metadata?: Record<string, unknown>;
 }

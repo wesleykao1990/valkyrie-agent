@@ -1,74 +1,200 @@
-# Security model for the prototype
+# Security model
 
-This repository demonstrates control-plane contracts. It is **not** a production sandbox and must not be pointed at confidential repositories with production credentials until the continuation milestones are implemented.
+Valkyrie demonstrates control-plane contracts. It is not a production sandbox,
+remote multi-user service, or authorization system. Do not point it at a
+confidential repository or give it production credentials.
 
-## Accepted boundaries
+## Preserved authority boundaries
 
-- One root runtime owns each run lifecycle.
-- Every writing candidate receives a separate workspace and one writer lease.
-- Hermes receives constrained project/run/approval/memory tools, not raw shell, container, credential, or worktree controls.
-- Linear, Git/GitHub, and accepted Markdown remain authoritative for roadmap, code, and project rationale respectively.
-- Retrieved or inferred memory cannot override current operational truth or accepted decisions.
+- One root runtime owns each run lifecycle and native session state.
+- Every candidate receives a distinct workspace record and exactly one writer
+  lease, even though native pilot operations are read-only.
+- Hermes receives named project/run/memory tools, not raw process, container,
+  credential, filesystem, worktree, merge, or deploy controls.
+- Linear, Git/GitHub plus executable checks, and accepted Project Brain Markdown
+  remain authoritative for roadmap, implementation, and rationale respectively.
+- Runtime/session memory is advisory. It cannot override current operational state
+  or accepted canonical decisions.
+- Proposal, exact promotion preview, canonical promotion, PR, merge, deploy, and
+  secret expansion remain separate final actions.
 
-## Prototype safety posture
+## Two execution postures
 
-- Mock runtimes are the default and execute no external coding-agent command.
-- The HTTP server binds to `127.0.0.1` by default.
-- The SQLite database and generated artifacts are local demo data.
-- No production secret is required or bundled.
-- The Atomic RPC class is a scaffold and is not selected by the default runtime registry.
-- The Atomic scaffold passes only a minimal operating-system environment unless additional variable names are explicitly allow-listed.
-- The imported Atomic module is inert source and remains `UNLICENSED` under its
-  nested private notice. Installing it into an Atomic host would execute extension
-  code with that host process's authority; review and pin it before doing so.
-- Wesley authorized public repository visibility on 2026-08-11. That visibility
-  does not extend the root MIT grant to the nested all-rights-reserved module.
-- SQLite remains the default. PostgreSQL must be selected explicitly and never
-  receives an automatic copy of SQLite demo data.
+The default `npm start` posture binds loopback, uses SQLite, and registers only
+deterministic mock runtimes. It needs no credential or external service.
 
-## PostgreSQL and retained command data
+The opt-in `bin/project-os-pilot-server` posture requires bearer auth and enables
+these disabled-by-default native adapters:
 
-- Use parameterized SQL and do not log `DATABASE_URL` or database error objects
-  that may embed credentials.
-- Use separate least-privilege migration and runtime roles outside a disposable
-  local environment; require TLS according to the deployment boundary.
-- Back up before forward-only migrations. A checksum mismatch or unavailable
-  database must fail startup rather than fall back to SQLite.
-- Idempotency and outbox records may retain objectives, event summaries, exact
-  approval effects, and identifiers. Apply access controls and retention before
-  production use.
-- The current outbox is durable local state, not a configured external publisher.
-  Future consumers must deduplicate stable outbox IDs and redact payloads from
-  logs.
-- Demo reset and automatic demo seeding are hard-disabled for PostgreSQL.
+- **Atomic 0.9.12:** credential-free `ATOMIC_OFFLINE=1` LF-JSONL process and
+  imported-package discovery only. It does not issue a model prompt. The launch
+  manifest records `modelExecutionAttempted=false`, `final_action=analysis_only`,
+  and `crossProcessResume=false`.
+- **Codex 0.147.0-alpha.6.5:** authenticated CLI call with `exec --json`,
+  `--sandbox read-only`, `--ephemeral`, ignored user configuration/rules, and no
+  repository-write final action.
+- **Claude Code 2.1.81:** optional `--bare` stream-JSON call with settings sources,
+  MCP, tools, hooks/browser, slash commands, and session persistence disabled.
+  It accepts only an explicitly forwarded `ANTHROPIC_API_KEY`; OAuth/keychain state
+  is deliberately ignored.
 
-## Before enabling real agents
+Codex/Claude connectivity objectives must exactly match
+`Return exactly MARKER and nothing else.` where `MARKER` is 3–64 uppercase ASCII
+letters, digits, or underscores. This prevents the connectivity endpoint from
+becoming a general arbitrary-prompt runner before a writer sandbox exists.
 
-1. Run each writing task in a devcontainer, container, VM, or remote sandbox.
-2. Mount only the selected repository/worktree; mount unrelated material read-only or not at all.
-3. Inject short-lived, least-privilege credentials at run start.
-4. Use an explicit outbound-network policy and log high-risk egress.
-5. Scan artifacts and proposed memories for secrets before storage or display.
-6. Authenticate Hermes mutations and bind approvals to the exact action, project, run, evidence, and expiry.
-7. Add lease heartbeats, orphan quarantine, cancellation reconciliation, and a global kill switch.
-8. Verify Linear and GitHub webhook signatures and replay windows.
-9. Pin and review agent skills, extensions, MCP servers, and runtime versions.
-10. Keep protected-branch merge, production deployment, destructive data changes, secret expansion, and canonical-memory promotion behind human approval.
+Every child has a wall-clock/output/framing bound, version preflight, minimal
+environment, native session-ID gate, bounded termination, and writer-lease
+release. Every parsed native JSONL occurrence is stored as `runtime.native` before
+its normalized projection. These records and result artifacts may contain prompt
+context/model output; treat `DATA_DIR` as sensitive retained data. On POSIX, the
+server sets an owner-only `077` process umask before creating new state. Existing
+files retain their prior modes; harden or recreate an older `DATA_DIR` before
+shared-host use. Windows deployments need an equivalent private ACL.
 
-## Runtime environment allow-list
+Before native context is written, the owned workspace and its `.control-plane`
+directory are checked as contained regular non-symlink directories. A symlink
+escape fails before adapter start and releases the lease. Service shutdown also
+terminates open SSE/keep-alive connections so bounded adapter cleanup and storage
+close cannot wait indefinitely behind a client.
 
-The Atomic RPC scaffold inherits only basic OS variables such as `PATH`, `HOME`, locale, terminal, and temporary-directory settings. To expose an additional variable to the child process, list its **name** in `ATOMIC_RUNTIME_ENV_ALLOWLIST`.
+## Bearer authentication and loopback
 
-Example for a disposable pilot worker:
+Set exactly one of:
 
-```bash
-ATOMIC_RUNTIME_ENV_ALLOWLIST=OPENROUTER_API_KEY,HTTPS_PROXY \
-OPENROUTER_API_KEY=... \
-npm start
-```
+- `CONTROL_PLANE_AUTH_TOKEN`; or
+- `CONTROL_PLANE_AUTH_TOKEN_FILE`.
 
-Do not expose broad cloud credentials or a developer's complete shell environment.
+Tokens must contain 32–4096 non-whitespace, non-control characters. A token file
+must be a regular non-symlink; on POSIX it must grant no group/other access (use
+mode `0600`). `npm run setup:pilot` generates a random ignored local token file
+without printing it.
+
+When configured, every `/api` route, including SSE, requires an exact bearer
+header. Comparison uses timing-safe fixed-length digests. `/health` and static
+assets remain public. Tokens are not returned through HTTP/MCP or intentionally
+logged.
+
+Any native adapter or non-loopback `HOST` fails startup without authentication.
+This static bearer check is still not production identity, authorization,
+rotation, expiry, revocation, CSRF protection, or device/channel attestation.
+Keep the pilot on `127.0.0.1`/`::1`.
+
+Loopback means the same device. A phone cannot reach a Mac service at the phone's
+own `127.0.0.1`. Do not bind to `0.0.0.0` as a shortcut; remote/mobile use needs a
+TLS ingress or authenticated Hermes gateway, caller identity, scoped policy,
+rate/abuse limits, and an audited approval principal.
+
+## Hermes isolation
+
+`npm run setup:hermes` creates an empty dedicated profile without cloning the
+default profile. It disables Hermes built-in CLI toolsets and built-in/user-profile
+memory, then registers a restricted MCP wrapper. The wrapper's server-side allow-list excludes runtime
+steering/comparison, approval resolution, demo reset, and canonical-memory
+promotion. Disallowed/unknown MCP tool calls fail closed.
+
+Inference credentials must be configured inside the isolated profile. Reusing an
+older cloned profile can carry unrelated MCP servers, settings, skills, or `.env`
+secrets; audit or recreate it before testing.
+
+## Environment and secret handling
+
+The process does not auto-load `.env`. Do not commit a token, API key,
+`DATABASE_URL`, or provider credential.
+
+Native children receive basic operating-system names plus explicitly approved
+runtime-specific variables:
+
+- Atomic offline discovery receives its isolated Atomic directories and offline
+  flag; configured provider-secret allow-lists are not inherited for discovery.
+- Codex uses its installed CLI authentication state; the pilot does not require a
+  new provider key in repository configuration.
+- Claude receives `ANTHROPIC_API_KEY` only when the server has both the value and
+  `CLAUDE_RUNTIME_ENV_ALLOWLIST=ANTHROPIC_API_KEY`.
+
+Never broad-forward a developer's shell or cloud credentials. Use a dedicated,
+short-lived, low-limit Claude key for this read-only probe and unset it after the
+server stops.
+
+## Project Brain safety
+
+- Retrieval is local, deterministic, bounded, and read-only.
+- General search results are authority-labeled and can include advisory notes;
+  callers must not treat every search hit as accepted knowledge.
+- Runtime context packs include accepted canonical Markdown only, suppress
+  stale/rejected/deprecated/superseded material, and record automatic episodic
+  capture as disabled.
+- Notes and promotion targets are checked for vault containment, file type, size,
+  and hashes.
+- Promotion requires the complete unchanged human-reviewed preview, including
+  exact target/content/hash/reviewer/timestamp. Missing, tampered, or stale input
+  fails. Preview lifetime is 15 minutes with at most 30 seconds of future clock
+  skew; an expired preview must be regenerated and reviewed again.
+- Pilot Hermes cannot promote, and `smoke:native` previews then rejects its test
+  proposal.
+
+A successful promotion writes a real Markdown file before resolving the database
+proposal. Those two resources are not one atomic transaction; an operator must
+reconcile if the database step fails. Review promoted content for secrets and
+prompt-injected claims before approval.
+
+## Workspaces are not sandboxes
+
+A directory/Git worktree and writer lease provide concurrency isolation only.
+They do not block network access, credential access, process escape, symlink
+tricks, or writes outside the worktree. The native pilot therefore has no writer
+mode and no implementation/PR action.
+
+Before any real writing runtime:
+
+1. provide an external container/devcontainer, VM, or equivalent remote sandbox;
+2. mount only the selected worktree and context, with unrelated material absent or
+   read-only;
+3. add lease heartbeat, fencing, expiry kill, orphan quarantine, and terminal
+   cleanup;
+4. enforce filesystem and egress policy;
+5. inject short-lived least-privilege credentials after start;
+6. export and secret-scan artifacts/memory proposals;
+7. bind human approval to exact action/run/project/evidence/expiry;
+8. keep PR creation, merge, deploy, destructive database change, secret expansion,
+   and canonical promotion behind separate policy decisions.
+
+## Storage and retained command data
+
+- SQLite is the local default. PostgreSQL is explicit and never receives an
+  automatic copy of SQLite data.
+- Use parameterized SQL and never log `DATABASE_URL` or error objects that may
+  embed it.
+- Persistent PostgreSQL needs separate migration/runtime roles, TLS, backups,
+  retention, monitoring, and restore drills.
+- Migration mismatch/unavailability fails startup; there is no fallback to
+  SQLite. Demo seed/reset are hard-disabled for PostgreSQL.
+- Idempotency/outbox/events may retain objectives, native output, approval effects,
+  and identifiers. Apply access controls and deletion/retention policy before
+  persistent use.
+- The server now sets a POSIX `077` umask for new SQLite/runtime/artifact state.
+  Files created by an older checkout retain their previous mode and Windows needs
+  an equivalent private ACL; harden or recreate that state before shared-host use.
+- The durable outbox has no external publisher yet.
+
+## Dependency and source trust
+
+Pin and review every runtime, skill, extension, MCP server, and package before it
+runs with host-process authority. The imported Atomic Workflow Architect subtree
+is visible in this public repository but retains its own `UNLICENSED`, private-use,
+all-rights-reserved notice. Root MIT licensing does not override it.
+
+`setup:atomic` pins `@bastani/atomic` at the top level, but installs into ignored
+runtime state without a committed lockfile for its transitive graph. Reproduce,
+review, and lock that graph before treating the install as a production supply-
+chain boundary. Crash/SIGKILL and descendant-process cleanup also remain outside
+the host-process pilot's guarantees; the container/VM milestone must own them.
+
+Wesley explicitly chose public repository visibility on 2026-08-11. Never commit a
+secret, private project context, raw provider transcript, or confidential
+vulnerability report.
 
 ## Reporting a security issue
 
-Do not place credentials or confidential exploit details in a public issue. Share a minimal reproduction through a private channel with the repository owner.
+Do not place credentials or confidential exploit details in a public issue. Send
+the repository owner a minimal reproduction through a private channel.

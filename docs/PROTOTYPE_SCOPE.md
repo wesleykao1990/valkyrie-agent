@@ -1,67 +1,101 @@
 # Prototype scope and honesty statement
 
 Version: 0.3.0
+Pilot: proposed ADR-P003 read-only native connectivity slice
 
-## Implemented and verified
+## Implemented and contract-tested
 
-- Projects, tasks, runs, normalized events, approvals, artifacts, governed memory
-  proposals, workspace records, and writer leases.
-- Responsive developer console, stable HTTP API, SSE event stream, and local
-  stdio MCP bridge for Hermes-compatible clients.
-- Explicit routing, exactly one root runtime per run, and isolated comparison
-  records/workspace leases for Atomic/Codex/Claude candidates.
-- Async storage contract implemented by SQLite and PostgreSQL.
-- Checksummed forward migrations, PostgreSQL migration locking, health checks,
-  run/event/approval/workspace transaction boundaries, stable idempotency, and a
-  transactional outbox in both adapters.
-- Exclusive run claims and startup reconciliation for interrupted starts,
-  stranded approvals, terminal/expired leases, and pending outbox rows.
-- Cross-project task/run/memory integrity checks.
-- Read-only local accepted-Markdown search and human-triggered proposal review.
-- Atomic JSONL decoder/environment-filter scaffold tests; the scaffold is not a
-  registered runtime.
-- Inert Atomic Workflow Architect module with independently tested router,
-  workflows, prompt templates, launch-manifest template/schema, and provenance.
+- Projects, tasks, runs, normalized/raw-native events, approvals, artifacts,
+  governed memory proposals, workspace records, and writer leases.
+- SQLite and PostgreSQL behind one async storage contract, with checksummed
+  migrations, transactional aggregates, idempotency, outbox rows, claims, restart
+  reconciliation, and ownership constraints.
+- Loopback HTTP, authenticated `/api/*`, SSE, and bearer-authenticated stdio MCP
+  with a validated server-side tool allow-list.
+- Runtime registry/preflight with explicit mock/native selection and no silent
+  native-to-mock fallback.
+- Strict bounded LF-JSONL Atomic RPC client plus adversarial fake process tests.
+- Atomic 0.9.12 offline connectivity adapter: exact pin, one main session,
+  imported-package command/skill/workflow discovery, launch-manifest schema,
+  raw-event retention, cursor/artifact evidence, and
+  `crossProcessResume=false`.
+- Direct Codex/Claude adapters: exact pins, constrained marker-only objectives,
+  read-only/bare command flags, prompt over stdin, minimal child environment,
+  raw-first event persistence, native IDs, output/time bounds, termination,
+  evidence artifacts, and lease release.
+- Pre-spawn workspace/context-directory containment rejects symlink escapes; bounded
+  shutdown terminates open SSE connections before adapter/store cleanup can hang.
+- Bounded accepted-canonical Project Brain context packs; structural authority and
+  stale/superseded suppression; automatic episodic capture disabled.
+- Separate memory proposal, exact preview, tamper-resistant promotion, and
+  rejection operations. Pilot MCP excludes promotion.
+- Empty dedicated Hermes evaluation profile setup with built-in CLI toolsets and
+  memory/profile injection disabled.
+- Deterministic fake-runtime tests plus opt-in `smoke:native` for a running local
+  pilot.
 
-## Intentionally simulated
+## Default behavior remains simulated
 
-- Atomic, Codex, Claude, Prime, and Hermes runtime adapters execute deterministic
-  lifecycle fixtures only. Every mock event/evidence/artifact/approval/memory claim
-  is marked simulated.
-- Linear is a local task projection. Nothing is read from or written to Linear.
-- A workspace is a prototype directory or best-effort local Git worktree. It is
-  not an external container/VM sandbox.
-- GitHub PR preparation is an artifact/event only; no PR, merge, deployment, or
-  branch protection action is performed.
-- Project Brain retrieval is deterministic local Markdown search, not OpenViking.
+`npm start` still selects deterministic mocks for Atomic, Codex, Claude, Prime,
+and Hermes. The browser walkthrough uses these fixtures and labels their
+events/evidence accordingly. The default requires no credential, PostgreSQL
+server, Atomic install, Codex/Claude provider, or Hermes login.
 
-## Implemented but not yet production-complete
+Linear remains a seeded local task projection; no live roadmap read/write occurs.
+GitHub PR preparation in mock flows is evidence text only. Project Brain retrieval
+is local Markdown, not OpenViking.
 
-- PostgreSQL is a working, contract-tested adapter. Production still needs
-  deployment-specific least-privilege roles, TLS, backups, monitoring, retention,
-  authenticated callers, and an external outbox dispatcher.
-- Run claims have expiry and exclusivity, but real long-running runtimes need claim
-  renewal/fencing.
-- Prepared workspace cleanup covers unpersisted local candidates; real worktree,
-  container, heartbeat, orphan, artifact-export, and secret-scan behavior remains
-  a later milestone.
-- Memory promotion is human-triggered but not atomic across filesystem and database
-  state.
+## Opt-in native pilot behavior
 
-## Not implemented or exercised
+`bin/project-os-pilot-server` selects native Atomic/Codex/Claude adapters behind
+bearer-authenticated loopback HTTP:
 
-- Production authentication, multi-user authorization, mutation signatures, and
-  exact-action approval binding.
-- Secret broker, short-lived runtime credentials, or production network policy.
-- Real Atomic JSONL subprocess/SDK adapter, native event retention, verified native
-  pause/resume/cancel, human-input mapping, or cross-process resume.
-- Real Codex/Claude native session adapters.
-- Linear MCP/GraphQL connector, webhook handling, or idempotent issue writes.
-- OpenViking provider/evaluation.
-- Real Git worktree/container lifecycle and security isolation.
-- GitHub draft PR connector and evidence/approval gate.
-- External outbox publishing, retention cleanup, or observability stack.
+- Atomic performs credential-free offline process/package discovery only. It does
+  not call a model or execute an implementation workflow.
+- Codex makes a real read-only, ephemeral model call when its pinned CLI and login
+  preflight pass.
+- Claude optionally makes a real bare model call only with an explicitly
+  allow-listed `ANTHROPIC_API_KEY`; OAuth/keychain state is ignored.
+- All direct prompts are fixed connectivity markers. Every run ends at
+  `analysis_only`; no writer/final action is reachable.
+- Hermes can exercise the pilot through an authenticated local stdio MCP child.
+  Model-driven `runtimes_status` and Project Brain search were exercised with
+  `gpt-5.6-sol`/`openai-codex`. This remains same-Mac CLI integration, not a
+  phone-facing gateway.
 
-These are explicit continuation tasks, not implied capabilities. No external
-connector, live agent runtime, production secret, remote PR, merge, deployment, or
-canonical-memory auto-promotion was exercised in this milestone.
+See `docs/VERIFICATION.md` for what was actually exercised on the release host;
+implemented capability and live exercise are reported separately.
+
+## Implemented but not production-complete
+
+- Bearer auth protects the pilot API but is not user/device identity, fine-grained
+  authorization, expiry/rotation/revocation, or remote channel attestation.
+- PostgreSQL is contract-tested; production still needs deployment-specific roles,
+  TLS, backup/restore, monitoring, retention, and an outbox dispatcher.
+- Run/lease claims have ownership and expiry, but a real long writer needs renewal,
+  fencing, kill-on-lease-loss, orphan quarantine, and cleanup.
+- Native subprocess durability does not cross control-plane restart; restart
+  reconciliation fails non-resumable orphans conservatively.
+- Memory promotion validates the exact preview and file target but cannot make the
+  filesystem write and database resolution one atomic transaction.
+- Raw native events/artifacts have bounds but need deployment retention/redaction/
+  deletion policy.
+
+## Not implemented or enabled
+
+- External container/devcontainer/VM writer sandbox, network policy, secret
+  broker, artifact export/secret scan, or production credential injection.
+- Real repository implementation by Atomic, Codex, or Claude; deterministic
+  check/repair/reviewer pipeline; draft PR creation; merge; deploy.
+- Atomic model workflow, HIL response mapping, steering, pause/resume, or proven
+  DBOS/PostgreSQL cross-process durability.
+- Direct native in-flight steering, resume, or approval mapping.
+- Phone/mobile Hermes gateway, remote ingress, per-user policy, or production
+  channel authentication.
+- Live Linear connector, GitHub connector, OpenViking provider/evaluation, webhook
+  validation, or external outbox publishing.
+- Automatic episodic memory capture or automatic canonical-memory promotion.
+
+No successful connectivity marker should be interpreted as code correctness,
+delivery acceptance, production readiness, or permission for a higher-risk final
+action.

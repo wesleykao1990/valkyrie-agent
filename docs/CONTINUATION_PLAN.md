@@ -47,27 +47,39 @@ proposed until Wesley accepts or amends its semantics.
 ADR-P002 and the Atomic A-01 through A-07 addendum remain proposed for explicit
 whole-system reconciliation.
 
-## Milestone 3 — Real Atomic adapter: next
+## Milestone 3a — Minimum native connectivity slice: implemented and verified
 
-Implement behind a disabled-by-default feature flag. Do not enable live execution
-until exact host versions are pinned and contract-tested.
+The disabled-by-default pilot now has:
 
-Required outcomes:
+- strict bounded LF-delimited JSONL and deterministic fake Atomic/direct-runtime
+  subprocesses with adversarial framing/exit/cancel tests;
+- pinned Atomic 0.9.12 offline RPC/package discovery as one Atomic root/main
+  session, with no model execution;
+- schema-validated launch manifest containing the literal request, IDs, bounded
+  context-pack/run-contract references, budget, final-action boundary, workspace,
+  writer lease, and provenance;
+- raw native occurrence retention before normalized events, stable native IDs,
+  cursor/result artifacts, and conservative restart reconciliation;
+- exact-version, read-only direct Codex/Claude connectivity adapters with
+  marker-only objectives and no internal Atomic orchestration;
+- authenticated loopback HTTP/MCP, runtime preflight, restricted Hermes profile,
+  and governed Project Brain search/proposal/preview/rejection;
+- `crossProcessResume=false` and unverified capabilities advertised false.
 
-- strict LF-delimited JSONL RPC boundary and deterministic fake subprocess;
-- launch-manifest schema validation with stable control-plane/native IDs;
-- exact task/request, context-pack reference, budget, final-action boundary,
-  workspace owner, and writer-lease contract;
-- raw native event retention alongside normalized events and cursor state;
-- only positively verified start/status/event/steer/pause/resume/cancel/input/
-  artifact/cost/durability capabilities;
-- one Atomic main session per Atomic root run;
-- `crossProcessResume=false` unless runner startup proves native DBOS/PostgreSQL
-  durability for the installed version;
-- opt-in live tests only when Atomic and disposable credentials are present.
+`smoke:native` is opt-in and separates implementation evidence from integrations
+actually available/exercised on the host. ADR-P003 remains proposed.
 
-Atomic's main session owns its native workflow. Codex/Claude must not orchestrate
-Atomic's internal stages.
+## Milestone 3b — Atomic model workflow and native capability mapping: deferred
+
+Do not reinterpret offline discovery as a live Atomic model workflow. After an
+external sandbox exists, pin and exercise only the exact capabilities supported
+by that installed Atomic version: model start/status/event cursoring, steering or
+follow-up, pause/resume/quit/cancel, HIL input/approval mapping, artifacts,
+cost/model metadata, and native durability. Atomic's main session must retain
+ownership of its workflow; Codex/Claude must not orchestrate its stages.
+
+Keep `crossProcessResume=false` until runner startup positively proves the native
+DBOS/PostgreSQL durability contract through a process-kill/restart test.
 
 ## Milestone 4 — Real workspace boundary
 

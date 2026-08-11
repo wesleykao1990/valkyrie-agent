@@ -2,22 +2,33 @@
 
 ```text
 You are continuing Wesley's mobile-first multi-agent Project OS / Agent Control
-Plane in the existing valkyrie-agent repository. Do not create a new repository,
-replace it with a generic agent framework, or redesign accepted architecture.
+Plane in the existing public valkyrie-agent repository. Do not create another
+repository, substitute a generic agent framework, or redesign accepted
+architecture.
 
 CURRENT STATE
 
-- Repository release: 0.3.0.
-- Milestone 0 (inventory/plan): complete.
-- Milestone 1 (transactional SQLite/PostgreSQL storage): complete and verified.
-- Milestone 2 (non-live Atomic Workflow Architect package integration): complete
-  and verified at packages/atomic-workflow-architect/.
-- All registered runtimes remain explicit scripted mocks.
-- No Linear, GitHub, OpenViking, live Atomic, Codex, or Claude connector is enabled.
-- Proposed ADR-P001 and ADR-P002 still require Wesley's acceptance/amendment.
-- The repository is public by Wesley's explicit 2026-08-11 decision. The nested
-  Atomic package remains UNLICENSED/private-use/all-rights-reserved; public source
-  visibility does not extend the root MIT grant to that subtree.
+- Milestone 0 inventory/plan: complete.
+- Milestone 1 transactional SQLite/PostgreSQL storage: complete and verified.
+- Milestone 2 Atomic Workflow Architect module integration: complete at
+  packages/atomic-workflow-architect/; its nested license remains UNLICENSED.
+- Milestone 3a minimum native connectivity: implemented behind disabled-by-default
+  flags and bearer-authenticated loopback pilot wrappers.
+- Atomic 0.9.12 is verified only for credential-free offline LF-JSONL/package
+  discovery. It does not run a model workflow.
+- Direct Codex/Claude adapters accept only `Return exactly MARKER and nothing
+  else.` marker objectives, run read-only/bare, and stop at analysis_only.
+- Live Codex connectivity passed. Live Claude remains unexercised without an
+  explicitly allow-listed ANTHROPIC_API_KEY.
+- Hermes isolated-profile MCP test passed with 11 restricted tools and all
+  built-in CLI tools plus built-in/user-profile memory disabled. A supported
+  `gpt-5.6-sol`/`openai-codex` Hermes conversation exercised runtime status and
+  Project Brain search; phone/mobile gateway remains unimplemented.
+- Project Brain creates accepted-only bounded context packs; search, proposal,
+  exact promotion preview, promotion, and rejection are separate. Pilot MCP cannot
+  promote and automatic episodic capture remains disabled.
+- crossProcessResume=false for every native pilot path.
+- Proposed ADR-P001, ADR-P002, and ADR-P003 require Wesley's acceptance/amendment.
 
 READ BEFORE CHANGING CODE
 
@@ -33,90 +44,72 @@ READ BEFORE CHANGING CODE
 10. SECURITY.md
 11. docs/VERIFICATION.md
 12. docs/SESSION_HANDOFF_v0.3.0.md
-13. docs/STORAGE.md
-14. docs/REVIEW_NOTES_v0.3.0.md
-15. docs/adr/ADR-P001-transactional-storage-boundary.md
-16. docs/adr/ADR-P002-atomic-package-boundary.md
+13. docs/IMPLEMENTATION_PLAN_M3_MINIMUM.md
+14. docs/adr/ADR-P003-read-only-native-runtime-pilot.md
 
-For Atomic-specific work, then read in order:
+For Atomic-specific work, then read the package START_HERE, complete SKILL.md,
+CONTROL_PLANE_INTEGRATION.md, CODEX_CLAUDE_HANDOFF.md,
+INSTALLATION_AND_OPERATIONS.md, ATOMIC_EXPERT_RESEARCH.md, and
+VIDEO_MASTERCLASS_FINDINGS.md in their documented order.
 
-1. packages/atomic-workflow-architect/START_HERE.md
-2. packages/atomic-workflow-architect/skills/atomic-workflow-architect/SKILL.md
-3. packages/atomic-workflow-architect/integration/CONTROL_PLANE_INTEGRATION.md
-4. packages/atomic-workflow-architect/integration/CODEX_CLAUDE_HANDOFF.md
-5. packages/atomic-workflow-architect/integration/INSTALLATION_AND_OPERATIONS.md
-6. packages/atomic-workflow-architect/research/ATOMIC_EXPERT_RESEARCH.md
-7. packages/atomic-workflow-architect/research/VIDEO_MASTERCLASS_FINDINGS.md
+Run `npm ci` and `npm run verify` before editing. Record the exact baseline; full
+verification requires PostgreSQL 16 initdb/pg_ctl. Run `npm run smoke:native` only
+against an explicitly started authenticated local pilot and do not reinterpret an
+unavailable Claude preflight as a pass.
 
-Run `npm ci` and `npm run verify` before editing. Record the exact baseline and do
-not hide failures. Full verification creates a disposable PostgreSQL 16 cluster
-and requires `initdb` and `pg_ctl` on PATH.
+MISSION — MILESTONE 4: REAL WORKSPACE SECURITY BOUNDARY
 
-MISSION: MILESTONE 3 — REAL ATOMIC ADAPTER, DISABLED BY DEFAULT
+Implement one container/devcontainer or VM provider for a disposable fixture so a
+future real writer can be enabled safely. Do not enable writer/model execution in
+Atomic or direct runtimes until the provider and its tests are green.
 
-First write a short implementation plan with changed files, tests, rollback,
-security impact, feature flag, and exact unverified assumptions. Inspect
-apps/control-plane/src/atomic-rpc-client.ts and the integrated launch-manifest
-schema. Preserve current HTTP/MCP contracts unless a proposed ADR explicitly
-justifies an additive change.
+Required outcomes:
 
-Implement the smallest secure non-live vertical slice:
+1. One Git worktree per candidate and no duplicate Atomic top-level worktree.
+2. One writer lease with heartbeat/renewal, fencing token, expiry kill, and orphan
+   reconciliation/quarantine.
+3. One external container/devcontainer or VM per real writing run; a worktree alone
+   never counts as a sandbox.
+4. Mount only the candidate worktree and bounded context. No production
+   credentials; use disposable fixture secrets only when a test requires them.
+5. Enforce and test filesystem and outbound-network policy, including symlink/path
+   escapes and denial of unrelated host material.
+6. Kill the runtime when lease ownership is lost. Bound start, execution, output,
+   cleanup, and force-kill paths.
+7. Export checksummed artifacts, secret-scan before storage/display, and clean up
+   after terminal states while preserving quarantine evidence on unsafe failure.
+8. Keep current read-only connectivity behavior and the zero-service mock/SQLite
+   demo unchanged.
+9. Preserve raw native records plus normalized events. Do not claim a capability
+   that was not exercised on the pinned version.
+10. Add deterministic fake/provider tests first, then one disposable live sandbox
+    test if the required local engine is present. Skip honestly when absent.
 
-1. Add a real Atomic RuntimeAdapter behind an explicit disabled-by-default flag.
-2. Use strict LF-delimited JSONL RPC first. Do not make Codex/Claude orchestrate
-   Atomic's internal graph; one Atomic main session owns the native workflow.
-3. Add a deterministic fake Atomic subprocess for contract tests. Test fragmented
-   frames, multiple frames, invalid JSON, CRLF policy, stdout contamination,
-   child exit, timeout/cancel, cursors, backpressure, and secret-filtered env.
-4. Validate every launch against the package launch-manifest schema. Include the
-   exact request/task contract, stable project/task/run IDs, bounded Project Brain
-   context-pack reference, budget/turn/time/concurrency bounds, final-action
-   boundary, workspace owner, and writer-lease reference.
-5. Preserve raw native payloads plus normalized events and stable native IDs.
-6. Expose only capabilities positively confirmed for the installed, pinned
-   Atomic/peer version: start, native IDs, status/state, event cursoring, steering,
-   pause/resume/quit/cancel, human input, artifacts, model/cost metadata, and
-   durability. Unconfirmed capabilities must remain false/unavailable.
-7. Keep `crossProcessResume=false` unless runner startup proves the selected
-   Atomic version is using durable DBOS/PostgreSQL state and a restart contract
-   test succeeds.
-8. Make live Atomic tests opt-in and skip honestly when exact packages and
-   disposable credentials are absent. Do not install a floating/latest host or
-   claim 0.9.12 is compatible merely because research used that era's sources.
-
-Before live execution, pin and contract-test an exact compatible set of
-@bastani/atomic, @bastani/workflows, and typebox. If no verifiable published set is
-available, finish the fake-process adapter/contracts and report the live pin as a
-blocker; do not simulate success.
+Do not begin the end-to-end implementation/PR pilot until Milestone 4 is verified.
+Do not make Atomic the default, run Atomic's model workflow, or permit arbitrary
+Codex/Claude objectives as part of workspace-provider work.
 
 NON-NEGOTIABLES
 
-- Hermes is an interface, not a record authority.
-- Do not mirror the Linear roadmap locally.
-- Do not build a workflow engine above Atomic.
-- One task has exactly one root runtime.
-- Preserve direct Codex and Claude paths.
-- A worktree/lease is not a sandbox; do not launch a real writer until the external
-  container/VM boundary exists.
-- Agents propose memory; they never silently promote it. Automatic episodic capture
-  stays disabled.
-- Keep raw native events alongside normalized events.
-- No production secrets, PR creation, merge, deploy, destructive DB operation,
-  expanded secret access, or canonical-memory promotion without its separate
-  policy/approval boundary.
-- Do not claim any external integration works unless actually exercised.
+- Hermes is an interface, not a system of record.
+- Linear, Git/checks, and accepted Markdown retain domain authority.
+- One task has exactly one root runtime; Atomic owns its native graph/session.
+- Never let Atomic and a direct candidate write the same worktree.
+- Agents propose canonical knowledge but never silently promote it.
+- Keep PR creation, merge, deploy, destructive DB change, expanded secret access,
+  and canonical promotion as separate exact human/policy actions.
+- Never commit credentials, tokens, provider output containing secrets, local
+  runtime data, or generated private Project Brain content.
+- Public repository visibility does not override the Atomic subtree license.
 
-METHOD AND DONE CRITERIA
+METHOD AND REPORT
 
-- Add tests before/with code and keep commits reviewable.
-- Run narrow checks, then `npm run verify`.
-- Use a fresh reviewer that did not author the implementation; repair only
-  evidence-backed findings and cap repair rounds.
-- Update documentation, environment examples, failure/rollback behavior, security
-  assumptions, and proposed ADRs.
-- Preserve the SQLite demo and PostgreSQL suite.
-- Report exact live integrations exercised, skipped tests, remaining credentials,
-  manual setup, files changed, commands, and risks.
-- Do not begin Milestone 4 until Milestone 3's non-live contracts are green.
-- Generate the next copy-paste continuation prompt.
+- Update a short implementation/migration/rollback/security plan.
+- Add tests before/with code; run narrow checks, then npm run verify.
+- Use a fresh reviewer that did not author the implementation and cap repair rounds.
+- Update setup, failure behavior, threat model, feature flags, and proposed ADRs.
+- Report: milestone completed, architecture preserved, exact files changed, tests
+  and verification, live integrations actually exercised, limitations/risks,
+  manual setup, Wesley decisions, exact next commands, and the next continuation
+  prompt.
 ```

@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
 import type { RuntimeAdapter } from "./runtime.ts";
-import type { Approval, MemoryProposal, Project, Run, RuntimeName, StartRunInput, Task } from "./types.ts";
+import type { Approval, Artifact, MemoryProposal, Project, Run, RuntimeName, RuntimePreflight, StartRunInput, Task } from "./types.ts";
 import { canonicalJson, IdempotencyConflictError, type ControlPlaneStore, type RunBundleResult } from "./store.ts";
-import type { LocalProjectBrain } from "./project-brain.ts";
+import { contextPackChecksum, type LocalProjectBrain, type PromotionPreview } from "./project-brain.ts";
 import type { WorkspaceManager } from "./workspace.ts";
 import { id, nowIso } from "./ids.ts";
 import { routeTask, validateBudget } from "./policy.ts";
@@ -14,6 +16,12 @@ function requestHash(value: unknown): string {
 
 const approvalDecisions = new Set(["approve", "deny", "request_changes"]);
 const memoryDecisions = new Set(["promote", "reject"]);
+export const MEMORY_PROMOTION_PREVIEW_MAX_AGE_MS = 15 * 60 * 1_000;
+export const MEMORY_PROMOTION_PREVIEW_MAX_FUTURE_SKEW_MS = 30 * 1_000;
+
+interface ControlPlaneServiceOptions {
+  now?: () => Date;
+}
 
 export class ControlPlaneService {
   private store: ControlPlaneStore;
@@ -21,6 +29,7 @@ export class ControlPlaneService {
   private workspaces: WorkspaceManager;
   private adapters: Map<RuntimeName, RuntimeAdapter>;
   private readonly workerId = id("worker");
+  private readonly now: () => Date;
   private currentTick: Promise<void> | null = null;
   private approvalQueue = new Map<string, Promise<unknown>>();
 
@@ -28,12 +37,14 @@ export class ControlPlaneService {
     store: ControlPlaneStore,
     brain: LocalProjectBrain,
     workspaces: WorkspaceManager,
-    adapters: Map<RuntimeName, RuntimeAdapter>
+    adapters: Map<RuntimeName, RuntimeAdapter>,
+    options: ControlPlaneServiceOptions = {},
   ) {
     this.store = store;
     this.brain = brain;
     this.workspaces = workspaces;
     this.adapters = adapters;
+    this.now = options.now ?? (() => new Date());
   }
 
   listProjects(): Promise<Project[]> { return this.store.listProjects(); }
@@ -41,6 +52,25 @@ export class ControlPlaneService {
   listRuns(): Promise<Run[]> { return this.store.listRuns(); }
   listApprovals(): Promise<Approval[]> { return this.store.listApprovals(); }
   listMemoryProposals(): Promise<MemoryProposal[]> { return this.store.listMemoryProposals(); }
+
+  async runtimeStatus(): Promise<RuntimePreflight[]> {
+    return Promise.all([...this.adapters.values()].map(async (adapter) => {
+      try {
+        return await adapter.preflight();
+      } catch (error) {
+        return {
+          runtime: adapter.name,
+          adapter: "native",
+          enabled: true,
+          available: false,
+          executionMode: "read-only",
+          authenticated: "unknown",
+          capabilities: adapter.capabilities(),
+          reason: error instanceof Error ? error.message : String(error),
+        } satisfies RuntimePreflight;
+      }
+    }));
+  }
 
   async portfolio() {
     const [projects, runs, tasks, approvals, proposals] = await Promise.all([
@@ -148,6 +178,22 @@ export class ControlPlaneService {
       }
     }
 
+    const adapter = this.requireAdapter(route.runtime);
+    const preflight = await adapter.preflight();
+    if (!preflight.enabled || !preflight.available) {
+      throw new Error(`${route.runtime} runtime is unavailable: ${preflight.reason ?? "preflight failed"}`);
+    }
+    if (preflight.adapter === "native" && input.workflow !== "runtime-connectivity") {
+      throw new Error("Native adapters are limited to the explicit runtime-connectivity workflow in this milestone");
+    }
+    if (
+      preflight.adapter === "native"
+      && (route.runtime === "codex" || route.runtime === "claude")
+      && !/^Return exactly [A-Z][A-Z0-9_]{2,63} and nothing else\.$/.test(input.objective)
+    ) {
+      throw new Error("Native Codex/Claude connectivity runs require: Return exactly MARKER and nothing else.");
+    }
+
     const runId = id("run");
     const workspace = this.workspaces.prepare(runId, project);
     const run: Run = {
@@ -155,7 +201,14 @@ export class ControlPlaneService {
       workflow: input.workflow ?? (route.runtime === "atomic" ? "issue-to-pr-pilot" : "bounded-task"),
       status: "queued", stage: null, stageIndex: 0, budgetUsd, costUsd: 0,
       workspaceId: workspace.workspaceId, nativeRunId: null, nextActionAt: null, startedAt: null, completedAt: null,
-      metadata: { routeReason: route.reason, requestedObjective: input.objective, approvalPolicy: input.approvalPolicy ?? { preparePr: "human" } },
+      metadata: {
+        routeReason: route.reason,
+        requestedObjective: input.objective,
+        approvalPolicy: input.approvalPolicy ?? { preparePr: "human" },
+        adapter: preflight.adapter,
+        executionMode: preflight.executionMode,
+        runtimeVersion: preflight.version,
+      },
       createdAt: nowIso()
     };
     let created: RunBundleResult;
@@ -182,18 +235,58 @@ export class ControlPlaneService {
       };
     }
 
-    const adapter = this.requireAdapter(route.runtime);
     try {
-      const native = await adapter.start({ run: created.run, objective: input.objective, workspacePath: workspace.path });
-      await this.store.updateRun(run.id, { nativeRunId: native.nativeRunId });
+      const runtimeContext = await this.createRuntimeContextArtifacts(
+        project,
+        task,
+        created.run,
+        input.objective,
+        workspace.path,
+        created.workspace,
+        created.lease,
+      );
+      const native = await adapter.start({
+        run: runtimeContext.run,
+        objective: input.objective,
+        workspacePath: workspace.path,
+        workspace: created.workspace,
+        writerLease: created.lease,
+        contextPack: runtimeContext.contextPack,
+        runContract: runtimeContext.runContract,
+        finalAction: "analysis_only",
+      });
+      const current = await this.store.getRun(run.id) ?? run;
+      await this.store.updateRun(run.id, {
+        nativeRunId: native.nativeRunId,
+        metadata: {
+          ...current.metadata,
+          nativeSessionId: native.nativeSessionId,
+          runtimeVersion: native.runtimeVersion ?? preflight.version,
+          native: native.metadata ?? {},
+        },
+      });
     } catch (error) {
+      let current = await this.store.getRun(run.id) ?? run;
+      if (preflight.adapter === "native" && current.status === "running") {
+        try {
+          await adapter.cancel(current);
+        } catch {
+          // The adapter's bounded termination path runs before its persistence;
+          // retain the original startup/registration error below.
+        }
+        current = await this.store.getRun(run.id) ?? current;
+      }
+      if (["completed", "failed", "cancelled"].includes(current.status)) {
+        if (current.workspaceId && current.status !== "completed") await this.workspaces.release(current.workspaceId, current.id);
+        throw error;
+      }
       const completedAt = nowIso();
       await this.store.updateRun(run.id, {
         status: "failed",
         stage: "startup_failed",
         completedAt,
         nextActionAt: null,
-        metadata: { ...run.metadata, startupFailed: true },
+        metadata: { ...current.metadata, startupFailed: true },
       });
       await this.workspaces.release(workspace.workspaceId, run.id);
       await this.store.appendEvent({
@@ -349,7 +442,21 @@ export class ControlPlaneService {
     return proposal;
   }
 
-  async resolveMemoryProposal(proposalId: string, decision: string) {
+  async previewMemoryPromotion(proposalId: string): Promise<PromotionPreview> {
+    const proposal = await this.store.getMemoryProposal(proposalId);
+    if (!proposal) throw new Error("Memory proposal not found");
+    if (proposal.state !== "proposed") throw new Error("Memory proposal has already been resolved");
+    const project = await this.requireProject(proposal.projectId);
+    return this.brain.previewPromotion(project, {
+      proposalId: proposal.id,
+      claim: proposal.claim,
+      evidence: proposal.evidence,
+      approvedBy: "wesley",
+      approvedAt: this.now().toISOString(),
+    });
+  }
+
+  async resolveMemoryProposal(proposalId: string, decision: string, preview?: PromotionPreview) {
     if (!memoryDecisions.has(decision)) {
       throw new Error("Memory decision must be promote or reject");
     }
@@ -361,7 +468,34 @@ export class ControlPlaneService {
       return this.store.getMemoryProposal(proposalId);
     }
     const project = await this.requireProject(proposal.projectId);
-    const target = this.brain.promote(project, proposal.id, proposal.claim, proposal.evidence);
+    if (!preview || typeof preview !== "object" || Array.isArray(preview)) {
+      throw new Error("Memory promotion requires the exact reviewed preview");
+    }
+    if (preview.approvedBy !== "wesley" || typeof preview.approvedAt !== "string") {
+      throw new Error("Memory promotion preview reviewer or timestamp is invalid");
+    }
+    const approvedAtMs = Date.parse(preview.approvedAt);
+    const nowMs = this.now().getTime();
+    if (!Number.isFinite(approvedAtMs) || !Number.isFinite(nowMs)) {
+      throw new Error("Memory promotion preview timestamp or control-plane clock is invalid");
+    }
+    if (approvedAtMs - nowMs > MEMORY_PROMOTION_PREVIEW_MAX_FUTURE_SKEW_MS) {
+      throw new Error("Memory promotion preview timestamp exceeds the allowed future clock skew");
+    }
+    if (nowMs - approvedAtMs > MEMORY_PROMOTION_PREVIEW_MAX_AGE_MS) {
+      throw new Error("Memory promotion preview has expired; generate and review a fresh preview");
+    }
+    const expected = this.brain.previewPromotion(project, {
+      proposalId: proposal.id,
+      claim: proposal.claim,
+      evidence: proposal.evidence,
+      approvedBy: "wesley",
+      approvedAt: preview.approvedAt,
+    });
+    if (canonicalJson(preview) !== canonicalJson(expected)) {
+      throw new Error("Memory promotion preview does not exactly match the reviewed proposal");
+    }
+    const target = this.brain.promote(project, expected);
     await this.store.resolveMemoryProposal(proposalId, "promoted", "wesley", target);
     return this.store.getMemoryProposal(proposalId);
   }
@@ -385,6 +519,7 @@ export class ControlPlaneService {
     let strandedApprovalsRecovered = 0;
     let strandedApprovalsNeedingAttention = 0;
     let strandedApprovalsAlreadySettled = 0;
+    let nativeOrphansFailed = 0;
     const released = new Set<string>();
 
     for (const run of candidates.queuedRuns) {
@@ -409,6 +544,35 @@ export class ControlPlaneService {
         createdAt: completedAt,
       });
       queuedRunsFailed += 1;
+    }
+
+    const nativeOrphans = (await this.store.listRuns()).filter((run) =>
+      ["running", "paused", "awaiting_approval"].includes(run.status)
+      && run.metadata.adapter === "native"
+      && run.metadata.crossProcessResume !== true,
+    );
+    for (const run of nativeOrphans) {
+      const completedAt = nowIso();
+      await this.store.updateRun(run.id, {
+        status: "failed",
+        stage: "native_restart_not_resumable",
+        completedAt,
+        nextActionAt: null,
+        metadata: { ...run.metadata, reconciliationReason: "native_process_lost_cross_process_resume_false" },
+      });
+      if (run.workspaceId) {
+        await this.workspaces.release(run.workspaceId, run.id);
+        released.add(run.workspaceId);
+      }
+      await this.store.appendEvent({
+        id: id("event"),
+        runId: run.id,
+        type: "run.failed",
+        message: "Startup reconciliation failed a native run that cannot resume across processes",
+        payload: { reconciliation: true, reason: "native_process_lost_cross_process_resume_false" },
+        createdAt: completedAt,
+      });
+      nativeOrphansFailed += 1;
     }
 
     for (const lease of candidates.terminalLeases) {
@@ -494,6 +658,7 @@ export class ControlPlaneService {
       strandedApprovalsRecovered,
       strandedApprovalsNeedingAttention,
       strandedApprovalsAlreadySettled,
+      nativeOrphansFailed,
       pendingOutbox: candidates.pendingOutbox.length,
     };
   }
@@ -571,5 +736,93 @@ export class ControlPlaneService {
     const adapter = this.adapters.get(name);
     if (!adapter) throw new Error(`Runtime adapter ${name} is not configured`);
     return adapter;
+  }
+
+  private async createRuntimeContextArtifacts(
+    project: Project,
+    task: Task | null,
+    run: Run,
+    objective: string,
+    workspacePath: string,
+    workspace: RunBundleResult["workspace"],
+    lease: RunBundleResult["lease"],
+  ) {
+    if (!workspace || !lease) throw new Error("Run bundle did not persist its workspace and writer lease");
+    const root = resolve(workspacePath);
+    const rootStat = lstatSync(root);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+      throw new Error("Native runtime workspace must be a regular non-symlink directory");
+    }
+    const realRoot = realpathSync(root);
+    const directory = resolve(root, ".control-plane");
+    if (directory === root || !directory.startsWith(`${root}${sep}`)) {
+      throw new Error("Native runtime context directory escaped the owned workspace");
+    }
+    if (!existsSync(directory)) mkdirSync(directory);
+    const directoryStat = lstatSync(directory);
+    if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
+      throw new Error("Native runtime context directory must be a regular non-symlink directory");
+    }
+    const realDirectory = realpathSync(directory);
+    if (!realDirectory.startsWith(`${realRoot}${sep}`)) {
+      throw new Error("Native runtime context directory realpath escaped the owned workspace");
+    }
+
+    const pack = this.brain.buildContextPack(project, objective, { runId: run.id, ...(task ? { taskId: task.id } : {}) });
+    const contextBody = canonicalJson(pack);
+    const contextChecksum = contextPackChecksum(pack);
+    const contextPath = join(directory, "context-pack.json");
+    writeFileSync(contextPath, contextBody, { encoding: "utf8", flag: "wx" });
+
+    const contract = {
+      schemaVersion: "1.0.0",
+      runId: run.id,
+      projectId: project.id,
+      taskId: task?.id ?? null,
+      taskSourceId: task?.sourceId ?? null,
+      request: objective,
+      rootRuntime: run.rootRuntime,
+      workflow: run.workflow,
+      contextPack: { uri: contextPath, checksum: contextChecksum },
+      budget: { currency: "USD", maxCostUsd: run.budgetUsd, enforcement: "runtime-specific; wall-clock bound always applies to native connectivity runs" },
+      finalAction: "analysis_only",
+      workspace: { owner: "control-plane", id: workspace.id, path: workspace.path, provider: workspace.provider },
+      writerLease: { holderRunId: lease.runId, workspaceId: lease.workspaceId, mode: lease.mode, expiresAt: lease.expiresAt },
+      approvalBoundary: "No PR, merge, deployment, destructive database change, secret expansion, or canonical-memory promotion.",
+      authorities: {
+        roadmap: "Linear (not live in this prototype)",
+        implementation: "Git/GitHub and executable checks",
+        rationale: "Accepted canonical Project Brain Markdown",
+      },
+      automaticEpisodicCapture: false,
+    };
+    const contractBody = canonicalJson(contract);
+    const contractChecksum = createHash("sha256").update(contractBody).digest("hex");
+    const contractPath = join(directory, "run-contract.json");
+    writeFileSync(contractPath, contractBody, { encoding: "utf8", flag: "wx" });
+
+    const createdAt = nowIso();
+    const artifacts: Artifact[] = [
+      { id: id("artifact"), runId: run.id, kind: "project-brain-context-pack", uri: contextPath, checksum: contextChecksum, mediaType: "application/json", createdAt },
+      { id: id("artifact"), runId: run.id, kind: "run-contract", uri: contractPath, checksum: contractChecksum, mediaType: "application/json", createdAt },
+    ];
+    for (const artifact of artifacts) await this.store.createArtifact(artifact);
+    const runtimeRun: Run = {
+      ...run,
+      metadata: {
+        ...run.metadata,
+        contextPackRef: contextPath,
+        contextPackChecksum: contextChecksum,
+        runContractRef: contractPath,
+        runContractChecksum: contractChecksum,
+        finalAction: "analysis_only",
+      },
+    };
+    await this.store.updateRun(run.id, { metadata: runtimeRun.metadata });
+    return {
+      run: runtimeRun,
+      contextPack: { path: contextPath, uri: contextPath, checksum: contextChecksum },
+      runContract: { path: contractPath, uri: contractPath, checksum: contractChecksum },
+    };
   }
 }

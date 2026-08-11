@@ -1,0 +1,19 @@
+#!/usr/bin/env sh
+set -eu
+REPOSITORY_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+if [ -n "${CONTROL_PLANE_AUTH_TOKEN:-}" ]; then
+  if [ -n "${CONTROL_PLANE_AUTH_TOKEN_FILE:-}" ]; then
+    echo "Set only one of CONTROL_PLANE_AUTH_TOKEN or CONTROL_PLANE_AUTH_TOKEN_FILE." >&2
+    exit 1
+  fi
+else
+  TOKEN_FILE=${CONTROL_PLANE_AUTH_TOKEN_FILE:-"$REPOSITORY_ROOT/data/auth/control-plane.token"}
+  if [ ! -f "$TOKEN_FILE" ]; then
+    echo "Missing pilot token at $TOKEN_FILE. Run npm run setup:pilot." >&2
+    exit 1
+  fi
+  export CONTROL_PLANE_AUTH_TOKEN_FILE="$TOKEN_FILE"
+fi
+cd "$REPOSITORY_ROOT"
+export CONTROL_PLANE_MCP_TOOL_ALLOWLIST=${CONTROL_PLANE_MCP_TOOL_ALLOWLIST:-"projects_list,project_get_brief,runtimes_status,runs_start,runs_list,run_get,run_cancel,memory_search,memory_propose,memory_preview,memory_reject"}
+exec node --experimental-strip-types apps/mcp-server/src/index.ts

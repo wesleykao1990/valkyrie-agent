@@ -7,7 +7,8 @@
 - Imported source version: `0.2.0`
 - Repository-derived package version: `0.2.1`
 - Integration date: 2026-08-11
-- Live runtime status: disabled and not exercised
+- Live runtime status: disabled by default; opt-in Atomic 0.9.12 offline
+  RPC/package-discovery adapter implemented (no model/workflow execution)
 
 ## Source identity
 
@@ -47,7 +48,11 @@ The source tree was verified byte-for-byte before these repository-local changes
   not presented as a live-validated host version;
 - updated integrated install paths, package metadata, changelog, and structural verification for version `0.2.1`.
 
-No runtime adapter was enabled, no Atomic process was started, no external connector was configured, and no credential was added.
+At package-integration time no runtime adapter was enabled, no Atomic process was
+started, no external connector was configured, and no credential was added. The
+later minimum pilot did not alter this subtree; it installs Atomic host 0.9.12
+under ignored `data/runtime/` and performs credential-free offline discovery
+through the control-plane adapter.
 
 ## Dependency and compatibility caveat
 
@@ -57,7 +62,9 @@ The source package was researched against Atomic 0.9.12-era documentation, but i
 - `@bastani/workflows`;
 - `typebox`.
 
-Until that succeeds, the real Atomic adapter must remain disabled and cross-process resume must remain unadvertised.
+Until that succeeds, Atomic model/workflow execution must remain disabled and
+cross-process resume must remain unadvertised. The minimum offline discovery
+adapter does not establish peer compatibility for a real workflow run.
 
 ## License boundary
 
@@ -83,4 +90,7 @@ npm run verify:all
   passed
 ```
 
-The type check used the containing repository's installed TypeScript toolchain. No dependency was installed by this integration, and no live Atomic process or provider was exercised.
+The type check used the containing repository's installed TypeScript toolchain. No
+dependency was installed by the original package integration. The later local
+pilot installation is ignored runtime state and no provider/model execution is
+claimed by this provenance record.

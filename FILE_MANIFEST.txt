@@ -15,7 +15,10 @@ apps/control-plane/public/app.js
 apps/control-plane/public/index.html
 apps/control-plane/public/styles.css
 apps/control-plane/src/atomic-rpc-client.ts
+apps/control-plane/src/atomic-runtime-adapter.ts
+apps/control-plane/src/auth.ts
 apps/control-plane/src/config.ts
+apps/control-plane/src/direct-cli-runtimes.ts
 apps/control-plane/src/http.ts
 apps/control-plane/src/ids.ts
 apps/control-plane/src/index.ts
@@ -24,9 +27,11 @@ apps/control-plane/src/mock-runtimes.ts
 apps/control-plane/src/policy.ts
 apps/control-plane/src/postgres-store.ts
 apps/control-plane/src/project-brain.ts
+apps/control-plane/src/runtime-registry.ts
 apps/control-plane/src/runtime.ts
 apps/control-plane/src/server.ts
 apps/control-plane/src/service.ts
+apps/control-plane/src/shutdown.ts
 apps/control-plane/src/sqlite-store.ts
 apps/control-plane/src/store-factory.ts
 apps/control-plane/src/store.ts
@@ -34,6 +39,8 @@ apps/control-plane/src/types.ts
 apps/control-plane/src/workspace.ts
 apps/mcp-server/src/index.ts
 bin/project-os-mcp
+bin/project-os-pilot-mcp
+bin/project-os-pilot-server
 bin/project-os-server
 config/projects.json
 data/.gitkeep
@@ -50,6 +57,7 @@ docs/GIT_HANDOFF.md
 docs/HERMES_MCP_SETUP.md
 docs/IMPLEMENTATION_BACKLOG.md
 docs/IMPLEMENTATION_PLAN_M1_M2.md
+docs/IMPLEMENTATION_PLAN_M3_MINIMUM.md
 docs/NEXT_SESSION_PROMPT.md
 docs/PROMPT_FOR_CODEX_OR_CLAUDE.md
 docs/PROTOTYPE_SCOPE.md
@@ -59,6 +67,7 @@ docs/STORAGE.md
 docs/VERIFICATION.md
 docs/adr/ADR-P001-transactional-storage-boundary.md
 docs/adr/ADR-P002-atomic-package-boundary.md
+docs/adr/ADR-P003-read-only-native-runtime-pilot.md
 handoff/README.md
 infra/postgres/001_initial.sql
 infra/postgres/002_storage_guarantees.sql
@@ -142,16 +151,30 @@ project-brain/Projects/Ovalo/Decisions/ADR-001-terminology-preload.md
 project-brain/Projects/Ovalo/Project.md
 project-brain/Projects/Signal Ledger/Project.md
 project-brain/Shared/Agent Policies.md
+scripts/fake-atomic-rpc.ts
+scripts/fake-direct-runtime.ts
 scripts/http-smoke.ts
+scripts/live-native-smoke.ts
 scripts/mcp-smoke.ts
 scripts/migrate-storage.ts
 scripts/reset-demo.ts
+scripts/setup-hermes-profile.ts
+scripts/setup-local-pilot.ts
 scripts/smoke-environment.ts
 scripts/test-postgres-storage.ts
 scripts/test-unit.ts
+tests/atomic-rpc-client.test.ts
+tests/atomic-runtime-adapter.test.ts
+tests/auth.test.ts
 tests/comparison.test.ts
+tests/direct-cli-runtimes.test.ts
 tests/flow.test.ts
+tests/mcp-auth.test.ts
+tests/native-service-integration.test.ts
 tests/policy.test.ts
+tests/project-brain.test.ts
 tests/reset-demo.test.ts
+tests/server-auth.test.ts
+tests/shutdown.test.ts
 tests/storage.test.ts
 tsconfig.json

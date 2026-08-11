@@ -7,9 +7,13 @@ import { SqliteStore } from "../apps/control-plane/src/sqlite-store.ts";
 import { LocalProjectBrain } from "../apps/control-plane/src/project-brain.ts";
 import { WorkspaceManager } from "../apps/control-plane/src/workspace.ts";
 import { createMockAdapters } from "../apps/control-plane/src/mock-runtimes.ts";
-import { ControlPlaneService } from "../apps/control-plane/src/service.ts";
+import {
+  ControlPlaneService,
+  MEMORY_PROMOTION_PREVIEW_MAX_AGE_MS,
+  MEMORY_PROMOTION_PREVIEW_MAX_FUTURE_SKEW_MS,
+} from "../apps/control-plane/src/service.ts";
 
-async function setup() {
+async function setup(options: { now?: () => Date } = {}) {
   const root = mkdtempSync(join(tmpdir(), "control-plane-test-"));
   const brainRoot = join(root, "brain");
   mkdirSync(join(brainRoot, "Projects", "Ovalo", "Decisions"), { recursive: true });
@@ -28,8 +32,8 @@ async function setup() {
   const brain = new LocalProjectBrain(brainRoot);
   const workspaces = new WorkspaceManager(store, join(root, "workspaces"));
   const adapters = createMockAdapters(store, workspaces, join(root, "artifacts"), 0);
-  const service = new ControlPlaneService(store, brain, workspaces, adapters);
-  return { root, brainRoot, store, service };
+  const service = new ControlPlaneService(store, brain, workspaces, adapters, options);
+  return { root, brainRoot, store, service, workspaces };
 }
 
 async function tickUntil(service: ControlPlaneService, predicate: () => Promise<boolean>, limit = 30) {
@@ -69,12 +73,65 @@ test("Atomic lifecycle requires approval and creates governed memory proposal", 
     assert.ok((await store.listEvents(runId)).every((event) => event.type === "approval.decision_recorded" || event.payload.simulated === true));
     const proposals = await store.listMemoryProposals("proposed");
     assert.equal(proposals.length, 1);
-    const result = await service.resolveMemoryProposal(proposals[0].id, "promote");
+    await assert.rejects(
+      () => service.resolveMemoryProposal(proposals[0].id, "promote"),
+      /exact reviewed preview/,
+    );
+    const preview = await service.previewMemoryPromotion(proposals[0].id);
+    assert.equal(preview.projectId, "ovalo");
+    assert.equal(preview.proposalId, proposals[0].id);
+    assert.match(preview.target, /^Projects\/Ovalo\/Decisions\//);
+    assert.match(preview.content, /simulated lifecycle and review lesson/i);
+    await assert.rejects(
+      () => service.resolveMemoryProposal(proposals[0].id, "promote", { ...preview, content: `${preview.content}\ntampered` }),
+      /does not exactly match/,
+    );
+    assert.equal((await store.getMemoryProposal(proposals[0].id))?.state, "proposed");
+    assert.equal(existsSync(preview.path), false);
+    const result = await service.resolveMemoryProposal(proposals[0].id, "promote", preview);
     assert.equal(result?.state, "promoted");
     assert.ok(result?.targetNote);
     const promotedPath = join(brainRoot, String(result?.targetNote));
     assert.ok(existsSync(promotedPath));
     assert.match(readFileSync(promotedPath, "utf8"), /simulated lifecycle and review lesson/i);
+  } finally {
+    await store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("memory promotion previews expire and reject excessive future clock skew", async () => {
+  let nowMs = Date.parse("2026-08-11T12:00:00.000Z");
+  const { root, store, service } = await setup({ now: () => new Date(nowMs) });
+  try {
+    const proposal = await service.proposeMemory({
+      projectId: "ovalo",
+      claim: "Canonical promotion previews must have a bounded review lifetime.",
+      evidence: ["Fresh review finding"],
+    });
+    const stalePreview = await service.previewMemoryPromotion(proposal.id);
+    nowMs += MEMORY_PROMOTION_PREVIEW_MAX_AGE_MS + 1;
+    await assert.rejects(
+      () => service.resolveMemoryProposal(proposal.id, "promote", stalePreview),
+      /preview has expired/,
+    );
+    assert.equal((await store.getMemoryProposal(proposal.id))?.state, "proposed");
+    assert.equal(existsSync(stalePreview.path), false);
+
+    nowMs += MEMORY_PROMOTION_PREVIEW_MAX_FUTURE_SKEW_MS + 1;
+    const futurePreview = await service.previewMemoryPromotion(proposal.id);
+    nowMs -= MEMORY_PROMOTION_PREVIEW_MAX_FUTURE_SKEW_MS + 1;
+    await assert.rejects(
+      () => service.resolveMemoryProposal(proposal.id, "promote", futurePreview),
+      /future clock skew/,
+    );
+    assert.equal((await store.getMemoryProposal(proposal.id))?.state, "proposed");
+    assert.equal(existsSync(futurePreview.path), false);
+
+    nowMs = Date.parse(futurePreview.approvedAt);
+    const promoted = await service.resolveMemoryProposal(proposal.id, "promote", futurePreview);
+    assert.equal(promoted?.state, "promoted");
+    assert.equal(existsSync(futurePreview.path), true);
   } finally {
     await store.close();
     rmSync(root, { recursive: true, force: true });
@@ -174,6 +231,44 @@ test("startup reconciliation never replays approval after writer-lease quarantin
     assert.equal(result.strandedApprovalsRecovered, 0);
     assert.equal(result.strandedApprovalsNeedingAttention, 1);
     assert.ok((await store.listEvents(runId)).every((event) => !event.message.includes("execution resumed")));
+  } finally {
+    await store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("startup reconciliation fails a non-resumable native process orphan and releases its lease", async () => {
+  const { root, store, service, workspaces } = await setup();
+  try {
+    const project = await store.getProject("ovalo");
+    assert.ok(project);
+    const prepared = workspaces.prepare("run_native_orphan", project);
+    await store.createRunBundle({
+      run: {
+        id: "run_native_orphan",
+        projectId: "ovalo",
+        rootRuntime: "codex",
+        workflow: "runtime-connectivity",
+        status: "running",
+        stage: "native_read_only",
+        stageIndex: 0,
+        budgetUsd: 1,
+        costUsd: 0,
+        workspaceId: prepared.workspaceId,
+        nativeRunId: "lost-session",
+        nextActionAt: null,
+        startedAt: new Date().toISOString(),
+        completedAt: null,
+        metadata: { adapter: "native", crossProcessResume: false },
+        createdAt: new Date().toISOString(),
+      },
+      workspace: prepared.workspace,
+      lease: prepared.lease,
+    });
+    const result = await service.reconcileStartup();
+    assert.equal(result.nativeOrphansFailed, 1);
+    assert.equal((await store.getRun("run_native_orphan"))?.stage, "native_restart_not_resumable");
+    assert.equal((await store.listLeases()).length, 0);
   } finally {
     await store.close();
     rmSync(root, { recursive: true, force: true });

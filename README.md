@@ -1,403 +1,336 @@
-# Valkyrie Agent Control Plane — Prototype v0.3.0
+# Valkyrie Agent Control Plane — prototype v0.3.0
 
-Valkyrie is a runnable, local-first demonstration of Wesley's mobile-oriented
-Project OS and agent control plane. It shows how projects, bounded agent runs,
-approvals, evidence, workspace leases, and governed memory fit together.
-Valkyrie is the repository/project name; the current service, browser, and MCP
-identifiers retain “Wesley Agent Control Plane” for contract compatibility.
+Valkyrie is Wesley's local-first, mobile-oriented Project OS control plane. It
+coordinates project context, one root runtime per run, bounded workspaces,
+approvals, evidence, and governed Project Brain memory. Hermes is the intended
+conversation interface; this repository supplies the control plane and its local
+MCP bridge.
 
-> **Current status:** the control-plane, HTTP/MCP transports, SQLite storage, and
-> PostgreSQL storage contracts are real. All Atomic, Codex, Claude, Prime, and
-> Hermes runtime execution is scripted simulation. This version does not run an
-> autonomous coding agent or create a real pull request.
-
-This is the user guide for the work in
+This is the user guide for
 [draft PR #1](https://github.com/wesleykao1990/valkyrie-agent/pull/1).
 
-## What you can do today
+## What PR #1 can do
 
-| Capability | Where to use it | What really happens |
+There are two deliberately different modes.
+
+| Area | Default demo | Authenticated native pilot |
 |---|---|---|
-| View a three-project portfolio | Browser, HTTP, MCP | Reads seeded local project/task state; it does not query Linear. |
-| Capture an idea and detect an exact/similar duplicate | Browser, HTTP, MCP | Writes a local task and searches local Project Brain Markdown; it does not create a Linear issue. |
-| Start a scripted runtime | Browser (Atomic, Codex, Claude, Prime); HTTP/MCP (those four plus Hermes) | Creates a real run record, workspace record, writer lease, events, and simulated cost counter; the selected runtime is a mock. |
-| Compare runtime candidates | Browser (fixed Atomic/Codex/Claude trio); HTTP/MCP (2–4 distinct runtimes) | Creates separate runs/workspaces with one comparison ID; it does not score or select a winner. |
-| Inspect, steer, and cancel runs; watch progress | Browser auto-refresh; HTTP reads/SSE; MCP polling | State transitions and events are real; steering is only recorded by the mock and does not alter an agent's reasoning. |
-| Approve, deny, or request changes | Browser, HTTP, MCP | Transactionally records the decision and changes the simulated lifecycle; approval does not create a real PR. |
-| Store artifacts and checksums | Browser/API plus `data/artifacts/` | Files are real, but their check/verifier contents are explicitly marked simulated. |
-| Search and propose Project Brain knowledge | HTTP, MCP | Searches local Markdown and stores governed proposals; automatic promotion remains disabled. |
-| Promote a reviewed proposal | Browser, HTTP, MCP | **Really writes accepted Markdown** under `project-brain/`; this is not a simulation, has no confirmation dialog, and the file/database update is not yet atomic. |
-| Exercise durable storage semantics | SQLite by default; PostgreSQL opt-in | Migrations, transactions, idempotency, outbox rows, claims, and reconciliation are implemented; no external outbox publisher exists. |
+| Storage | Automatic local SQLite; PostgreSQL is an opt-in, contract-tested adapter | Automatic local SQLite |
+| Atomic | Deterministic mock lifecycle | Real Atomic 0.9.12 LF-JSONL process, but **offline package/workflow discovery only**; no model call |
+| Codex | Deterministic mock lifecycle | Real authenticated Codex CLI model call in `read-only`/ephemeral mode |
+| Claude Code | Deterministic mock lifecycle | Optional real `--bare` model call using an explicitly allow-listed `ANTHROPIC_API_KEY`; OAuth/keychain state is ignored |
+| Hermes | Local MCP bridge | Isolated Hermes profile, authenticated stdio MCP, and a restricted tool list |
+| Project Brain | Read accepted local Markdown; propose/review/reject/promote separately | Search, proposal, exact promotion preview, and rejection; pilot MCP cannot promote |
+| Events/evidence | Real run records around simulated stages | Raw native JSONL plus normalized events, native IDs, checksummed context/run-contract/result artifacts |
 
-## What it cannot do yet
+The native pilot is a connectivity slice, not a coding pipeline. It cannot edit a
+repository, run Atomic's model workflow, create a PR, merge, deploy, call Linear,
+or use OpenViking. No container or VM writer sandbox exists yet, so all native
+final actions are fixed to `analysis_only`. A successful pilot run is connectivity
+evidence, not implementation acceptance.
 
-- Run a real Atomic, Codex, Claude, Prime, or Hermes process.
-- Read or update Linear or OpenViking through a live connector, or implement code
-  in a product repository. An optional local-repository setting can create a real
-  branch/worktree, but the mock never edits it.
-- Create or merge a real pull request, deploy software, or select a comparison winner.
-- Authenticate HTTP/MCP callers or prove that an approval caller is Wesley.
-- Provide a security sandbox. A directory or Git worktree plus writer lease is a
-  coordination boundary, not container/VM isolation.
-- Enforce a real provider budget. Mock costs are capped counters, not a kill switch.
-- Deliver outbox events to an external system.
+## Requirements
 
-Keep the prototype on localhost and use disposable data.
+- Node.js `22.16.0` or newer and npm.
+- Git when cloning the repository.
+- For the default demo: nothing else.
+- For the native pilot: the pinned Atomic install, Codex CLI
+  `0.147.0-alpha.6.5` with working `codex login status`, and optionally Claude
+  Code `2.1.81` plus an Anthropic API key.
+- Hermes CLI for the Hermes walkthrough (this pilot was exercised with `0.19.0`).
 
-## Fastest setup: local SQLite demo
+The pilot fails closed when an installed runtime version differs from its pinned
+contract. Do not change an expected-version setting merely to bypass that check;
+contract-test the new version first.
 
-### Requirements
-
-- Node.js `22.16.0` or newer.
-- npm, included with a normal Node installation.
-- Git if you are cloning the repository.
-
-PostgreSQL is **not** needed for the normal demo.
-
-### 1. Get the code
+## Five-minute default demo
 
 ```bash
 git clone https://github.com/wesleykao1990/valkyrie-agent.git
 cd valkyrie-agent
-```
-
-While PR #1 is unmerged, switch to its branch. Skip this command if you are
-already reading the README from that branch.
-
-```bash
-git switch --track origin/agent/postgres-atomic-integration
-```
-
-### 2. Install and start
-
-```bash
-node --version
+git switch --track origin/agent/postgres-atomic-integration  # while PR #1 is unmerged
 npm ci
 npm start
 ```
 
-The default command:
+Open <http://127.0.0.1:8787>. The default starts only mock runtimes, creates
+`data/control-plane.sqlite`, applies migrations, and seeds three disposable
+projects. No PostgreSQL server or credential is needed.
 
-- listens on `http://127.0.0.1:8787`;
-- creates `./data/control-plane.sqlite`;
-- applies SQLite migrations automatically;
-- seeds three demonstration projects and tasks;
-- starts only scripted runtimes;
-- needs no credential or external service.
+Try idea duplicate detection, separate Atomic/Codex/Claude mock candidates,
+timeline inspection, approval decisions, evidence artifacts, and governed memory
+proposals. Mock events and artifacts are marked simulated.
 
-`127.0.0.1` is the **loopback** address: only programs on the same computer can
-connect. It does not expose the unauthenticated prototype to your Wi-Fi network or
-the internet.
-
-Check health from a second terminal:
+Stop with `Ctrl-C`. To reset only operational SQLite state after stopping:
 
 ```bash
-curl -fsS http://127.0.0.1:8787/health
+npm run reset
 ```
 
-Then open [http://127.0.0.1:8787](http://127.0.0.1:8787) in a browser.
+This does not remove artifact/workspace directories or undo accepted Project
+Brain Markdown.
 
-### 3. Try the five-minute walkthrough
+## Test the authenticated native pilot
 
-1. Review the three project cards: Ovalo, Signal Ledger, and AI Workflow Watch.
-2. Under **Capture idea**, enter an idea once, then submit it again to see the
-   local duplicate check.
-3. Under **Start demo work**, choose a project and runtime, enter an objective,
-   and start an isolated run.
-4. Open **Inspect** on the run to see its timeline, workspace ID, simulated cost,
-   and artifact checksums. You can record a steering instruction or cancel it.
-5. Atomic, Codex, and Claude mock runs eventually appear under **Approvals**.
-   Approve resumes the mock, request-changes returns it to its scripted
-   implementation stage, and deny fails it.
-6. After completion, inspect its governed memory proposal. **Reject** only changes
-   database state. **Promote** writes a canonical Markdown decision into the
-   checkout, so use it only when you intend to change Project Brain content.
-7. Use **Start Atomic / Codex / Claude A/B pilot** to create three separate mock
-   candidates. Completion does not mean any candidate was accepted.
+### 1. Prepare local, ignored runtime state
 
-The page refreshes automatically. All approval evidence and runtime events that
-come from a mock are labelled simulated.
+```bash
+npm ci
+npm run setup:atomic
+npm run setup:pilot
+```
+
+`setup:atomic` installs exactly `@bastani/atomic@0.9.12` under ignored
+`data/runtime/atomic/`. `setup:pilot` creates a random bearer token at ignored
+`data/auth/control-plane.token`, with mode `0600`, and never prints the token.
+
+Confirm direct runtime readiness:
+
+```bash
+codex --version
+codex login status
+claude --version       # optional
+```
+
+### 2. Start the pilot server
+
+For Atomic plus Codex, with Claude reported as an honest skip:
+
+```bash
+./bin/project-os-pilot-server
+```
+
+To include Claude, inject the key into the shell from your password manager and
+allow-list only its variable name before starting the server:
+
+```bash
+export CLAUDE_RUNTIME_ENV_ALLOWLIST=ANTHROPIC_API_KEY
+# Populate ANTHROPIC_API_KEY without committing it or pasting it into this repo.
+./bin/project-os-pilot-server
+```
+
+The wrapper enables the three native adapters, requires bearer authentication,
+disables demo reset, and keeps the service on `127.0.0.1:8787` unless explicitly
+overridden. It never falls back from a requested native adapter to a mock.
+
+### 3. Run the live smoke from a second terminal
+
+```bash
+npm run smoke:native
+```
+
+The smoke test:
+
+1. proves `/api/*` rejects an unauthenticated request and accepts the local token;
+2. prints all three runtime preflights;
+3. performs Atomic credential-free offline RPC/package discovery;
+4. requests the exact marker `VALKYRIE_CODEX_LIVE_OK` from the real read-only
+   Codex model;
+5. runs the equivalent Claude probe only when its preflight is available;
+6. verifies raw native records, normalized completion, local artifact files, and
+   every artifact checksum;
+7. searches accepted Project Brain Markdown, creates a proposal, obtains its
+   exact promotion preview, and **rejects** it.
+
+It never calls memory promotion, edits a repository, creates a PR, or deploys.
+The script expects to run on the same computer as the server because it verifies
+the local artifact files referenced by the API. Set `CONTROL_PLANE_API` only when
+using another loopback port.
+
+### 4. Test Hermes through the restricted MCP bridge
+
+Keep the pilot server running, then:
+
+```bash
+npm run setup:hermes
+hermes -p valkyrieeval mcp test valkyrie_project_os
+```
+
+The setup creates an **empty**, dedicated Hermes profile rather than cloning the
+default profile. Hermes's built-in CLI toolsets, built-in memory, and user-profile
+memory are disabled in that profile so the Project Brain/MCP test is not
+contaminated. If an older
+`valkyrieeval` profile exists without the isolation marker, the script stops and
+tells you to audit or recreate it.
+
+Configure inference inside that profile, then start a conversation with only the
+Valkyrie MCP toolset:
+
+```bash
+hermes -p valkyrieeval setup model
+hermes -p valkyrieeval chat -t valkyrie_project_os
+```
+
+Useful test prompts:
+
+```text
+List my Valkyrie projects and report which runtime integrations are available.
+Search the Ovalo Project Brain for the accepted terminology preload decision.
+Propose (but do not promote) a memory that this Hermes MCP connectivity test passed.
+Start a Codex runtime-connectivity run for Ovalo that returns VALKYRIE_HERMES_CODEX_OK, then inspect its evidence.
+```
+
+The pilot MCP allow-list omits approval resolution, steering, comparison, demo
+reset, and canonical-memory promotion. Hermes can preview a proposed promotion but
+cannot perform it. See [the Hermes guide](docs/HERMES_MCP_SETUP.md) for exact tool
+names and troubleshooting.
+
+This setup was live-tested with Hermes `0.19.0` using
+`gpt-5.6-sol`/`openai-codex`: the model called runtime status and Project Brain
+search through the restricted MCP server. Choose a model actually supported by
+your Hermes provider; `gpt-5.3-codex` returned HTTP 400 on the ChatGPT-account
+Codex endpoint during this test.
+
+This tests Hermes on the Mac hosting the stdio MCP child. It does not yet expose a
+phone-facing gateway. A phone cannot connect to `127.0.0.1` on the Mac: on a phone,
+loopback means the phone itself. Remote/mobile exposure requires a separately
+authenticated channel and is not enabled in PR #1.
+
+## Loopback and the “invisible” database
+
+`127.0.0.1` and `::1` are loopback addresses. A listener on loopback accepts
+connections only from the same computer. Other devices on Wi-Fi and the public
+internet cannot reach it. This is why the unauthenticated default mock demo is
+allowed only on loopback. The native pilot adds a bearer token as a second
+boundary, but still defaults to loopback.
+
+Most agent harnesses hide their persistence behind local files or an embedded
+database. Valkyrie does the same for normal use: SQLite is a single file created
+and migrated automatically under `data/`. You do not start, configure, or think
+about a database. PostgreSQL exists here because the control plane needs tested
+transaction/restart semantics for future multi-process use; it is optional for
+the demo and pilot.
+
+## Authenticated HTTP examples
+
+`/health` and static files remain public on the local listener. When a token is
+configured, every `/api` route—including the SSE event stream—requires
+`Authorization: Bearer ...`.
+
+```bash
+export CONTROL_PLANE_AUTH_TOKEN_FILE="$PWD/data/auth/control-plane.token"
+VALKYRIE_BEARER="$(tr -d '\n' < "$CONTROL_PLANE_AUTH_TOKEN_FILE")"
+
+curl -fsS \
+  -H "Authorization: Bearer $VALKYRIE_BEARER" \
+  http://127.0.0.1:8787/api/runtimes
+
+curl -fsS -X POST \
+  -H "Authorization: Bearer $VALKYRIE_BEARER" \
+  -H 'content-type: application/json' \
+  http://127.0.0.1:8787/api/runs \
+  -d '{
+    "projectId":"ovalo",
+    "objective":"Return exactly VALKYRIE_MANUAL_CODEX_OK and nothing else.",
+    "runtime":"codex",
+    "workflow":"runtime-connectivity",
+    "maxCostUsd":1,
+    "idempotencyKey":"manual-native-probe-001"
+  }'
+
+unset VALKYRIE_BEARER
+```
+
+Reuse an idempotency key only for the exact same logical request. See
+[docs/API.md](docs/API.md) for routes and response shapes.
+
+The browser developer console does not currently collect or store a bearer token.
+Use it for the default mock demo; use the smoke, HTTP, or Hermes MCP surfaces for
+the authenticated native pilot.
+
+## Project Brain memory boundary
+
+- Accepted canonical Markdown under `project-brain/Projects/**/Decisions/` is
+  authoritative for reviewed rationale.
+- Search is deterministic and read-only, but its authority-labeled results may
+  include advisory notes. Callers must inspect `authority` and `status`; only
+  accepted canonical material is authoritative.
+- Stale, rejected, deprecated, and superseded notes are suppressed from bounded
+  runtime context packs.
+- A runtime context pack contains accepted canonical Markdown only and records
+  `automaticEpisodicCapture: false`.
+- Proposal, exact promotion preview, promotion, and rejection are separate API
+  actions. Promotion writes a real Markdown file and is intentionally excluded
+  from the pilot Hermes allow-list.
+- Promotion previews expire after 15 minutes and tolerate at most 30 seconds of
+  future clock skew. Regenerate and re-review an expired preview; never edit its
+  timestamp.
+- Hermes session memory and runtime transcripts are advisory; they never override
+  current Linear/Git truth or accepted Project Brain decisions.
 
 ## Configuration
 
-Defaults and available variable names are documented in `.env.example`, but the
-application does **not** load a `.env` file automatically. Export variables in the
-shell or prefix the command explicitly:
+The application does not auto-load `.env`. Export variables or set them for one
+command. Important settings are:
 
-```bash
-PORT=8877 DATA_DIR=/tmp/valkyrie-demo npm start
-```
+| Variable | Default | Meaning |
+|---|---|---|
+| `HOST` / `PORT` | `127.0.0.1` / `8787` | HTTP listener. Non-loopback startup requires auth. |
+| `DATA_DIR` | `./data` | SQLite, workspaces, runtime state, and artifact parent. |
+| `PROJECT_BRAIN_DIR` | `./project-brain` | Local accepted/advisory Markdown root. |
+| `CONTROL_PLANE_AUTH_TOKEN_FILE` | unset | Regular non-symlink token file, mode `0600`, 32–4096 bytes. |
+| `ATOMIC_ADAPTER`, `CODEX_ADAPTER`, `CLAUDE_ADAPTER` | `mock` | Each must be explicitly set to `native` for the pilot. |
+| `*_EXPECTED_VERSION` | pinned versions above | Exact runtime contract; mismatch is unavailable. |
+| `CLAUDE_RUNTIME_ENV_ALLOWLIST` | empty | Must contain `ANTHROPIC_API_KEY` for a live Claude probe. |
+| `CONTROL_PLANE_STORE` | `sqlite` | Select `postgres` only for storage development. |
+| `REPOSITORY_PATH_<PROJECT>` | unset | Creates a real branch/worktree even for a mock; use only a disposable repo. |
 
-Common settings:
-
-| Variable | Default | Purpose |
-|---|---:|---|
-| `HOST` | `127.0.0.1` | Listen address. Keep loopback until authentication exists. |
-| `PORT` | `8787` | HTTP/developer-console port. |
-| `DATA_DIR` | `./data` | SQLite, artifact, and workspace parent directory. |
-| `PROJECT_BRAIN_DIR` | `./project-brain` | Local Markdown knowledge root. |
-| `DEMO_STAGE_DELAY_MS` | `1200` | Delay between mock stages. |
-| `CONTROL_PLANE_STORE` | `sqlite` | Select `sqlite` or `postgres`. |
-| `SEED_DEMO_DATA` | `true` for SQLite | Seed local demonstration projects/tasks. |
-| `ENABLE_DEMO_RESET` | `true` for SQLite | Expose the unauthenticated local reset action. |
-| `REPOSITORY_PATH_<PROJECT>` | unset | Opt in to creating a real branch and Git worktree for that project. See the warning below. |
-
-`DEFAULT_RUNTIME` is currently reserved but does not select a runtime. The UI/API
-request or routing policy chooses it.
-
-For the normal demo, ensure no `REPOSITORY_PATH_*` variable is exported. Setting,
-for example, `REPOSITORY_PATH_OVALO=/path/to/repository` makes each Ovalo run call
-`git worktree add -b agent/<run-id>` against that repository. This really creates
-a branch and worktree even though the selected runtime remains a mock and writes
-no implementation. Use only a disposable repository until cleanup and sandboxing
-are implemented.
-
-## Ways to use the prototype
-
-### Browser console
-
-The browser is the easiest demonstration surface. It provides portfolio cards,
-idea capture, mock-run launch/comparison, run inspection, approval decisions,
-memory decisions, and SQLite demo reset.
-
-It is a developer console, not the intended Hermes mobile experience and not a
-roadmap system of record.
-
-### HTTP API
-
-The API uses the same base URL as the browser. For example:
-
-```bash
-curl -fsS http://127.0.0.1:8787/api/portfolio
-
-curl -sS -X POST http://127.0.0.1:8787/api/runs \
-  -H 'content-type: application/json' \
-  -d '{
-    "projectId": "ovalo",
-    "objective": "Exercise the governed mock lifecycle",
-    "runtime": "atomic",
-    "maxCostUsd": 8,
-    "idempotencyKey": "readme-demo-run-001"
-  }'
-```
-
-Reuse an `idempotencyKey` only for the same logical run request. Reusing it with
-different content returns a conflict.
-
-Stream one run's normalized events after copying its run ID from the response:
-
-```bash
-curl -N http://127.0.0.1:8787/api/runs/RUN_ID/events
-```
-
-See [docs/API.md](docs/API.md) for every route. The complete HTTP surface is
-unauthenticated; do not expose it beyond loopback.
-
-### Hermes-compatible MCP bridge
-
-First keep the HTTP service running. Configure your local MCP client to launch
-this clean stdio executable:
-
-```text
-/absolute/path/to/valkyrie-agent/bin/project-os-mcp
-```
-
-Set `CONTROL_PLANE_API` for the bridge only when the local service uses a different
-port:
-
-```bash
-CONTROL_PLANE_API=http://127.0.0.1:8877 ./bin/project-os-mcp
-```
-
-The MCP command waits for JSON-RPC on stdin; it is not an interactive shell UI.
-Prefer the wrapper over plain `npm run mcp`, because npm's banner can corrupt the
-stdio protocol.
-
-The bridge advertises 15 tools for projects, ideas, runs, comparisons, approvals,
-and memory. Omit `memory_promote` from a Hermes allow-list until authentication and
-exact-action approval binding exist. See
-[docs/HERMES_MCP_SETUP.md](docs/HERMES_MCP_SETUP.md).
-
-## Local data and reset behavior
-
-| Path | Contents |
-|---|---|
-| `data/control-plane.sqlite` | Default SQLite state. |
-| `data/artifacts/<run-id>/` | Simulated check, verifier, and summary files. |
-| `data/workspaces/<run-id>/` | Prototype directories or optional Git worktrees. |
-| `project-brain/` | Local accepted/advisory Markdown. Promotion writes here. |
-
-There are two different reset paths:
-
-- The browser's **Reset demo** action has no confirmation dialog. It
-  transactionally clears SQLite operational records and reseeds demo tasks while
-  the server is running.
-- After stopping the server with `Ctrl-C`, `npm run reset` deletes the SQLite main,
-  WAL, and shared-memory files under `DATA_DIR`. It reports filesystem failures
-  instead of claiming success. The next start recreates and seeds the database.
-
-Neither reset removes artifact/workspace directories or undoes promoted Project
-Brain Markdown. The offline command refuses to run when
-`CONTROL_PLANE_STORE=postgres`; no PostgreSQL reset command exists.
-
-Memory promotion is also a deliberate local mutation: the Markdown write happens
-before proposal state is resolved in the database. If the second step fails, an
-operator must reconcile the file and proposal manually.
-
-## Docker Compose demo
-
-Docker is optional. The included Compose service runs the same SQLite demo and
-publishes it only on host loopback:
-
-```bash
-docker compose -f docker-compose.prototype.yml up --build
-curl -fsS http://127.0.0.1:8787/health
-docker compose -f docker-compose.prototype.yml down
-```
-
-`down` preserves the named SQLite data volume. Compose mounts `./project-brain`
-read/write, so memory promotion changes the host checkout. The container is a
-local prototype—not a production sandbox—and does not include the PostgreSQL
-server/CLI toolchain needed for full repository verification (it does include the
-application-side JavaScript client).
-
-## PostgreSQL mode: storage development only
-
-PostgreSQL is a contract-tested production **candidate**, not a complete end-user
-deployment. Use PostgreSQL 16 or a deliberately tested later version.
-
-Create a dedicated local role/database, supplying the password through an
-appropriate local secret mechanism:
-
-```bash
-createuser --pwprompt control_plane
-createdb --owner=control_plane control_plane
-```
-
-Inject `DATABASE_URL` from a password manager or another secret mechanism without
-placing its value in shell history. Then run forward-only migrations and start
-without runtime auto-migration:
-
-```bash
-CONTROL_PLANE_STORE=postgres \
-npm run migrate
-
-CONTROL_PLANE_STORE=postgres \
-POSTGRES_AUTO_MIGRATE=false \
-npm start
-```
-
-Do not commit or paste a real password into documentation, logs, or shell history.
-Use separate migration/runtime roles, TLS, backups, and secret injection for any
-persistent environment.
-
-Important current behavior:
-
-- PostgreSQL selection never falls back to SQLite.
-- There is no SQLite-to-PostgreSQL copy or dual write.
-- Demo seeding and reset are hard-disabled in PostgreSQL mode.
-- A freshly migrated PostgreSQL database therefore has an empty portfolio until a
-  future governed project-ingestion/bootstrap path provisions it.
-- `POSTGRES_SSL=require` applies to the migration command. Runtime TLS must be
-  represented in `DATABASE_URL`.
-
-See [docs/STORAGE.md](docs/STORAGE.md) before persistent use.
+See [.env.example](.env.example) and [SECURITY.md](SECURITY.md). Runtime child
+environments are allow-listed; the control plane does not forward the full shell.
 
 ## Verification
 
-For ordinary use, PostgreSQL remains invisible. The full verifier creates a
-temporary PostgreSQL cluster on a random loopback port, tests it, stops it, and
-removes it automatically.
-
-Requirements for the full command:
-
-- Node.js `22.16.0` or newer;
-- PostgreSQL 16 command-line programs `initdb` and `pg_ctl` on `PATH`;
-- a non-root user, writable `/tmp`, and permission to bind a local loopback port.
+The full verifier runs type checking, unit/service/runtime contracts, a disposable
+PostgreSQL 16 suite, Atomic package verification, HTTP smoke, and MCP smoke:
 
 ```bash
 npm run verify
 ```
 
-The unit and smoke wrappers strip inherited persistent database and
-`REPOSITORY_PATH_*` settings from disposable fixture processes. `npm run
-test:postgres` supplies its own explicit test sentinel and disposable database
-URL.
-
-Useful narrower checks:
+Full verification requires PostgreSQL 16 `initdb` and `pg_ctl` on `PATH`; normal
+use does not. Useful narrower checks:
 
 ```bash
 npm run typecheck
 npm test
-npm run test:postgres
 npm run verify:atomic
 npm run smoke:http
 npm run smoke:mcp
+npm run smoke:native   # opt-in; requires the running authenticated pilot
 ```
 
 ## Troubleshooting
 
-### `listen EPERM ... 127.0.0.1`
+- `listen EPERM ... 127.0.0.1`: the managed environment blocks local sockets;
+  allow loopback binding or run in a normal terminal.
+- `EADDRINUSE`: stop the existing listener or set the same alternate `PORT` and
+  `CONTROL_PLANE_API` for server and clients.
+- `401 Unauthorized`: use the same token file for server, smoke, and MCP; do not
+  set both inline-token and token-file variables.
+- Runtime version unavailable: install the pinned version or deliberately update
+  and contract-test the adapter before changing the pin.
+- Claude skipped: provide `ANTHROPIC_API_KEY` and include exactly that name in
+  `CLAUDE_RUNTIME_ENV_ALLOWLIST`; existing OAuth/keychain login is not used.
+- Hermes profile already exists: audit it, or run
+  `hermes profile delete valkyrieeval` and repeat `npm run setup:hermes`.
+- MCP output contains non-JSON: configure `bin/project-os-pilot-mcp`, not plain
+  `npm run mcp`, so npm banners cannot corrupt stdio.
 
-Your sandbox or managed environment forbids opening even a local-only socket.
-Allow loopback binding or run the command in a normal local terminal. This is an
-environment restriction, not a PostgreSQL schema failure.
+## Architecture, storage, and license
 
-### `EADDRINUSE`
+Hermes remains an interface. Linear is the future live roadmap authority;
+Git/GitHub and executable checks are implementation truth; accepted Project Brain
+Markdown is decision truth; the control plane owns stable IDs/policy/budgets/
+approvals/leases/events; each native runtime owns its own session state.
 
-Another process already uses the selected port. Stop it or choose another:
+Read [START_HERE.md](START_HERE.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
+[docs/STORAGE.md](docs/STORAGE.md), and
+[docs/CONTINUATION_PLAN.md](docs/CONTINUATION_PLAN.md) before extending the pilot.
 
-```bash
-PORT=8877 npm start
-```
-
-### `initdb` or `pg_ctl` not found
-
-Install PostgreSQL 16 command-line tools or run only the SQLite-focused checks.
-Normal `npm start` does not need them.
-
-### `.env` changes have no effect
-
-The application does not auto-load `.env`. Export the values or prefix the start
-command as shown above.
-
-### PostgreSQL starts with no projects
-
-That is the current safe behavior: demo seeding is disabled for PostgreSQL. Use
-SQLite for the walkthrough until governed project ingestion exists.
-
-### MCP output contains non-JSON text
-
-Use `bin/project-os-mcp` as the configured command. Do not use plain
-`npm run mcp` for a strict stdio client.
-
-## Architecture and continuation
-
-The control plane deliberately preserves separate authorities:
-
-- Hermes: conversation and mobile interface.
-- Linear: roadmap and issue state.
-- Git/GitHub plus executable checks: implementation and delivery truth.
-- Accepted Project Brain Markdown: reviewed rationale and decisions.
-- Control plane: stable IDs, policy, budgets, approvals, leases, normalized
-  events, and artifact references.
-- Native runtime: its own internal workflow/session state.
-
-The integrated Atomic package at `packages/atomic-workflow-architect/` is inert
-source. Its presence neither installs Atomic nor enables a live adapter. The next
-milestone is the disabled-by-default JSONL Atomic adapter with a deterministic
-fake process.
-
-Start with [START_HERE.md](START_HERE.md), then read
-[docs/CONTINUATION_PLAN.md](docs/CONTINUATION_PLAN.md) and
-[docs/NEXT_SESSION_PROMPT.md](docs/NEXT_SESSION_PROMPT.md).
-
-## Security and license
-
-Read [SECURITY.md](SECURITY.md) before enabling any non-mock runtime or exposing a
-service beyond localhost.
-
-The repository root is MIT licensed. `packages/atomic-workflow-architect/` retains
-its own `UNLICENSED`, private-use, all-rights-reserved notice; the root license does
-not supersede it. Public source visibility grants no additional right to use,
-copy, or redistribute that nested subtree.
+The root repository is MIT licensed. The imported
+`packages/atomic-workflow-architect/` subtree retains its own `UNLICENSED`,
+private-use, all-rights-reserved notice. Wesley explicitly chose public repository
+visibility; public visibility does not extend the root MIT grant to that subtree.
+The pilot setup pins Atomic's top-level version, but its ignored live install has
+no committed transitive-dependency lockfile; review and lock that graph before a
+production-style deployment.

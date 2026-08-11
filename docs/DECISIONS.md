@@ -88,6 +88,16 @@ SQLite remains the default demo adapter and PostgreSQL is the opt-in production 
 
 The Atomic Workflow Architect source is integrated as an inert, independently testable module, not as the whole Project OS and not as an enabled runtime. Its imported addendum is evidence for reconciliation rather than a second canonical decision registry. See `docs/adr/ADR-P002-atomic-package-boundary.md`.
 
+### D-21 — Read-only native connectivity before writer execution
+
+Atomic offline discovery and direct Codex/Claude model connectivity may be tested
+only behind disabled-by-default adapters, bearer-authenticated loopback API/MCP,
+exact version gates, bounded context contracts, and `analysis_only` final actions.
+Direct prompts are fixed connectivity markers. This does not authorize a writer,
+Atomic model workflow, mobile ingress, PR, merge, deployment, or canonical-memory
+promotion. See `docs/adr/ADR-P003-read-only-native-runtime-pilot.md`; the boundary
+remains proposed until Wesley accepts or amends it.
+
 ## Deferred
 
 - Prime Agent until long-horizon benchmark tasks show incremental value.

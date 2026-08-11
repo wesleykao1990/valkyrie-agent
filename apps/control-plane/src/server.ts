@@ -4,6 +4,7 @@ import { extname, join, resolve } from "node:path";
 import type { ControlPlaneService } from "./service.ts";
 import type { ControlPlaneStore } from "./store.ts";
 import { readJson, sendError, sendJson } from "./http.ts";
+import { hasValidBearerAuthorization } from "./auth.ts";
 
 const media: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -16,12 +17,12 @@ export function createControlPlaneServer(
   service: ControlPlaneService,
   store: ControlPlaneStore,
   publicDir: string,
-  options: { enableDemoReset?: boolean } = {},
+  options: { enableDemoReset?: boolean; authToken?: string } = {},
 ) {
   const enableSqliteDemoReset = store.backend === "sqlite" && (options.enableDemoReset ?? true);
   return createServer(async (req, res) => {
     try {
-      await route(req, res, service, store, publicDir, enableSqliteDemoReset);
+      await route(req, res, service, store, publicDir, enableSqliteDemoReset, options.authToken);
     } catch (error) {
       console.error(error);
       sendError(res, error, 400);
@@ -36,6 +37,7 @@ async function route(
   store: ControlPlaneStore,
   publicDir: string,
   enableDemoReset: boolean,
+  authToken?: string,
 ) {
   const method = req.method ?? "GET";
   const url = new URL(req.url ?? "/", "http://localhost");
@@ -51,7 +53,18 @@ async function route(
       storage: { backend: health.backend, migrationsCurrent: health.migrationsCurrent },
     });
   }
+  if (path === "/api" || path.startsWith("/api/")) {
+    if (authToken && !hasValidBearerAuthorization(req.headers.authorization, authToken)) {
+      res.writeHead(401, {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+        "www-authenticate": 'Bearer realm="control-plane"',
+      });
+      return res.end(JSON.stringify({ error: "Unauthorized" }));
+    }
+  }
   if (method === "GET" && path === "/api/portfolio") return sendJson(res, 200, await service.portfolio());
+  if (method === "GET" && path === "/api/runtimes") return sendJson(res, 200, await service.runtimeStatus());
   if (method === "GET" && path === "/api/projects") return sendJson(res, 200, await service.listProjects());
   if (method === "GET" && path === "/api/tasks") return sendJson(res, 200, await service.listTasks(url.searchParams.get("projectId") ?? undefined));
   if (method === "GET" && path === "/api/runs") return sendJson(res, 200, await service.listRuns());
@@ -66,6 +79,9 @@ async function route(
 
   match = path.match(/^\/api\/runs\/([^/]+)\/events$/);
   if (method === "GET" && match) return streamEvents(req, res, store, decodeURIComponent(match[1]), Number(url.searchParams.get("after") ?? 0));
+
+  match = path.match(/^\/api\/memory\/proposals\/([^/]+)\/preview$/);
+  if (method === "GET" && match) return sendJson(res, 200, await service.previewMemoryPromotion(decodeURIComponent(match[1])));
 
   if (method === "GET" && path === "/api/memory/search") {
     const projectId = url.searchParams.get("projectId") ?? "";
@@ -101,7 +117,11 @@ async function route(
   match = path.match(/^\/api\/memory\/proposals\/([^/]+)\/resolve$/);
   if (method === "POST" && match) {
     const body = await readJson(req);
-    return sendJson(res, 200, await service.resolveMemoryProposal(decodeURIComponent(match[1]), String(body.decision ?? "")));
+    return sendJson(res, 200, await service.resolveMemoryProposal(
+      decodeURIComponent(match[1]),
+      String(body.decision ?? ""),
+      body.preview,
+    ));
   }
 
   if (method === "GET") return serveStatic(res, publicDir, path);

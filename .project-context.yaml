@@ -46,4 +46,6 @@ milestones:
   inventory_and_plan: complete
   transactional_postgres_storage: complete
   atomic_package_integration_non_live: complete
-  real_atomic_adapter: next
+  native_connectivity_minimum: implemented-disabled-by-default
+  atomic_model_workflow: deferred-until-external-sandbox
+  real_workspace_boundary: next
