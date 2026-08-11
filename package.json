@@ -1,0 +1,21 @@
+{
+  "name": "wesley-agent-control-plane-prototype",
+  "version": "0.2.2",
+  "private": true,
+  "type": "module",
+  "description": "Zero-dependency prototype of a Hermes-fronted, Linear-backed multi-agent control plane.",
+  "engines": {
+    "node": ">=22.16.0"
+  },
+  "scripts": {
+    "start": "node --experimental-strip-types apps/control-plane/src/index.ts",
+    "dev": "node --watch --experimental-strip-types apps/control-plane/src/index.ts",
+    "mcp": "node --experimental-strip-types apps/mcp-server/src/index.ts",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "reset": "node --experimental-strip-types scripts/reset-demo.ts",
+    "mcp:quiet": "node --experimental-strip-types apps/mcp-server/src/index.ts",
+    "smoke:mcp": "node --experimental-strip-types scripts/mcp-smoke.ts",
+    "verify": "npm test && npm run smoke:http && npm run smoke:mcp",
+    "smoke:http": "node --experimental-strip-types scripts/http-smoke.ts"
+  }
+}

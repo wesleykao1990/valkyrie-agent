@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Wesley Agent Control Plane</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">PROTOTYPE v0.2.2</div>
+      <h1>Agent Control Plane</h1>
+      <p>Hermes-first interface, Linear roadmap truth, governed shared context.</p>
+    </div>
+    <button id="reset" class="ghost">Reset demo</button>
+  </header>
+
+  <main>
+    <section class="decision-strip">
+      <span><b>Interface</b> Hermes</span>
+      <span><b>Roadmap</b> Linear</span>
+      <span><b>Knowledge</b> Vault + read-only retrieval</span>
+      <span><b>Atomic</b> A/B pilot candidate</span>
+    </section>
+
+    <section>
+      <div class="section-heading"><div><div class="eyebrow">PORTFOLIO</div><h2>Projects</h2></div><span id="updated"></span></div>
+      <div id="projects" class="project-grid"></div>
+    </section>
+
+    <section class="two-col">
+      <div class="panel">
+        <div class="section-heading"><div><div class="eyebrow">HERMES ACTION</div><h2>Capture idea</h2></div></div>
+        <form id="idea-form" class="stack">
+          <label>Project<select id="idea-project"></select></label>
+          <label>Idea<textarea id="idea-title" placeholder="Generate a listening lesson from any short-form video" required></textarea></label>
+          <button>Check duplicates and capture</button>
+        </form>
+        <pre id="idea-result" class="result"></pre>
+      </div>
+
+      <div class="panel">
+        <div class="section-heading"><div><div class="eyebrow">GOVERNED RUN</div><h2>Start demo work</h2></div></div>
+        <form id="run-form" class="stack">
+          <label>Project<select id="run-project"></select></label>
+          <label>Objective<textarea id="run-objective" required>Implement a verified low-latency pronunciation feedback improvement</textarea></label>
+          <div class="form-row">
+            <label>Runtime<select id="runtime"><option value="atomic">Atomic</option><option value="codex">Codex</option><option value="claude">Claude Code</option><option value="prime">Prime Agent</option></select></label>
+            <label>Budget<input id="budget" type="number" min="1" max="25" value="8"></label>
+          </div>
+          <div class="actions"><button>Start isolated run</button><button type="button" id="compare-run" class="secondary">Start Atomic / Codex / Claude A/B pilot</button></div>
+        </form>
+        <pre id="run-result" class="result"></pre>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-heading"><div><div class="eyebrow">EXECUTION</div><h2>Recent runs</h2></div></div>
+      <div id="runs" class="table-wrap"></div>
+    </section>
+
+    <section class="two-col">
+      <div class="panel">
+        <div class="section-heading"><div><div class="eyebrow">NEEDS WESLEY</div><h2>Approvals</h2></div></div>
+        <div id="approvals"></div>
+      </div>
+      <div class="panel">
+        <div class="section-heading"><div><div class="eyebrow">GOVERNED MEMORY</div><h2>Memory proposals</h2></div></div>
+        <div id="memory"></div>
+      </div>
+    </section>
+
+    <dialog id="run-dialog">
+      <button id="close-dialog" class="dialog-close">Close</button>
+      <div id="run-detail"></div>
+    </dialog>
+  </main>
+
+  <footer>
+    Developer console only. Hermes remains the intended mobile interface; Linear remains the roadmap authority.
+  </footer>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

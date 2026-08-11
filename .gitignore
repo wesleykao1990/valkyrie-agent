@@ -1,0 +1,12 @@
+node_modules/
+dist/
+data/*.sqlite
+data/*.sqlite-*
+data/workspaces/*
+!data/workspaces/.gitkeep
+data/artifacts/*
+!data/artifacts/.gitkeep
+.env
+.DS_Store
+
+handoff/*.bundle

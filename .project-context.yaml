@@ -1,0 +1,25 @@
+project_id: wesley-agent-control-plane
+project_name: Wesley Agent Control Plane Prototype
+roadmap_authority: linear
+linear:
+  team_id: null
+  project_id: null
+repositories:
+  - path: .
+    role: control-plane-prototype
+canonical_knowledge:
+  architecture_review: docs/Agentic_Development_Control_Plane_Architecture_Review_v0.2.2.docx
+  decisions: docs/DECISIONS.md
+  architecture: docs/ARCHITECTURE.md
+project_brain:
+  local_path: project-brain
+  active_backend: local-markdown-readonly
+  candidate_backend: openviking
+  automatic_capture: false
+runtime_policy:
+  atomic_status: pilot-gated
+  direct_coding_agents:
+    - codex
+    - claude-code
+  one_root_runtime_per_run: true
+  external_sandbox_required_for_real_writers: true

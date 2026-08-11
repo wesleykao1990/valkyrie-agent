@@ -1,0 +1,17 @@
+services:
+  control-plane:
+    build: .
+    ports:
+      - "8787:8787"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      DATA_DIR: /app/data
+      PROJECT_BRAIN_DIR: /app/project-brain
+      DEMO_STAGE_DELAY_MS: 1200
+    volumes:
+      - control_plane_data:/app/data
+      - ./project-brain:/app/project-brain
+
+volumes:
+  control_plane_data:

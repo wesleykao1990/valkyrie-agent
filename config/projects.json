@@ -1,0 +1,35 @@
+[
+  {
+    "id": "ovalo",
+    "name": "Ovalo",
+    "objective": "Build an AI-native personalized language-learning platform.",
+    "currentMilestone": "Speaking and pronunciation MVP",
+    "health": "on_track",
+    "linearTeam": "OVA",
+    "repository": "ovalo/app",
+    "vaultPath": "Projects/Ovalo",
+    "memoryNamespace": "projects/ovalo"
+  },
+  {
+    "id": "signal-ledger",
+    "name": "Signal Ledger",
+    "objective": "Collect, normalize, and evaluate investment signals from public sources.",
+    "currentMilestone": "Reliable multi-platform ingestion",
+    "health": "at_risk",
+    "linearTeam": "SIG",
+    "repository": "signal-ledger/app",
+    "vaultPath": "Projects/Signal Ledger",
+    "memoryNamespace": "projects/signal-ledger"
+  },
+  {
+    "id": "ai-workflow-watch",
+    "name": "AI Workflow Watch",
+    "objective": "Track useful AI workflows and turn them into actionable product opportunities.",
+    "currentMilestone": "Deduplicated workflow intelligence",
+    "health": "on_track",
+    "linearTeam": "AWW",
+    "repository": "ai-workflow-watch/app",
+    "vaultPath": "Projects/AI Workflow Watch",
+    "memoryNamespace": "projects/ai-workflow-watch"
+  }
+]

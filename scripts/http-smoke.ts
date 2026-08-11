@@ -1,0 +1,123 @@
+import { spawn } from "node:child_process";
+import { cpSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { setTimeout as delay } from "node:timers/promises";
+
+const root = resolve(".");
+const temporaryRoot = mkdtempSync(join(tmpdir(), "wesley-acp-http-smoke-"));
+const dataDir = join(temporaryRoot, "data");
+const brainDir = join(temporaryRoot, "project-brain");
+cpSync(join(root, "project-brain"), brainDir, { recursive: true });
+const port = 19877 + Math.floor(Math.random() * 1000);
+const api = `http://127.0.0.1:${port}`;
+
+const server = spawn(process.execPath, ["--experimental-strip-types", "apps/control-plane/src/index.ts"], {
+  cwd: root,
+  env: {
+    ...process.env,
+    HOST: "127.0.0.1",
+    PORT: String(port),
+    DATA_DIR: dataDir,
+    PROJECT_BRAIN_DIR: brainDir,
+    DEMO_STAGE_DELAY_MS: "5",
+  },
+  stdio: ["ignore", "pipe", "pipe"],
+});
+
+let serverOutput = "";
+let serverError = "";
+server.stdout.setEncoding("utf8");
+server.stderr.setEncoding("utf8");
+server.stdout.on("data", (chunk) => { serverOutput += chunk; });
+server.stderr.on("data", (chunk) => { serverError += chunk; });
+
+async function json<T = any>(path: string, method = "GET", body?: unknown): Promise<T> {
+  const response = await fetch(`${api}${path}`, {
+    method,
+    headers: body === undefined ? undefined : { "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(`${method} ${path} failed: ${response.status} ${await response.text()}`);
+  return response.json() as Promise<T>;
+}
+
+async function waitFor<T>(load: () => Promise<T>, predicate: (value: T) => boolean, label: string, attempts = 200): Promise<T> {
+  let last: T | undefined;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      last = await load();
+      if (predicate(last)) return last;
+    } catch {}
+    await delay(25);
+  }
+  throw new Error(`Timed out waiting for ${label}. Last value: ${JSON.stringify(last)}\n${serverError}`);
+}
+
+try {
+  await waitFor(() => json<{ ok: boolean }>("/health"), (value) => value.ok, "server health");
+
+  const portfolio = await json<any>("/api/portfolio");
+  if (portfolio.projects?.length !== 3) throw new Error("Expected three seeded projects");
+  const page = await (await fetch(`${api}/`)).text();
+  if (!page.includes("Wesley Agent Control Plane")) throw new Error("Developer console did not render");
+
+  const comparison = await json<any>("/api/runs/compare", "POST", {
+    projectId: "ovalo",
+    objective: "Implement and verify pronunciation feedback",
+    runtimes: ["atomic", "codex", "claude"],
+    perRunMaxCostUsd: 5,
+  });
+  const runIds: string[] = comparison.runs.map((run: any) => run.id);
+  const workspaceIds: string[] = comparison.runs.map((run: any) => run.workspaceId);
+  if (runIds.length !== 3 || new Set(runIds).size !== 3) throw new Error("Comparison did not create three runs");
+  if (new Set(workspaceIds).size !== 3) throw new Error("Comparison candidates did not receive distinct workspaces");
+
+  const approvals = await waitFor(
+    () => json<any[]>("/api/approvals"),
+    (items) => items.filter((item) => item.state === "pending" && runIds.includes(item.runId)).length === 3,
+    "three approval gates",
+  );
+  const pending = approvals.filter((item) => item.state === "pending" && runIds.includes(item.runId));
+  for (const approval of pending) {
+    await json(`/api/approvals/${approval.id}/resolve`, "POST", { decision: "approve" });
+  }
+
+  const allRuns = await waitFor(
+    () => json<any[]>("/api/runs"),
+    (items) => runIds.every((runId) => items.find((item) => item.id === runId)?.status === "completed"),
+    "three completed runs",
+  );
+  const selectedRuns = runIds.map((runId) => allRuns.find((item) => item.id === runId));
+
+  const details = await Promise.all(runIds.map((runId) => json<any>(`/api/runs/${runId}`)));
+  const artifactCounts = details.map((detail) => detail.artifacts.length);
+  if (!details.every((detail) => detail.artifacts.length >= 2)) throw new Error(`Insufficient evidence artifacts: ${artifactCounts.join(", ")}`);
+  if (!details.every((detail) => detail.events.some((event: any) => event.type === "run.completed"))) {
+    throw new Error("At least one run lacks a normalized completion event");
+  }
+
+  const proposals = await waitFor(
+    () => json<any[]>("/api/memory/proposals"),
+    (items) => items.filter((item) => item.state === "proposed" && runIds.includes(item.runId)).length === 3,
+    "three governed memory proposals",
+  );
+  const proposal = proposals.find((item) => item.state === "proposed" && runIds.includes(item.runId));
+  const promoted = await json<any>(`/api/memory/proposals/${proposal.id}/resolve`, "POST", { decision: "promote" });
+  if (promoted.state !== "promoted") throw new Error("Memory proposal was not promoted through the review endpoint");
+  if (!promoted.targetNote || !existsSync(join(brainDir, promoted.targetNote))) {
+    throw new Error("Promoted canonical Markdown note was not created");
+  }
+
+  console.log(
+    `HTTP smoke passed: ${portfolio.projects.length} projects, ${selectedRuns.length} isolated candidates, ` +
+    `${pending.length} approvals, artifacts ${artifactCounts.join("/")}, and one promoted memory proposal.`,
+  );
+} finally {
+  server.kill("SIGTERM");
+  await delay(100);
+  rmSync(temporaryRoot, { recursive: true, force: true });
+  if (server.exitCode && server.exitCode !== 0) {
+    process.stderr.write(`${serverOutput}\n${serverError}`);
+  }
+}
