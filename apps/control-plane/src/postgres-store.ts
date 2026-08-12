@@ -13,6 +13,9 @@ import {
   observeStoreClock,
   StorageConflictError,
   validateArtifactBatchInput,
+  validateInferenceCapability,
+  validateInferenceCompletion,
+  validateInferenceReservation,
   validateApprovalRequestBinding,
   validateApprovalResolutionBinding,
   validateApprovalExpiry,
@@ -33,6 +36,10 @@ import {
   type ArtifactBatchResult,
   type ControlPlaneStore,
   type IdempotencyInput,
+  type InferenceCapability,
+  type InferenceRequest,
+  type ReserveInferenceRequestInput,
+  type CompleteInferenceRequestInput,
   type MigrationResult,
   type MutableRunPatch,
   type OutboxEvent,
@@ -231,7 +238,7 @@ export class PostgresStore implements ControlPlaneStore {
   async resetOperationalData(): Promise<void> {
     await this.transaction(async (client) => {
       await client.query(`TRUNCATE TABLE
-        idempotency_keys,outbox_events,sandbox_instances,workspace_leases,artifacts,approvals,run_events,
+        idempotency_keys,outbox_events,inference_requests,inference_capabilities,sandbox_instances,workspace_leases,artifacts,approvals,run_events,
         memory_proposals,workspaces,runs,tasks RESTART IDENTITY`);
     });
   }
@@ -1108,6 +1115,176 @@ export class PostgresStore implements ControlPlaneStore {
     });
   }
 
+  async createInferenceCapability(capability: InferenceCapability): Promise<InferenceCapability> {
+    return this.transaction(async (client) => {
+      const observedAt = await this.observeApprovalClock(client);
+      validateInferenceCapability(capability, observedAt);
+      const existing = (await client.query("SELECT * FROM inference_capabilities WHERE id=$1 OR token_hash=$2 FOR UPDATE", [capability.id, capability.tokenHash])).rows[0];
+      if (existing) {
+        const mapped = this.mapInferenceCapability(existing);
+        if (canonicalJson(mapped) !== canonicalJson(capability)) {
+          throw new StorageConflictError("Inference capability identity was already used with different content");
+        }
+        return mapped;
+      }
+      await client.query(`INSERT INTO inference_capabilities
+        (id,run_id,project_id,workflow,token_hash,provider,model,api,roles_json,max_requests,max_input_tokens,
+         max_output_tokens,max_cost_micros,max_elapsed_ms,issued_at,expires_at,state,policy_hash)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`, [
+        capability.id, capability.runId, capability.projectId, capability.workflow, capability.tokenHash,
+        capability.provider, capability.model, capability.api, JSON.stringify(capability.roles), capability.maxRequests,
+        capability.maxInputTokens, capability.maxOutputTokens, capability.maxCostMicros, capability.maxElapsedMs,
+        capability.issuedAt, capability.expiresAt, capability.state, capability.policyHash,
+      ]);
+      await this.insertOutbox(client, "inference.capability.created", capability.id, {
+        capabilityId: capability.id, runId: capability.runId, provider: capability.provider,
+        model: capability.model, policyHash: capability.policyHash,
+      }, capability.policyHash);
+      return capability;
+    });
+  }
+
+  async getInferenceCapability(id: string): Promise<InferenceCapability | null> {
+    const row = (await this.pool.query("SELECT * FROM inference_capabilities WHERE id=$1", [id])).rows[0];
+    return row ? this.mapInferenceCapability(row) : null;
+  }
+
+  async getInferenceCapabilityByTokenHash(tokenHash: string): Promise<InferenceCapability | null> {
+    const row = (await this.pool.query("SELECT * FROM inference_capabilities WHERE token_hash=$1", [tokenHash])).rows[0];
+    return row ? this.mapInferenceCapability(row) : null;
+  }
+
+  async reserveInferenceRequest(input: ReserveInferenceRequestInput): Promise<{ capability: InferenceCapability; request: InferenceRequest; replayed: boolean }> {
+    validateInferenceReservation(input);
+    return this.transaction(async (client) => {
+      const row = (await client.query("SELECT * FROM inference_capabilities WHERE token_hash=$1 FOR UPDATE", [input.tokenHash])).rows[0];
+      if (!row) throw new StorageConflictError("Inference capability is not recognized");
+      const capability = this.mapInferenceCapability(row);
+      const observedAt = input.reservedAt ?? await this.observeApprovalClock(client);
+      const existing = (await client.query(`SELECT * FROM inference_requests
+        WHERE id=$1 OR (capability_id=$2 AND role=$3) FOR UPDATE`, [input.id, capability.id, input.role])).rows[0];
+      if (existing) {
+        const request = this.mapInferenceRequest(existing);
+        if (request.id !== input.id || request.capabilityId !== capability.id || request.runId !== input.runId
+            || request.role !== input.role || request.requestHash !== input.requestHash) {
+          throw new StorageConflictError("Inference request identity was already used with different content");
+        }
+        return { capability, request, replayed: true };
+      }
+      if (capability.state !== "active" || capability.expiresAt <= observedAt) {
+        throw new StorageConflictError("Inference capability is not active");
+      }
+      if (capability.runId !== input.runId || !capability.roles.includes(input.role)) {
+        throw new StorageConflictError("Inference request is outside its run or role scope");
+      }
+      const count = Number((await client.query("SELECT count(*) AS count FROM inference_requests WHERE capability_id=$1", [capability.id])).rows[0].count);
+      if (count >= capability.maxRequests) throw new StorageConflictError("Inference request count budget is exhausted");
+      const request: InferenceRequest = {
+        id: input.id, capabilityId: capability.id, runId: input.runId, role: input.role,
+        requestHash: input.requestHash, state: "reserved", providerRequestId: null, responseHash: null,
+        inputTokens: 0, outputTokens: 0, costMicros: 0, reservedAt: observedAt, completedAt: null, failureCode: null,
+      };
+      await client.query(`INSERT INTO inference_requests
+        (id,capability_id,run_id,role,request_hash,state,provider_request_id,response_hash,input_tokens,output_tokens,
+         cost_micros,reserved_at,completed_at,failure_code) VALUES ($1,$2,$3,$4,$5,'reserved',NULL,NULL,0,0,0,$6,NULL,NULL)`,
+      [request.id, request.capabilityId, request.runId, request.role, request.requestHash, request.reservedAt]);
+      await this.insertOutbox(client, "inference.request.reserved", request.id, {
+        requestId: request.id, capabilityId: capability.id, runId: request.runId, role: request.role,
+      }, request.requestHash);
+      return { capability, request, replayed: false };
+    });
+  }
+
+  async completeInferenceRequest(input: CompleteInferenceRequestInput): Promise<{ capability: InferenceCapability; request: InferenceRequest; replayed: boolean }> {
+    validateInferenceCompletion(input);
+    return this.transaction(async (client) => {
+      const row = (await client.query("SELECT * FROM inference_requests WHERE id=$1 FOR UPDATE", [input.id])).rows[0];
+      if (!row) throw new StorageConflictError("Inference request was not reserved");
+      const request = this.mapInferenceRequest(row);
+      const capabilityRow = (await client.query("SELECT * FROM inference_capabilities WHERE id=$1 FOR UPDATE", [request.capabilityId])).rows[0];
+      if (!capabilityRow) throw new StorageConflictError("Inference capability is missing");
+      const capability = this.mapInferenceCapability(capabilityRow);
+      const completedAt = input.completedAt ?? await this.observeApprovalClock(client);
+      if (request.state !== "reserved") {
+        const matches = request.state === input.state && request.responseHash === (input.responseHash ?? null)
+          && request.providerRequestId === (input.providerRequestId ?? null) && request.inputTokens === input.inputTokens
+          && request.outputTokens === input.outputTokens && request.costMicros === input.costMicros
+          && request.failureCode === (input.failureCode ?? null);
+        if (!matches) throw new StorageConflictError("Inference request was already completed differently");
+        return { capability, request, replayed: true };
+      }
+      const totals = (await client.query(`SELECT coalesce(sum(input_tokens),0) AS input_tokens,
+        coalesce(sum(output_tokens),0) AS output_tokens,coalesce(sum(cost_micros),0) AS cost_micros
+        FROM inference_requests WHERE capability_id=$1 AND state='completed'`, [capability.id])).rows[0];
+      if (Number(totals.input_tokens) + input.inputTokens > capability.maxInputTokens
+          || Number(totals.output_tokens) + input.outputTokens > capability.maxOutputTokens
+          || Number(totals.cost_micros) + input.costMicros > capability.maxCostMicros) {
+        throw new StorageConflictError("Inference completion exceeds its aggregate token or cost budget");
+      }
+      await client.query(`UPDATE inference_requests SET state=$1,provider_request_id=$2,response_hash=$3,input_tokens=$4,
+        output_tokens=$5,cost_micros=$6,completed_at=$7,failure_code=$8 WHERE id=$9 AND state='reserved'`, [
+        input.state, input.providerRequestId ?? null, input.responseHash ?? null, input.inputTokens,
+        input.outputTokens, input.costMicros, completedAt, input.failureCode ?? null, input.id,
+      ]);
+      const count = Number((await client.query("SELECT count(*) AS count FROM inference_requests WHERE capability_id=$1", [capability.id])).rows[0].count);
+      const costTotal = Number(totals.cost_micros) + input.costMicros;
+      if (count >= capability.maxRequests || (capability.maxCostMicros > 0 && costTotal >= capability.maxCostMicros)) {
+        await client.query("UPDATE inference_capabilities SET state='exhausted' WHERE id=$1 AND state='active'", [capability.id]);
+      }
+      await this.insertOutbox(client, `inference.request.${input.state}`, input.id, {
+        requestId: input.id, capabilityId: capability.id, runId: request.runId, role: request.role,
+        inputTokens: input.inputTokens, outputTokens: input.outputTokens, costMicros: input.costMicros,
+      }, input.responseHash ?? input.failureCode!);
+      const finalRequest = this.mapInferenceRequest((await client.query("SELECT * FROM inference_requests WHERE id=$1", [input.id])).rows[0]);
+      const finalCapability = this.mapInferenceCapability((await client.query("SELECT * FROM inference_capabilities WHERE id=$1", [capability.id])).rows[0]);
+      return { capability: finalCapability, request: finalRequest, replayed: false };
+    });
+  }
+
+  async revokeInferenceCapability(id: string, observedAt?: string): Promise<InferenceCapability | null> {
+    return this.transaction(async (client) => {
+      const row = (await client.query("SELECT * FROM inference_capabilities WHERE id=$1 FOR UPDATE", [id])).rows[0];
+      if (!row) return null;
+      const current = this.mapInferenceCapability(row);
+      const now = observedAt ?? await this.observeApprovalClock(client);
+      const nextState = current.state === "active" ? (current.expiresAt <= now ? "expired" : "revoked") : current.state;
+      if (nextState !== current.state) {
+        await client.query("UPDATE inference_capabilities SET state=$1 WHERE id=$2 AND state='active'", [nextState, id]);
+        await this.insertOutbox(client, "inference.capability.closed", id, { capabilityId: id, runId: current.runId, state: nextState }, nextState);
+      }
+      return this.mapInferenceCapability((await client.query("SELECT * FROM inference_capabilities WHERE id=$1", [id])).rows[0]);
+    });
+  }
+
+  async expireInferenceCapabilities(observedAt: string, limit = 100): Promise<InferenceCapability[]> {
+    const at = isoString(observedAt);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+      throw new StorageConflictError("Inference capability expiry limit must be between 1 and 1000");
+    }
+    return this.transaction(async (client) => {
+      const rows = (await client.query(`SELECT * FROM inference_capabilities
+        WHERE state='active' AND expires_at<=$1 ORDER BY expires_at,id
+        FOR UPDATE SKIP LOCKED LIMIT $2`, [at, limit])).rows;
+      const expired: InferenceCapability[] = [];
+      for (const row of rows) {
+        const capability = this.mapInferenceCapability(row);
+        const updated = await client.query(`UPDATE inference_capabilities SET state='expired'
+          WHERE id=$1 AND state='active' AND expires_at<=$2`, [capability.id, at]);
+        if (updated.rowCount !== 1) continue;
+        await this.insertOutbox(client, "inference.capability.closed", capability.id, {
+          capabilityId: capability.id, runId: capability.runId, state: "expired",
+        }, "expired");
+        expired.push({ ...capability, state: "expired" });
+      }
+      return expired;
+    });
+  }
+
+  async listInferenceRequests(runId: string): Promise<InferenceRequest[]> {
+    return (await this.pool.query("SELECT * FROM inference_requests WHERE run_id=$1 ORDER BY reserved_at,id", [runId])).rows
+      .map(this.mapInferenceRequest);
+  }
+
   async createArtifact(artifact: Artifact): Promise<void> {
     await this.transaction(async (client) => {
       await client.query(`INSERT INTO artifacts (id,run_id,kind,uri,checksum,media_type,created_at)
@@ -1348,6 +1525,24 @@ export class PostgresStore implements ControlPlaneStore {
     projectId: row.project_id ?? null, workflow: row.workflow ?? null,
     evidenceDigest: row.evidence_digest ?? null, policyHash: row.policy_hash ?? null,
     expiresAt: nullableIsoString(row.expires_at),
+  });
+
+  private mapInferenceCapability = (row: any): InferenceCapability => ({
+    id: String(row.id), runId: String(row.run_id), projectId: String(row.project_id), workflow: String(row.workflow),
+    tokenHash: String(row.token_hash), provider: String(row.provider), model: String(row.model), api: "openai-completions",
+    roles: decodeJson(row.roles_json, []) as InferenceCapability["roles"], maxRequests: Number(row.max_requests),
+    maxInputTokens: Number(row.max_input_tokens), maxOutputTokens: Number(row.max_output_tokens),
+    maxCostMicros: Number(row.max_cost_micros), maxElapsedMs: Number(row.max_elapsed_ms), issuedAt: isoString(row.issued_at),
+    expiresAt: isoString(row.expires_at), state: String(row.state) as InferenceCapability["state"], policyHash: String(row.policy_hash),
+  });
+
+  private mapInferenceRequest = (row: any): InferenceRequest => ({
+    id: String(row.id), capabilityId: String(row.capability_id), runId: String(row.run_id),
+    role: String(row.role) as InferenceRequest["role"], requestHash: String(row.request_hash),
+    state: String(row.state) as InferenceRequest["state"], providerRequestId: row.provider_request_id ? String(row.provider_request_id) : null,
+    responseHash: row.response_hash ? String(row.response_hash) : null, inputTokens: Number(row.input_tokens),
+    outputTokens: Number(row.output_tokens), costMicros: Number(row.cost_micros), reservedAt: isoString(row.reserved_at),
+    completedAt: nullableIsoString(row.completed_at), failureCode: row.failure_code ? String(row.failure_code) : null,
   });
 
   private mapArtifact = (row: any): Artifact => ({

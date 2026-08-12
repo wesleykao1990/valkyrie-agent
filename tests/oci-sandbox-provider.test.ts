@@ -148,6 +148,7 @@ async function start(item: Fixture, runId = "run_oci_001"): Promise<OciSandboxHa
 function atomicFixture(
   transportBounds: NonNullable<OciSandboxProviderOptions["atomicRpc"]>["transportBounds"] = {},
   timeoutOverrides: Partial<NonNullable<OciSandboxProviderOptions["timeoutBounds"]>> = {},
+  stagedAgentConfig = false,
 ): Fixture {
   const item = fixture({
     timeoutBounds: {
@@ -167,6 +168,7 @@ function atomicFixture(
       reviewedBinaryPath: ATOMIC_BINARY,
       expectedVersion: ATOMIC_VERSION,
       reviewedImageLabels: REVIEWED_IMAGE_LABELS,
+      stagedAgentConfig,
       transportBounds: {
         requestTimeoutMs: 1_000,
         stopTimeoutMs: 500,
@@ -181,6 +183,11 @@ function atomicFixture(
   });
   mkdirSync(join(item.workspace, "worktree"));
   mkdirSync(join(item.context, "atomic-package"));
+  if (stagedAgentConfig) {
+    mkdirSync(join(item.context, "atomic-agent"));
+    writeFileSync(join(item.context, "atomic-agent", "models.json"), "{\"providers\":{}}\n", { mode: 0o600 });
+    writeFileSync(join(item.context, "atomic-agent", "settings.json"), "{}\n", { mode: 0o600 });
+  }
   return item;
 }
 
@@ -212,6 +219,22 @@ function reconciliationExpectation(item: Fixture, handle: OciSandboxHandle, engi
     cleanupAttempts: 0,
   };
 }
+
+test("named writer network must be a local internal bridge before start", async () => {
+  const item = fixture({ networkPolicy: { mode: "named", name: "valkyrie-run-test", internal: true } });
+  try {
+    assert.equal((await item.provider.preflight()).available, true);
+    const handle = await start(item, "run_internal_network");
+    assert.equal(readState(item).containers[handle.containerId].HostConfig.NetworkMode, "valkyrie-run-test");
+    await item.provider.cleanup(handle);
+    updateState(item, (state) => { state.behavior = { wrongInternalNetwork: true }; });
+    assert.deepEqual(await item.provider.preflight(), {
+      enabled: true, available: false, engine: "docker-compatible", reason: "engine-unavailable",
+    });
+  } finally {
+    rmSync(item.root, { recursive: true, force: true });
+  }
+});
 
 test("OCI sandbox is disabled by default without spawning or creating state", async () => {
   const item = fixture({ enabled: undefined });
@@ -674,6 +697,24 @@ test("provider opens one fixed Atomic RPC stream and container stop remains mand
   } finally {
     if (priorSecret === undefined) delete process.env.ANTHROPIC_API_KEY;
     else process.env.ANTHROPIC_API_KEY = priorSecret;
+    rmSync(item.root, { recursive: true, force: true });
+  }
+});
+
+test("model RPC reads only bounded staged agent config and never forwards a provider credential", async () => {
+  const item = atomicFixture({}, {}, true);
+  try {
+    const handle = await startAtomic(item, "run_oci_atomic_model");
+    const client = await item.provider.openAtomicRpc(handle);
+    await client.getState();
+    const rpcCall = readState(item).calls.find((call) => call.argv[0] === "exec" && call.argv.includes("--mode"));
+    assert.ok(rpcCall);
+    assert.ok(rpcCall.argv.includes("ATOMIC_CODING_AGENT_DIR=/run-context/atomic-agent"));
+    assert.equal(rpcCall.envKeys.some((key) => /OPENAI|ANTHROPIC|API_KEY|TOKEN/.test(key)), false);
+    await client.stop();
+    assert.deepEqual(await item.provider.stop(handle), { status: "stopped" });
+    assert.deepEqual(await item.provider.cleanup(handle), { status: "cleaned" });
+  } finally {
     rmSync(item.root, { recursive: true, force: true });
   }
 });

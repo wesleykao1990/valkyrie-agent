@@ -231,6 +231,32 @@ Before any model-backed or general-repository writing runtime:
 5. keep PR creation, merge, deploy, destructive database change, secret expansion,
    and canonical promotion behind separate policy decisions.
 
+### M5b pre-live inference boundary
+
+The repository now contains the disabled, credential-free M5b preparation, not a
+live model claim. Four role-scoped requests (implementer, initial fresh verifier,
+one optional repair, and final fresh verifier) are authorized by an opaque
+run-scoped capability. Storage retains only its SHA-256 digest and bounded usage
+metadata. The provider credential loading point requires a regular non-symlink
+0600 file and remains outside the writer, prompts, events, artifacts, arguments,
+and container environment.
+
+The writer can attach only to an inspected local Docker `Internal=true` bridge.
+A separately labeled inference bridge mounts only the private control-plane Unix
+socket read-only; it holds no provider credential. The control-plane gateway
+enforces exact role/model aliases, request fields, response bytes, expiry,
+request/token/cost/time limits, and one attempt per role. External upstreams must
+be HTTPS `/v1`; credential-free HTTP requires explicit loopback opt-in. The
+runner/package digests must equal explicit accepted deployment values before a
+capability is issued.
+
+Atomic native `--approve` in this fixed workflow authorizes only the two custom
+fixture tools (bounded reads and replacement of one disposable source file).
+Built-in filesystem, shell, web, subagent, intercom, and general editing tools are
+excluded. It is not final-action approval. M5b live enablement remains blocked on
+a provider/model decision, dedicated low-limit credential or reviewed local
+model, actual Docker/provider exercise, and authenticated human actor provenance.
+
 ## Storage and retained command data
 
 - SQLite is the local default. PostgreSQL is explicit and never receives an

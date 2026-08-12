@@ -137,6 +137,55 @@ test("Atomic fixture pilot is default-off and fails closed without auth or exact
   }
 });
 
+test("Atomic model pilot is default-off and requires accepted digests plus a credential boundary", () => {
+  const names = [
+    "ATOMIC_FIXTURE_PILOT_ENABLED", "ATOMIC_FIXTURE_PILOT_REPOSITORY", "ATOMIC_FIXTURE_PILOT_ENGINE",
+    "ATOMIC_FIXTURE_PILOT_IMAGE", "ATOMIC_FIXTURE_PILOT_ROOT", "ATOMIC_FIXTURE_MODEL_PILOT_ENABLED",
+    "ATOMIC_FIXTURE_MODEL_PROVIDER", "ATOMIC_FIXTURE_MODEL_ID", "ATOMIC_FIXTURE_MODEL_UPSTREAM_BASE_URL",
+    "ATOMIC_FIXTURE_MODEL_CREDENTIAL_FILE", "ATOMIC_FIXTURE_MODEL_ALLOW_CREDENTIAL_FREE_LOOPBACK",
+    "ATOMIC_FIXTURE_MODEL_ACCEPTED_PACKAGE_SHA256", "ATOMIC_FIXTURE_MODEL_ACCEPTED_IMAGE_DIGEST",
+    "ATOMIC_FIXTURE_MODEL_INPUT_COST_MICROS_PER_MILLION", "ATOMIC_FIXTURE_MODEL_OUTPUT_COST_MICROS_PER_MILLION",
+    "ENABLE_DEMO_RESET", "CONTROL_PLANE_AUTH_TOKEN",
+  ] as const;
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  try {
+    for (const name of names) delete process.env[name];
+    assert.equal(loadConfig().atomicFixtureModelPilot.enabled, false);
+    process.env.CONTROL_PLANE_AUTH_TOKEN = "0123456789abcdefghijklmnopqrstuvwxyz-ABCDE";
+    process.env.ATOMIC_FIXTURE_MODEL_PILOT_ENABLED = "true";
+    assert.throws(() => loadConfig(), /requires the isolated Atomic fixture pilot boundary/);
+    process.env.ATOMIC_FIXTURE_PILOT_ENABLED = "true";
+    process.env.ATOMIC_FIXTURE_PILOT_REPOSITORY = "/tmp/fixture-repository";
+    process.env.ATOMIC_FIXTURE_PILOT_ENGINE = "/usr/local/bin/docker";
+    const digest = `sha256:${"a".repeat(64)}`;
+    process.env.ATOMIC_FIXTURE_PILOT_IMAGE = `fixture.invalid/atomic@${digest}`;
+    process.env.ATOMIC_FIXTURE_PILOT_ROOT = "/tmp/atomic-pilot-root";
+    process.env.ENABLE_DEMO_RESET = "false";
+    assert.throws(() => loadConfig(), /explicit provider, model, and upstream/);
+    process.env.ATOMIC_FIXTURE_MODEL_PROVIDER = "future-provider";
+    process.env.ATOMIC_FIXTURE_MODEL_ID = "future-model";
+    process.env.ATOMIC_FIXTURE_MODEL_UPSTREAM_BASE_URL = "https://api.example.invalid/v1";
+    assert.throws(() => loadConfig(), /private credential file/);
+    process.env.ATOMIC_FIXTURE_MODEL_CREDENTIAL_FILE = "/tmp/future-provider-token";
+    assert.throws(() => loadConfig(), /provider prices/);
+    process.env.ATOMIC_FIXTURE_MODEL_INPUT_COST_MICROS_PER_MILLION = "1000000";
+    process.env.ATOMIC_FIXTURE_MODEL_OUTPUT_COST_MICROS_PER_MILLION = "2000000";
+    assert.throws(() => loadConfig(), /accepted package and immutable image digests/);
+    process.env.ATOMIC_FIXTURE_MODEL_ACCEPTED_PACKAGE_SHA256 = "b".repeat(64);
+    process.env.ATOMIC_FIXTURE_MODEL_ACCEPTED_IMAGE_DIGEST = digest;
+    const configured = loadConfig().atomicFixtureModelPilot;
+    assert.equal(configured.enabled, true);
+    assert.equal(configured.maxInputTokens, 32_000);
+    assert.equal(configured.maxOutputTokens, 8_000);
+  } finally {
+    for (const name of names) {
+      const value = previous[name];
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
 test("non-loopback bindings require control-plane authentication", () => {
   const names = ["HOST", "CONTROL_PLANE_AUTH_TOKEN", "CONTROL_PLANE_AUTH_TOKEN_FILE"] as const;
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
@@ -169,6 +218,8 @@ test("disposable fixture processes ignore inherited persistent storage and repos
     "CONTROL_PLANE_AUTH_TOKEN",
     "CONTROL_PLANE_AUTH_TOKEN_FILE",
     "CONTROL_PLANE_MCP_TOOL_ALLOWLIST",
+    "ATOMIC_FIXTURE_MODEL_PILOT_ENABLED",
+    "ATOMIC_FIXTURE_MODEL_CREDENTIAL_FILE",
   ] as const;
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   try {
@@ -184,6 +235,8 @@ test("disposable fixture processes ignore inherited persistent storage and repos
     process.env.CONTROL_PLANE_AUTH_TOKEN = "0123456789abcdefghijklmnopqrstuvwxyz-ABCDE";
     process.env.CONTROL_PLANE_AUTH_TOKEN_FILE = "/sensitive/token";
     process.env.CONTROL_PLANE_MCP_TOOL_ALLOWLIST = "projects_list";
+    process.env.ATOMIC_FIXTURE_MODEL_PILOT_ENABLED = "true";
+    process.env.ATOMIC_FIXTURE_MODEL_CREDENTIAL_FILE = "/sensitive/provider-token";
 
     const environment = buildIsolatedSmokeEnvironment({ PORT: "19001" });
     assert.equal(environment.CONTROL_PLANE_STORE, "sqlite");
@@ -201,6 +254,8 @@ test("disposable fixture processes ignore inherited persistent storage and repos
     assert.equal(environment.CONTROL_PLANE_AUTH_TOKEN, undefined);
     assert.equal(environment.CONTROL_PLANE_AUTH_TOKEN_FILE, undefined);
     assert.equal(environment.CONTROL_PLANE_MCP_TOOL_ALLOWLIST, undefined);
+    assert.equal(environment.ATOMIC_FIXTURE_MODEL_PILOT_ENABLED, undefined);
+    assert.equal(environment.ATOMIC_FIXTURE_MODEL_CREDENTIAL_FILE, undefined);
   } finally {
     for (const name of names) {
       const value = previous[name];

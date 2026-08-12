@@ -61,12 +61,12 @@ npm run verify
 ```
 
 - `npm run typecheck`: passed.
-- `npm test`: 188 tests total; 186 passed, 0 failed, and 2 honest opt-in
+- `npm test`: 214 tests total; 212 passed, 0 failed, and 2 honest opt-in
   cases skipped in this general phase (the PostgreSQL contract and live OCI
   provider).
 - `npm run test:postgres`: disposable PostgreSQL 16.14; 22/22 passed with no
   skip, followed by a clean server stop.
-- `npm run verify:atomic`: passed TypeScript and verified 31 required files, 4
+- `npm run verify:atomic`: passed TypeScript and verified 36 required files, 5
   workflows, 16 routing cases, 5 prompt templates, and 11 invalid-manifest
   rejection cases.
 - `npm run smoke:http`: passed with 3 projects, 3 isolated candidates, 3
@@ -420,6 +420,25 @@ behavior under a broader writer workload remain future evidence.
   OpenViking, or external outbox publisher.
 - Production credentials, destructive database action, or canonical memory
   promotion in the live native smoke.
+
+## Milestone 5b pre-live evidence
+
+The credential-free preparation adds migration 007, the fixed
+`atomic-fixture-model-pilot`, four role/model capabilities, a private Unix-socket
+gateway, an inspected internal-network bridge contract, read-only staged Atomic
+model configuration, accepted package/image bindings, raw native record
+retention, one bounded repair, and a new final fresh verifier. Deterministic fakes
+exercise success, native failure, policy/model/capability tamper, replay,
+request/token/cost bounds, provider failure redaction, package/image rejection,
+bridge cleanup and uncertain-create recovery, capability expiry/revocation,
+substantive artifact/context verification, and stopped-export rebinding.
+
+This evidence is explicitly pre-live. The fake Atomic process does not make model
+requests, the fake upstream does not prove model quality, every terminal output
+keeps `live_provider_verified=false`, and normal verification strips all
+`ATOMIC_FIXTURE_MODEL_*` environment settings. No provider credential was loaded
+or requested in this session. Exact final test counts are recorded after the
+repository-wide verification run below.
 
 ## Reproduction commands
 

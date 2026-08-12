@@ -1,4 +1,4 @@
-# Continuation prompt — start from live-verified M5a, then design M5b
+# Continuation prompt — compose M5b service lifecycle, then select a provider and run live
 
 Continue the existing public `valkyrie-agent` repository and draft PR #1. Do not
 create a new repository, substitute another agent framework, expose a generic
@@ -22,6 +22,8 @@ Read, in order:
 12. `docs/SESSION_HANDOFF_v0.3.0.md`
 13. `docs/IMPLEMENTATION_PLAN_M5.md`
 14. `docs/adr/ADR-P005-atomic-writer-pilot.md`
+15. `docs/IMPLEMENTATION_PLAN_M5B_PRELIVE.md`
+16. `docs/adr/ADR-P006-scoped-inference-boundary.md`
 
 For Atomic-specific work, then read the package `START_HERE.md`, complete
 `SKILL.md`, `CONTROL_PLANE_INTEGRATION.md`, `CODEX_CLAUDE_HANDOFF.md`,
@@ -56,12 +58,26 @@ real GitHub/PR/merge/deploy, no canonical promotion, and
 evidence. Direct Codex and Claude Code remain separate read-only roots and never
 orchestrate Atomic's internal workflow.
 
-## Mission — M5b model-backed pilot boundary
+## Existing pre-live M5b boundary
 
-After M5a is fully green and recorded, prepare the smallest reviewed path that can
-run real Atomic model implementation and a fresh independent model verifier under
-the **same disposable fixture contract**. Do not generalize repository, objective,
-command, workflow, image, or final-action selection.
+Migration 007, four role-scoped capability/request accounting, the fixed Atomic
+model workflow, final fresh verifier, one-repair path, accepted package/image
+bindings, read-only model settings, private Unix gateway, no-secret internal
+bridge topology, raw native evidence, revocation, and deterministic fakes are
+implemented. Normal verification strips all model-pilot settings and makes no
+provider request. The model coordinator remains unregistered so fake evidence
+cannot be mistaken for a normal Hermes/live run.
+
+## Mission — finish credential-free lifecycle composition, then exercise M5b live
+
+First register the pre-live model coordinator behind the authenticated service
+and restricted Hermes surface with durable admission, cancellation, restart,
+capability-expiry maintenance, evidence-bound artifact review/approval, and safe
+mock acceptance. Complete those paths with deterministic doubles before asking
+for a provider credential. Then choose one provider/model or credential-free
+local endpoint and exercise it under the **same disposable fixture contract**.
+Do not generalize repository, objective, command, workflow, image, or final-action
+selection.
 
 The acceptable inference designs are:
 

@@ -4,6 +4,7 @@
 
 - Bumped the launch-manifest wire schema to `1.1.0`; every exclusive writer lease now carries its exact `owner_id` and positive integer `fencing_token` so runner handoff cannot collapse lease identity into run/workspace identity.
 - Updated the schema-valid template, structural verifier, rejection cases, and control-plane connectivity producer while keeping the package version at `0.2.1` pending the completed Milestone 5 release boundary.
+- Added the fixed `atomic-fixture-model-pilot` pre-live workflow, bounded custom fixture tools, fresh initial/final verifier contexts, one optional implementer-continuity repair, deterministic evidence core, and a separate model-launch schema. This is contract evidence only; no provider credential or live model compatibility is claimed.
 
 ## 0.2.1 — 2026-08-11
 

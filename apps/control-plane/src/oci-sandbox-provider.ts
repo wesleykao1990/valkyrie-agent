@@ -23,6 +23,7 @@ const CONTROL_CHAR = /[\u0000-\u001f\u007f]/;
 const ATOMIC_RPC_WORKDIR = "/workspace/worktree";
 const ATOMIC_RPC_EXTENSION = "/run-context/atomic-package";
 const ATOMIC_RPC_SESSION_DIR = "/workspace/.atomic-sessions";
+const ATOMIC_MODEL_AGENT_DIR = "/run-context/atomic-agent";
 const ATOMIC_RPC_ENV = Object.freeze({
   HOME: "/workspace/.atomic-home",
   XDG_CONFIG_HOME: "/workspace/.atomic-home/config",
@@ -38,7 +39,7 @@ let providerInstanceSequence = 0;
 
 export type OciNetworkPolicy =
   | { mode: "none" }
-  | { mode: "named"; name: string };
+  | { mode: "named"; name: string; internal: true };
 
 export interface OciResourceBounds {
   memoryBytes: number;
@@ -77,6 +78,8 @@ export interface OciAtomicRpcOptions {
   expectedVersion: string;
   /** Build/provenance labels reviewed in source and required on the resolved image. */
   reviewedImageLabels: Readonly<Record<string, string>>;
+  /** Read models/settings from the immutable, read-only run context. */
+  stagedAgentConfig?: boolean;
   transportBounds?: Partial<OciAtomicRpcTransportBounds>;
 }
 
@@ -230,7 +233,7 @@ export interface OciReconciliationResult {
  */
 export interface OciCommandTranscriptEntry {
   sequence: number;
-  operation: "preflight" | "runner-image-inspect" | "runner-probe-inventory" | "runner-probe-create" | "runner-probe-start" | "runner-probe-inspect" | "runner-version" | "runner-probe-stop" | "runner-probe-kill" | "runner-probe-cleanup" | "inventory" | "create" | "start" | "inspect" | "execute" | "stop" | "kill" | "cleanup";
+  operation: "preflight" | "network-inspect" | "runner-image-inspect" | "runner-probe-inventory" | "runner-probe-create" | "runner-probe-start" | "runner-probe-inspect" | "runner-version" | "runner-probe-stop" | "runner-probe-kill" | "runner-probe-cleanup" | "inventory" | "create" | "start" | "inspect" | "execute" | "stop" | "kill" | "cleanup";
   command: string;
   args: string[];
   exitCode: number | null;
@@ -533,6 +536,7 @@ export class OciSandboxProvider {
     reviewedBinaryPath: string;
     expectedVersion: string;
     reviewedImageLabels: Readonly<Record<string, string>>;
+    stagedAgentConfig: boolean;
     transport: OciAtomicRpcTransportBounds;
   } | undefined;
   private readonly transcriptEntries: OciCommandTranscriptEntry[] = [];
@@ -562,6 +566,7 @@ export class OciSandboxProvider {
         reviewedBinaryPath: options.atomicRpc.reviewedBinaryPath,
         expectedVersion: options.atomicRpc.expectedVersion,
         reviewedImageLabels: Object.freeze({ ...options.atomicRpc.reviewedImageLabels }),
+        stagedAgentConfig: options.atomicRpc.stagedAgentConfig ?? false,
         transport: { ...DEFAULT_ATOMIC_RPC_TRANSPORT, ...options.atomicRpc.transportBounds },
       }
       : undefined;
@@ -588,6 +593,7 @@ export class OciSandboxProvider {
         this.timeouts.preflightMs,
         this.maxEngineOutputBytes,
       );
+      if (this.network.mode === "named") await this.assertInternalNamedNetwork();
       return {
         enabled: true,
         available: true,
@@ -1019,6 +1025,7 @@ export class OciSandboxProvider {
 
   async start(input: OciSandboxStartInput): Promise<OciSandboxHandle> {
     this.assertEnabled();
+    if (this.network.mode === "named") await this.assertInternalNamedNetwork();
     if (!RUN_ID.test(input.runId)) throw new Error("runId is not valid for an OCI ownership label");
     if (!RUN_ID.test(input.workspaceId)) throw new Error("workspaceId is not valid for an OCI ownership label");
     if (!RUN_ID.test(input.leaseOwnerId)) throw new Error("leaseOwnerId is not valid for an OCI ownership label");
@@ -1209,6 +1216,7 @@ export class OciSandboxProvider {
         throw new Error("An Atomic RPC stream is already open for this OCI sandbox");
       }
       this.assertAtomicExtensionDirectory(handle);
+      if (this.atomicRpc.stagedAgentConfig) this.assertAtomicAgentConfig(handle);
       const ownership = await this.safeInspectOwnership(handle);
       if (ownership === "inspect-failed") {
         this.quarantine(handle, "INSPECT_FAILED");
@@ -1223,6 +1231,9 @@ export class OciSandboxProvider {
       const containerEnvironmentArgs = Object.entries(ATOMIC_RPC_ENV).flatMap(([name, value]) => [
         "--env", `${name}=${value}`,
       ]);
+      if (this.atomicRpc.stagedAgentConfig) {
+        containerEnvironmentArgs.push("--env", `ATOMIC_CODING_AGENT_DIR=${ATOMIC_MODEL_AGENT_DIR}`);
+      }
       const client = new AtomicRpcClient({
         command: this.options.engineCommand,
         commandArgs: [
@@ -1444,6 +1455,27 @@ export class OciSandboxProvider {
     if (!this.enabled) throw new Error("OCI sandbox provider is disabled");
   }
 
+  private async assertInternalNamedNetwork(): Promise<void> {
+    if (this.network.mode !== "named") return;
+    const result = await this.invoke(
+      "network-inspect",
+      ["network", "inspect", "--format", "{{json .}}", this.network.name],
+      this.timeouts.inspectMs,
+      this.maxEngineOutputBytes,
+    );
+    let value: unknown;
+    try { value = JSON.parse(result.stdout); }
+    catch { throw new Error("Named OCI network inspection returned malformed JSON"); }
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("Named OCI network inspection returned an invalid record");
+    }
+    const item = value as Record<string, unknown>;
+    if (item.Name !== this.network.name || item.Internal !== true || item.Ingress === true
+        || item.Driver !== "bridge" || item.Scope !== "local") {
+      throw new Error("Named OCI network is not the exact local internal bridge policy");
+    }
+  }
+
   private assertOwnedHandle(handle: OciSandboxHandle): void {
     this.assertEnabled();
     const active = this.active.get(handle.runId);
@@ -1636,6 +1668,24 @@ export class OciSandboxProvider {
     }
     if (!isContained(handle.contextPath, realpathSync(extension))) {
       throw new Error("Atomic RPC extension escaped the staged context directory");
+    }
+  }
+
+  private assertAtomicAgentConfig(handle: OciSandboxHandle): void {
+    const root = join(handle.contextPath, "atomic-agent");
+    assertNoSymlinkComponents(handle.contextPath, root);
+    const rootStat = lstatSync(root);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || !isContained(handle.contextPath, realpathSync(root))) {
+      throw new Error("Atomic model agent config must be a contained non-symlink directory");
+    }
+    for (const name of ["models.json", "settings.json"]) {
+      const path = join(root, name);
+      assertNoSymlinkComponents(root, path);
+      const item = lstatSync(path);
+      if (!item.isFile() || item.isSymbolicLink() || item.nlink !== 1 || item.size < 2 || item.size > 256 * 1024
+          || !isContained(root, realpathSync(path))) {
+        throw new Error(`Atomic model agent ${name} must be a bounded contained regular file`);
+      }
     }
   }
 
@@ -1940,6 +1990,7 @@ export class OciSandboxProvider {
             extension: ATOMIC_RPC_EXTENSION,
             sessionDir: ATOMIC_RPC_SESSION_DIR,
             environment: ATOMIC_RPC_ENV,
+            stagedAgentConfig: this.atomicRpc.stagedAgentConfig,
             approve: true,
             runnerProbeTtlMs: this.runnerProbeTtlMs(),
           },

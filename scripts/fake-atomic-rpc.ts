@@ -35,9 +35,12 @@ let input = "";
 let eventSequence = 0;
 let fakeWorkflow: {
   runId: string;
+  name: "atomic-fixture-pilot" | "atomic-fixture-model-pilot";
   controlPlaneRunId: string;
   contractSha256: string;
   expectedBeforeSha256: string;
+  capabilityPolicySha256?: string;
+  packageSha256?: string;
   statusPolls: number;
 } | null = null;
 
@@ -112,6 +115,26 @@ function fixtureOutput(): JsonRecord {
   };
 }
 
+function modelFixtureOutput(): JsonRecord {
+  return {
+    evidence_manifest_path: ".valkyrie-model-output/evidence.json",
+    patch_path: ".valkyrie-model-output/candidate.patch",
+    checks_initial_path: ".valkyrie-model-output/checks-initial.json",
+    verifier_initial_path: ".valkyrie-model-output/verifier-initial.json",
+    checks_final_path: ".valkyrie-model-output/checks-final.json",
+    verifier_final_path: ".valkyrie-model-output/verifier-final.json",
+    memory_proposal_path: ".valkyrie-model-output/memory-proposal.json",
+    draft_pr_mock_path: ".valkyrie-model-output/draft-pr-mock.json",
+    context_pack_path: ".valkyrie-model-output/context-pack.json",
+    run_contract_path: ".valkyrie-model-output/run-contract.json",
+    launch_manifest_path: ".valkyrie-model-output/atomic-model-launch-manifest.json",
+    repair_count: process.env.FAKE_ATOMIC_MODEL_REPAIR === "1" ? 1 : 0,
+    checks_passed: true,
+    verifier_passed: true,
+    live_provider_verified: false,
+  };
+}
+
 function parseFixtureInput(message: string, name: string): string | null {
   const pattern = new RegExp(`(?:^|\\s)${name}=("(?:[^"\\\\]|\\\\.)*"|[^\\s]+)`);
   const match = pattern.exec(message);
@@ -125,24 +148,31 @@ function parseFixtureInput(message: string, name: string): string | null {
 }
 
 function handleFixtureWorkflow(command: JsonRecord, message: string): boolean {
-  if (message.startsWith("/workflow atomic-fixture-pilot")) {
+  const modelWorkflow = message.startsWith("/workflow atomic-fixture-model-pilot");
+  if (message.startsWith("/workflow atomic-fixture-pilot") || modelWorkflow) {
     const controlPlaneRunId = parseFixtureInput(message, "control_plane_run_id");
     const contractSha256 = parseFixtureInput(message, "contract_sha256");
     const expectedBeforeSha256 = parseFixtureInput(message, "expected_before_sha256");
-    if (!message.includes("--no-picker") || !controlPlaneRunId || !contractSha256 || !expectedBeforeSha256) {
+    const capabilityPolicySha256 = modelWorkflow ? parseFixtureInput(message, "capability_policy_sha256") : null;
+    const packageSha256 = modelWorkflow ? parseFixtureInput(message, "package_sha256") : null;
+    if (!message.includes("--no-picker") || !controlPlaneRunId || !contractSha256 || !expectedBeforeSha256
+        || (modelWorkflow && (!capabilityPolicySha256 || !packageSha256))) {
       write(response(command, false, undefined, "invalid atomic-fixture-pilot dispatch"));
       return true;
     }
     fakeWorkflow = {
       runId: FAKE_WORKFLOW_RUN_ID,
+      name: modelWorkflow ? "atomic-fixture-model-pilot" : "atomic-fixture-pilot",
       controlPlaneRunId,
       contractSha256,
       expectedBeforeSha256,
+      ...(capabilityPolicySha256 ? { capabilityPolicySha256 } : {}),
+      ...(packageSha256 ? { packageSha256 } : {}),
       statusPolls: 0,
     };
     write(workflowEvent({
       kind: "dispatch",
-      workflowName: "atomic-fixture-pilot",
+      workflowName: fakeWorkflow.name,
       runId: fakeWorkflow.runId,
       inputs: {
         control_plane_run_id: controlPlaneRunId,
@@ -168,7 +198,7 @@ function handleFixtureWorkflow(command: JsonRecord, message: string): boolean {
       kind: "detail",
       detail: {
         runId: fakeWorkflow.runId,
-        name: "atomic-fixture-pilot",
+        name: fakeWorkflow.name,
         mode: "single",
         status: "running",
         inputs: {
@@ -190,10 +220,10 @@ function handleFixtureWorkflow(command: JsonRecord, message: string): boolean {
       kind: "detail",
       detail: {
         runId: fakeWorkflow.runId,
-        name: "atomic-fixture-pilot",
+        name: fakeWorkflow.name,
         mode: "single",
         status: "completed",
-        result: fixtureOutput(),
+        result: fakeWorkflow.name === "atomic-fixture-model-pilot" ? modelFixtureOutput() : fixtureOutput(),
         stages: [],
         tools: [],
       },
@@ -203,7 +233,7 @@ function handleFixtureWorkflow(command: JsonRecord, message: string): boolean {
       kind: "detail",
       detail: {
         runId: fakeWorkflow.runId,
-        name: "atomic-fixture-pilot",
+        name: fakeWorkflow.name,
         mode: "single",
         status: "blocked",
         error: "synthetic recoverable fixture block",
@@ -216,7 +246,7 @@ function handleFixtureWorkflow(command: JsonRecord, message: string): boolean {
       kind: "detail",
       detail: {
         runId: fakeWorkflow.runId,
-        name: "atomic-fixture-pilot",
+        name: fakeWorkflow.name,
         mode: "single",
         status: "failed",
         error: "synthetic fixture workflow failure",
@@ -238,7 +268,7 @@ function handlePrompt(command: JsonRecord): void {
     }
     write(workflowEvent({
       kind: "list",
-      entries: ["request-preflight", "idea-to-decision", "project-blueprint", "atomic-fixture-pilot"]
+      entries: ["request-preflight", "idea-to-decision", "project-blueprint", "atomic-fixture-pilot", "atomic-fixture-model-pilot"]
         .map((name) => ({ name })),
     }));
     write(response(command, true, { handled: true }));

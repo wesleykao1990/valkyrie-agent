@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { AtomicConnectivityRuntimeAdapter, validateAtomicLaunchManifest } from "../apps/control-plane/src/atomic-runtime-adapter.ts";
+import { AtomicConnectivityRuntimeAdapter, validateAtomicLaunchManifest, validateAtomicModelLaunchManifest } from "../apps/control-plane/src/atomic-runtime-adapter.ts";
 import { SqliteStore } from "../apps/control-plane/src/sqlite-store.ts";
 import type { Run } from "../apps/control-plane/src/types.ts";
 import { WorkspaceManager } from "../apps/control-plane/src/workspace.ts";
@@ -139,4 +139,24 @@ test("Atomic launch-manifest validation rejects values outside the imported sche
   const unsafeFence = structuredClone(template);
   unsafeFence.writer_lease.fencing_token = Number.MAX_SAFE_INTEGER + 1;
   assert.ok(validateAtomicLaunchManifest(unsafeFence, atomicPackage).some((error) => error.includes("above maximum")));
+});
+
+test("Atomic model launch manifest rejects credentials, network widening, and repair expansion", () => {
+  const packageDir = resolve("packages/atomic-workflow-architect");
+  const template = JSON.parse(readFileSync(join(
+    packageDir, "skills", "atomic-workflow-architect", "assets", "model-launch-manifest-template.json",
+  ), "utf8"));
+  assert.deepEqual(validateAtomicModelLaunchManifest(template, packageDir), []);
+  for (const mutate of [
+    (value: any) => { value.inference.credential_in_writer = true; },
+    (value: any) => { value.inference.live_provider_verified = true; },
+    (value: any) => { value.sandbox.network_policy = "public"; },
+    (value: any) => { value.bounds.max_repairs = 2; },
+    (value: any) => { value.inference.max_requests = 5; },
+    (value: any) => { value.provider_api_key = "secret"; },
+  ]) {
+    const changed = structuredClone(template);
+    mutate(changed);
+    assert.ok(validateAtomicModelLaunchManifest(changed, packageDir).length > 0);
+  }
 });

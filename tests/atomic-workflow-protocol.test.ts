@@ -6,9 +6,11 @@ import { AtomicRpcClient, type AtomicRpcNativeEvent } from "../apps/control-plan
 import {
   AtomicWorkflowProtocolError,
   buildAtomicFixtureWorkflowDispatchCommand,
+  buildAtomicFixtureModelWorkflowDispatchCommand,
   buildAtomicWorkflowStatusCommand,
   isTerminalAtomicWorkflowStatus,
   parseAtomicFixtureWorkflowOutput,
+  parseAtomicFixtureModelWorkflowOutput,
   parseAtomicWorkflowListEvent,
   parseAtomicWorkflowLifecycleEvent,
 } from "../apps/control-plane/src/atomic-workflow-protocol.ts";
@@ -58,6 +60,34 @@ test("Atomic fixture workflow command builders quote fixed inputs and require fu
     () => buildAtomicFixtureWorkflowDispatchCommand({ ...fixtureInputs, control_plane_run_id: "bad run" }),
     /safe/,
   );
+});
+
+test("Atomic model workflow dispatch and output keep fake/live evidence distinct", () => {
+  const command = buildAtomicFixtureModelWorkflowDispatchCommand({
+    control_plane_run_id: "run_model_protocol", contract_sha256: "a".repeat(64),
+    expected_before_sha256: "b".repeat(64), capability_policy_sha256: "c".repeat(64), package_sha256: "d".repeat(64),
+  });
+  assert.match(command, /^\/workflow atomic-fixture-model-pilot --no-picker /);
+  const output = parseAtomicFixtureModelWorkflowOutput({
+    evidence_manifest_path: ".valkyrie-model-output/evidence.json",
+    patch_path: ".valkyrie-model-output/candidate.patch",
+    checks_initial_path: ".valkyrie-model-output/checks-initial.json",
+    verifier_initial_path: ".valkyrie-model-output/verifier-initial.json",
+    checks_final_path: ".valkyrie-model-output/checks-final.json",
+    verifier_final_path: ".valkyrie-model-output/verifier-final.json",
+    memory_proposal_path: ".valkyrie-model-output/memory-proposal.json",
+    draft_pr_mock_path: ".valkyrie-model-output/draft-pr-mock.json",
+    context_pack_path: ".valkyrie-model-output/context-pack.json",
+    run_contract_path: ".valkyrie-model-output/run-contract.json",
+    launch_manifest_path: ".valkyrie-model-output/atomic-model-launch-manifest.json",
+    repair_count: 1, checks_passed: true, verifier_passed: true, live_provider_verified: false,
+  });
+  assert.equal(output.repair_count, 1);
+  assert.throws(() => parseAtomicFixtureModelWorkflowOutput({ ...output, live_provider_verified: true }), /pre-live output contract/);
+  assert.throws(() => buildAtomicFixtureModelWorkflowDispatchCommand({
+    control_plane_run_id: "bad run", contract_sha256: "a".repeat(64), expected_before_sha256: "b".repeat(64),
+    capability_policy_sha256: "c".repeat(64), package_sha256: "d".repeat(64),
+  }), /safe/);
 });
 
 test("Atomic workflow lifecycle parser ignores unrelated records and rejects malformed matching details", () => {

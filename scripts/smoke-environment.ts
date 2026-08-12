@@ -58,6 +58,7 @@ export function buildIsolatedSmokeEnvironment(
     Object.entries(process.env).filter(([name, value]) =>
       value !== undefined
       && !blockedNames.has(name)
+      && !name.startsWith("ATOMIC_FIXTURE_MODEL_")
       && !name.startsWith("REPOSITORY_PATH_")
     ),
   );

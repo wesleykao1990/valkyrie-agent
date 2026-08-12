@@ -282,6 +282,25 @@ database writes are ordinary control-plane lifecycle/evidence/proposal state; it
 approved final effect is still only a safe mock receipt, never a GitHub or
 canonical-memory write.
 
+Migration 007 adds the credential-free portion of the M5b inference ledger:
+run/project/workflow-bound capabilities, one exact request row per native model
+role, hashes of capability/request/response payloads, authoritative token/cost
+totals, expiry/revocation state, and matching outbox evidence. Plaintext run
+capabilities and provider credentials are never stored. Reservation and
+completion are transactional in SQLite and PostgreSQL; a role cannot spend
+twice, changed replay conflicts, and aggregate request/token/cost limits fail
+closed. `expireInferenceCapabilities(observedAt, limit)` closes an indexed,
+bounded page with matching outbox evidence; it is ready for the model
+coordinator's still-pending service maintenance loop. Migration 007 is
+checksummed and forward-only. Binary rollback requires
+a verified pre-v7 backup or separate compatible data set; an older binary must
+reject the v7 ledger.
+
+The pre-live M5b tests use an in-memory fake upstream and private Unix socket.
+They do not contact a provider and do not establish model quality. Normal test
+wrappers strip every `ATOMIC_FIXTURE_MODEL_*` setting so an inherited credential,
+endpoint, or enable flag cannot turn verification into live inference.
+
 The full repository verifier runs both suites:
 
 ```bash

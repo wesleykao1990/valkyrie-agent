@@ -1,4 +1,4 @@
-# Session handoff — v0.3.0 through Milestone 5a
+# Session handoff — v0.3.0 through Milestone 5b pre-live
 
 Date: 2026-08-12
 
@@ -16,9 +16,12 @@ Date: 2026-08-12
   verifier, frozen governed evidence, terminal cleanup, an evidence-bound human
   gate, an evidence-derived proposed-only memory record, and a safe mock
   acceptance receipt after approval.
-- The original model-backed Milestone 5 is **not complete**. No Atomic provider/
-  model or model verifier was exercised. It remains M5b continuation work behind
-  a scoped inference proxy or reviewed local-model boundary.
+- Milestone 5b is implemented through the credential-free pre-live boundary:
+  scoped capability/accounting storage, a private Unix inference gateway,
+  no-secret internal-network bridge, fixed Atomic model workflow, fresh initial
+  and final verifiers, one optional implementer-continuity repair, raw native
+  evidence, and cleanup/revocation contracts. No provider/model was exercised;
+  live model quality, token/cost evidence, and authenticated human review remain.
 
 The M5a implementation, deterministic contracts, and live no-model runner smoke
 are complete. Exact immutable-image and native-run evidence is recorded in
@@ -91,13 +94,11 @@ nine governed artifacts, read four back through MCP, used zero model tokens/cost
 completed the exact safe-mock approval, left memory proposed, and left no managed
 Docker container. The opt-in test client invoked approval automatically after its
 assertions; this proves the bound transition, not independent human review.
-Repository-wide `npm run verify` also passed: strict TypeScript; 188 general tests with 186
+Repository-wide `npm run verify` also passed: strict TypeScript; 214 general tests with 212
 passed, 0 failed, and 2 honest opt-in skips; disposable PostgreSQL 22/22; Atomic
-package verification; and authenticated HTTP/MCP smokes. The subsequent
-audit-only ledger wording repair passed strict TypeScript and its four affected
-approval/cancellation integration cases. A requested second full invocation did
-not start because the Codex app's approval reviewer had exhausted its usage
-quota; this is an unexecuted rerun, not a hidden test failure.
+package verification (36 required files and 5 workflows); and authenticated
+HTTP/MCP smokes. The M5b preparation did not load a provider credential or make
+a live inference request.
 
 ## 5. Live integrations actually exercised
 
@@ -169,6 +170,9 @@ action, production secret, or canonical memory promotion.
 - The complete copy-paste commands and failure notes are in `README.md`.
 - Full repository verification needs PostgreSQL 16 `initdb` and `pg_ctl`.
 - Hermes/Claude/mobile setup remains separate from the M5a writer.
+- The M5b model coordinator remains internal/unregistered. Finish its durable
+  service/Hermes schedule, cancel, restart, approval/artifact-read, and
+  capability-maintenance composition before requesting a provider credential.
 
 ## 8. ADRs or decisions requiring Wesley
 
@@ -176,6 +180,8 @@ action, production secret, or canonical memory promotion.
   ADR-P003 native connectivity, and ADR-P004 external writer boundary.
 - Accept/amend/reject ADR-P005's split between a credential-free integration proof
   and model-backed quality proof, including zero repairs for the fixed M5a task.
+- Accept/amend/reject proposed ADR-P006's external credential-holding gateway,
+  run-scoped capability, internal-network bridge, and single-instance M5b policy.
 - Choose the M5b inference boundary: reviewed local model or credential-holding
   scoped proxy with run-scoped capability, provider/model/token/cost/time/
   concurrency policy, and no raw provider key inside the writer.
@@ -244,10 +250,14 @@ CONTROL_PLANE_API=http://127.0.0.1:8787 \
 
 If the registry container already exists, start/inspect it instead of creating a
 duplicate. Do not add provider credentials or substitute a mutable image tag.
-See `README.md` for PostgreSQL migration 006, rollback, and troubleshooting.
+See `README.md` and `docs/STORAGE.md` for PostgreSQL migrations 006–007,
+pre-v7 rollback, and troubleshooting. There is intentionally no live M5b command
+yet; do not add a provider credential until the service lifecycle is registered
+and deterministically verified.
 
 ## 10. Copy-paste continuation prompt
 
-Use `docs/NEXT_SESSION_PROMPT.md`. It starts from the fixed M5a integration slice,
-requires its final evidence to be verified first, and scopes the next engineering
-work to the model-backed M5b inference boundary rather than broad writer exposure.
+Use `docs/NEXT_SESSION_PROMPT.md`. It starts from the fixed M5a integration slice
+and credential-free M5b boundary, requires their evidence to be verified first,
+and finishes the model coordinator's authenticated lifecycle before provider
+selection or live spend.

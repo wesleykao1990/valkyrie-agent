@@ -49,6 +49,7 @@ interface FakeState {
     retainAtomicVersionPipe?: boolean;
     createNameCollision?: boolean;
     hangAfterProbeCreate?: boolean;
+    wrongInternalNetwork?: boolean;
   };
 }
 
@@ -85,6 +86,18 @@ switch (command) {
   case "image":
     inspectImage(argv.slice(1));
     break;
+  case "network": {
+    if (argv[1] !== "inspect") process.exit(64);
+    const name = argv.at(-1);
+    process.stdout.write(`${JSON.stringify({
+      Name: name,
+      Internal: state.behavior?.wrongInternalNetwork ? false : true,
+      Ingress: false,
+      Driver: "bridge",
+      Scope: "local",
+    })}\n`);
+    break;
+  }
   case "create":
     createContainer(argv.slice(1));
     break;
@@ -395,7 +408,12 @@ function runAtomicRpc(
     TMP: "/tmp",
     TEMP: "/tmp",
   };
-  if (JSON.stringify(containerEnvironment) !== JSON.stringify(requiredEnvironment)) process.exit(64);
+  const acceptedEnvironment = { ...requiredEnvironment } as Record<string, string>;
+  if (containerEnvironment.ATOMIC_CODING_AGENT_DIR !== undefined) {
+    if (containerEnvironment.ATOMIC_CODING_AGENT_DIR !== "/run-context/atomic-agent") process.exit(64);
+    acceptedEnvironment.ATOMIC_CODING_AGENT_DIR = "/run-context/atomic-agent";
+  }
+  if (JSON.stringify(containerEnvironment) !== JSON.stringify(acceptedEnvironment)) process.exit(64);
   const sessionIndex = commandArgs.indexOf("--session-dir");
   const nameIndex = commandArgs.indexOf("--name");
   const extensionIndex = commandArgs.indexOf("-e");

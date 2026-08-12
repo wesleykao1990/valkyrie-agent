@@ -1,4 +1,5 @@
 export const ATOMIC_FIXTURE_WORKFLOW_NAME = "atomic-fixture-pilot";
+export const ATOMIC_FIXTURE_MODEL_WORKFLOW_NAME = "atomic-fixture-model-pilot";
 export const ATOMIC_FIXTURE_WORKFLOW_OUTPUT_PATHS = Object.freeze({
   evidence_manifest_path: ".valkyrie-output/evidence.json",
   patch_path: ".valkyrie-output/candidate.patch",
@@ -63,6 +64,32 @@ export interface AtomicFixtureWorkflowInputs {
   expected_before_sha256: string;
 }
 
+export interface AtomicFixtureModelWorkflowInputs {
+  control_plane_run_id: string;
+  contract_sha256: string;
+  expected_before_sha256: string;
+  capability_policy_sha256: string;
+  package_sha256: string;
+}
+
+export interface AtomicFixtureModelWorkflowOutput {
+  evidence_manifest_path: ".valkyrie-model-output/evidence.json";
+  patch_path: ".valkyrie-model-output/candidate.patch";
+  checks_initial_path: ".valkyrie-model-output/checks-initial.json";
+  verifier_initial_path: ".valkyrie-model-output/verifier-initial.json";
+  checks_final_path: ".valkyrie-model-output/checks-final.json";
+  verifier_final_path: ".valkyrie-model-output/verifier-final.json";
+  memory_proposal_path: ".valkyrie-model-output/memory-proposal.json";
+  draft_pr_mock_path: ".valkyrie-model-output/draft-pr-mock.json";
+  context_pack_path: ".valkyrie-model-output/context-pack.json";
+  run_contract_path: ".valkyrie-model-output/run-contract.json";
+  launch_manifest_path: ".valkyrie-model-output/atomic-model-launch-manifest.json";
+  repair_count: 0 | 1;
+  checks_passed: true;
+  verifier_passed: true;
+  live_provider_verified: false;
+}
+
 export interface AtomicWorkflowListDetail {
   workflows: string[];
   rawDetails: Record<string, unknown>;
@@ -113,6 +140,20 @@ export function buildAtomicFixtureWorkflowDispatchCommand(input: AtomicFixtureWo
     `control_plane_run_id=${JSON.stringify(input.control_plane_run_id)}`,
     `contract_sha256=${JSON.stringify(input.contract_sha256)}`,
     `expected_before_sha256=${JSON.stringify(input.expected_before_sha256)}`,
+  ].join(" ");
+}
+
+export function buildAtomicFixtureModelWorkflowDispatchCommand(input: AtomicFixtureModelWorkflowInputs): string {
+  if (!CONTROL_PLANE_RUN_ID.test(input.control_plane_run_id)) {
+    throw new TypeError("control_plane_run_id must be a safe 1-128 character run ID");
+  }
+  for (const field of ["contract_sha256", "expected_before_sha256", "capability_policy_sha256", "package_sha256"] as const) {
+    assertHash(input[field], field);
+  }
+  return [
+    `/workflow ${ATOMIC_FIXTURE_MODEL_WORKFLOW_NAME}`,
+    "--no-picker",
+    ...Object.entries(input).map(([name, value]) => `${name}=${JSON.stringify(value)}`),
   ].join(" ");
 }
 
@@ -224,4 +265,35 @@ export function parseAtomicFixtureWorkflowOutput(value: unknown): AtomicFixtureW
     throw new AtomicWorkflowProtocolError("Atomic fixture terminal output did not pass its bounded evidence contract");
   }
   return output as unknown as AtomicFixtureWorkflowOutput;
+}
+
+export function parseAtomicFixtureModelWorkflowOutput(value: unknown): AtomicFixtureModelWorkflowOutput {
+  const output = objectRecord(value);
+  if (!output) throw new AtomicWorkflowProtocolError("Atomic model fixture output must be an object");
+  const paths = {
+    evidence_manifest_path: ".valkyrie-model-output/evidence.json",
+    patch_path: ".valkyrie-model-output/candidate.patch",
+    checks_initial_path: ".valkyrie-model-output/checks-initial.json",
+    verifier_initial_path: ".valkyrie-model-output/verifier-initial.json",
+    checks_final_path: ".valkyrie-model-output/checks-final.json",
+    verifier_final_path: ".valkyrie-model-output/verifier-final.json",
+    memory_proposal_path: ".valkyrie-model-output/memory-proposal.json",
+    draft_pr_mock_path: ".valkyrie-model-output/draft-pr-mock.json",
+    context_pack_path: ".valkyrie-model-output/context-pack.json",
+    run_contract_path: ".valkyrie-model-output/run-contract.json",
+    launch_manifest_path: ".valkyrie-model-output/atomic-model-launch-manifest.json",
+  } as const;
+  const expected = [...Object.keys(paths), "repair_count", "checks_passed", "verifier_passed", "live_provider_verified"].sort();
+  const names = Object.keys(output).sort();
+  if (names.length !== expected.length || names.some((name, index) => name !== expected[index])) {
+    throw new AtomicWorkflowProtocolError("Atomic model fixture output keys do not match the reviewed contract");
+  }
+  for (const [field, path] of Object.entries(paths)) {
+    if (output[field] !== path) throw new AtomicWorkflowProtocolError(`Atomic model fixture ${field} is not the fixed artifact path`);
+  }
+  if ((output.repair_count !== 0 && output.repair_count !== 1) || output.checks_passed !== true
+      || output.verifier_passed !== true || output.live_provider_verified !== false) {
+    throw new AtomicWorkflowProtocolError("Atomic model fixture did not satisfy the bounded pre-live output contract");
+  }
+  return output as unknown as AtomicFixtureModelWorkflowOutput;
 }

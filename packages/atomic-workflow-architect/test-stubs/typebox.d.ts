@@ -6,5 +6,7 @@ declare module "typebox" {
     Array(item: any, options?: any): any;
     Optional(item: any): any;
     Object(shape: any, options?: any): any;
+    Literal(value: any): any;
+    Union(items: any[], options?: any): any;
   };
 }

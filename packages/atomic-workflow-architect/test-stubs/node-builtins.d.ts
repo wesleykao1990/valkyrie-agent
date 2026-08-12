@@ -4,6 +4,14 @@ declare module "node:fs" {
 }
 declare module "node:path" {
   export function join(...paths: string[]): string;
+  export function resolve(...paths: string[]): string;
+  export const sep: string;
+}
+declare module "node:fs/promises" {
+  export function lstat(path: string): Promise<any>;
+  export function readFile(path: string, encoding?: string): Promise<any>;
+  export function realpath(path: string): Promise<string>;
+  export function writeFile(path: string, data: any, options?: any): Promise<void>;
 }
 declare const process: {
   cwd(): string;

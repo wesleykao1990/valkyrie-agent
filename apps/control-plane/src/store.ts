@@ -204,6 +204,69 @@ export interface ApprovalExpiryInput {
   idempotency?: IdempotencyInput;
 }
 
+export type InferenceRole = "implementer" | "verifier_initial" | "repair" | "verifier_final";
+export type InferenceCapabilityState = "active" | "revoked" | "exhausted" | "expired";
+export type InferenceRequestState = "reserved" | "completed" | "failed";
+
+export interface InferenceCapability {
+  id: string;
+  runId: string;
+  projectId: string;
+  workflow: string;
+  tokenHash: string;
+  provider: string;
+  model: string;
+  api: "openai-completions";
+  roles: InferenceRole[];
+  maxRequests: number;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  maxCostMicros: number;
+  maxElapsedMs: number;
+  issuedAt: string;
+  expiresAt: string;
+  state: InferenceCapabilityState;
+  policyHash: string;
+}
+
+export interface InferenceRequest {
+  id: string;
+  capabilityId: string;
+  runId: string;
+  role: InferenceRole;
+  requestHash: string;
+  state: InferenceRequestState;
+  providerRequestId: string | null;
+  responseHash: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  costMicros: number;
+  reservedAt: string;
+  completedAt: string | null;
+  failureCode: string | null;
+}
+
+export interface ReserveInferenceRequestInput {
+  id: string;
+  tokenHash: string;
+  runId: string;
+  role: InferenceRole;
+  requestHash: string;
+  reservedAt?: string;
+}
+
+export interface CompleteInferenceRequestInput {
+  id: string;
+  state: "completed" | "failed";
+  responseHash?: string | null;
+  providerRequestId?: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  costMicros: number;
+  failureCode?: string | null;
+  completedAt?: string;
+}
+
 export interface ApprovalRequestInput {
   approval: Approval;
   event: Omit<RunEvent, "seq">;
@@ -304,6 +367,17 @@ export interface ControlPlaneStore {
   /** Closes an expired, evidence-bound pending approval without human authority. */
   expireApprovalTransaction(input: ApprovalExpiryInput): Promise<ApprovalResolutionResult>;
 
+  /** Stores only a capability digest; plaintext run credentials never enter durable storage. */
+  createInferenceCapability(capability: InferenceCapability): Promise<InferenceCapability>;
+  getInferenceCapability(id: string): Promise<InferenceCapability | null>;
+  getInferenceCapabilityByTokenHash(tokenHash: string): Promise<InferenceCapability | null>;
+  reserveInferenceRequest(input: ReserveInferenceRequestInput): Promise<{ capability: InferenceCapability; request: InferenceRequest; replayed: boolean }>;
+  completeInferenceRequest(input: CompleteInferenceRequestInput): Promise<{ capability: InferenceCapability; request: InferenceRequest; replayed: boolean }>;
+  revokeInferenceCapability(id: string, observedAt?: string): Promise<InferenceCapability | null>;
+  /** Atomically closes a bounded page of active capabilities past authoritative expiry. */
+  expireInferenceCapabilities(observedAt: string, limit?: number): Promise<InferenceCapability[]>;
+  listInferenceRequests(runId: string): Promise<InferenceRequest[]>;
+
   createArtifact(artifact: Artifact): Promise<void>;
   /** Persists one run's bounded artifact set and all matching outbox records atomically. */
   createArtifactBatch(artifacts: Artifact[]): Promise<ArtifactBatchResult>;
@@ -339,6 +413,8 @@ export class IdempotencyConflictError extends StorageConflictError {
 
 const maximumFencingToken = Number.MAX_SAFE_INTEGER;
 const sha256Hex = /^[a-f0-9]{64}$/;
+const safeInferenceId = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
+const inferenceRoles = new Set<InferenceRole>(["implementer", "verifier_initial", "repair", "verifier_final"]);
 const immutableImageRef = /^[A-Za-z0-9][A-Za-z0-9./:_-]*@sha256:[a-f0-9]{64}$/;
 const sandboxTransitions: Record<SandboxInstanceState, ReadonlySet<SandboxInstanceState>> = {
   provisioning: new Set(["ready", "quarantined"]),
@@ -349,6 +425,69 @@ const sandboxTransitions: Record<SandboxInstanceState, ReadonlySet<SandboxInstan
   cleaned: new Set(),
   quarantined: new Set(),
 };
+
+function boundedInteger(value: number, label: string, minimum: number, maximum: number): void {
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new StorageConflictError(`${label} must be an integer between ${minimum} and ${maximum}`);
+  }
+}
+
+export function validateInferenceCapability(capability: InferenceCapability, observedAt: string): void {
+  for (const [label, value] of [["capability ID", capability.id], ["run ID", capability.runId],
+    ["project ID", capability.projectId], ["workflow", capability.workflow], ["provider", capability.provider],
+    ["model", capability.model]] as const) {
+    if (!safeInferenceId.test(value)) throw new StorageConflictError(`Inference ${label} is invalid`);
+  }
+  if (!sha256Hex.test(capability.tokenHash) || !sha256Hex.test(capability.policyHash)) {
+    throw new StorageConflictError("Inference capability digests must be lowercase SHA-256 values");
+  }
+  if (capability.api !== "openai-completions" || capability.state !== "active") {
+    throw new StorageConflictError("A new inference capability must use the reviewed API and active state");
+  }
+  const roles = [...new Set(capability.roles)];
+  if (roles.length === 0 || roles.length !== capability.roles.length || roles.some((role) => !inferenceRoles.has(role))) {
+    throw new StorageConflictError("Inference capability roles must be unique reviewed roles");
+  }
+  boundedInteger(capability.maxRequests, "Inference maxRequests", 1, 8);
+  boundedInteger(capability.maxInputTokens, "Inference maxInputTokens", 1, 128_000);
+  boundedInteger(capability.maxOutputTokens, "Inference maxOutputTokens", 1, 32_768);
+  boundedInteger(capability.maxCostMicros, "Inference maxCostMicros", 0, 100_000_000);
+  boundedInteger(capability.maxElapsedMs, "Inference maxElapsedMs", 100, 10 * 60 * 1_000);
+  const issued = timestampMillis(capability.issuedAt, "Inference capability issuedAt");
+  const expires = timestampMillis(capability.expiresAt, "Inference capability expiresAt");
+  const observed = timestampMillis(observedAt, "Observed storage time");
+  if (issued > observed + 30_000 || expires <= observed || expires - issued > 30 * 60 * 1_000) {
+    throw new StorageConflictError("Inference capability validity window is invalid");
+  }
+}
+
+export function validateInferenceReservation(input: ReserveInferenceRequestInput): void {
+  if (!safeInferenceId.test(input.id) || !safeInferenceId.test(input.runId)) {
+    throw new StorageConflictError("Inference request identity is invalid");
+  }
+  if (!sha256Hex.test(input.tokenHash) || !sha256Hex.test(input.requestHash)) {
+    throw new StorageConflictError("Inference request digests must be lowercase SHA-256 values");
+  }
+  if (!inferenceRoles.has(input.role)) throw new StorageConflictError("Inference request role is invalid");
+}
+
+export function validateInferenceCompletion(input: CompleteInferenceRequestInput): void {
+  if (!safeInferenceId.test(input.id)) throw new StorageConflictError("Inference request identity is invalid");
+  if (input.state === "completed") {
+    if (!input.responseHash || !sha256Hex.test(input.responseHash) || input.failureCode) {
+      throw new StorageConflictError("Completed inference requests require a response digest and no failure code");
+    }
+  } else if (input.responseHash || !input.failureCode || !safeInferenceId.test(input.failureCode)) {
+    throw new StorageConflictError("Failed inference requests require only a safe failure code");
+  }
+  if (input.providerRequestId !== undefined && input.providerRequestId !== null
+      && (!safeInferenceId.test(input.providerRequestId))) {
+    throw new StorageConflictError("Inference provider request ID is invalid");
+  }
+  boundedInteger(input.inputTokens, "Inference inputTokens", 0, 128_000);
+  boundedInteger(input.outputTokens, "Inference outputTokens", 0, 32_768);
+  boundedInteger(input.costMicros, "Inference costMicros", 0, 100_000_000);
+}
 
 function timestampMillis(value: string, field: string): number {
   const parsed = Date.parse(value);

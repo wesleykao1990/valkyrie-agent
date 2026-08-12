@@ -38,9 +38,12 @@ the memory remains only a proposal.
 This does **not** establish Atomic model execution or a model-based independent
 reviewer. It supplies no provider credential, performs no real GitHub/PR, merge,
 deployment, Linear, OpenViking, destructive database, or canonical-memory action,
-and advertises no cross-process Atomic durability. The complete model-backed
-Milestone 5 remains pending a scoped inference proxy or reviewed local-model
-boundary.
+and advertises no cross-process Atomic durability. The credential-free M5b work
+now includes a scoped inference gateway/bridge contract and fixed model workflow,
+but no provider has been called and the model path is not registered as a normal
+Hermes run. Live enablement still requires the explicit provider/model decision,
+operator credential boundary, service/approval/recovery composition, and an
+actual evidence-reviewed pilot.
 
 ## Requirements
 
@@ -436,6 +439,44 @@ M5a supports one active control-plane pilot coordinator process. PostgreSQL make
 admission transactional across processes, but cancellation and native ownership
 handoff are intentionally not horizontally coordinated while
 `crossProcessResume=false`.
+
+## Milestone 5b status: ready up to the live-model boundary
+
+The credential-free M5b preparation is implemented but deliberately not
+registered as a normal Hermes run yet. It adds:
+
+- a second fixed `atomic-fixture-model-pilot` native Atomic workflow;
+- fresh implementer, fresh initial verifier, at most one repair forked from the
+  implementer, deterministic checks, and a new final fresh verifier;
+- four single-use role/model capabilities with transactional SQLite/PostgreSQL
+  usage and cost accounting (migration 007);
+- a private Unix-socket inference gateway and a no-secret bridge container on an
+  inspected internal Docker network;
+- exact runner/package/workflow/core/fence/policy bindings and read-only staged
+  Atomic model settings;
+- credential-free fake Atomic/upstream contract tests, failure cleanup,
+  capability revocation, raw native record retention, substantive source/test/
+  patch/check/verifier/context validation, and frozen-export rebinding.
+
+These tests prove the boundary and state machine, not a model's correctness. The
+workflow always reports `live_provider_verified=false`; no provider request is
+made by `npm test` or `npm run verify`.
+
+The remaining credential-free engineering before this becomes a normal Hermes
+pilot is intentionally explicit: durable scheduling/cancellation/restart around
+the model coordinator, evidence-bound approval and artifact review, and bounded
+capability-expiry maintenance must be composed into the service. Until that is
+implemented and verified, setting the model environment variables does not
+expose the workflow through HTTP or MCP.
+
+For later live enablement, configure the commented
+`ATOMIC_FIXTURE_MODEL_*` values in `.env.example`. An external provider requires
+an HTTPS `/v1` endpoint, explicit token prices, and a dedicated 0600 credential
+file. A credential-free local OpenAI-compatible server is accepted only through
+explicit HTTP-loopback opt-in. The provider credential stays in the host gateway;
+the writer receives only a short-lived capability file. Do not provide a key
+until the provider/model, limits, accepted package/image digests, and intended
+spend have been reviewed.
 
 Disable the slice by stopping the server and leaving
 `ATOMIC_FIXTURE_PILOT_ENABLED` unset/false. Migration 006 only adds complete

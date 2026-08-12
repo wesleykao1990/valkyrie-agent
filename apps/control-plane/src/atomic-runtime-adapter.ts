@@ -105,6 +105,15 @@ export function validateAtomicLaunchManifest(manifest: unknown, packageDir: stri
   return validateSchemaValue(manifest, schema, schema);
 }
 
+export function validateAtomicModelLaunchManifest(manifest: unknown, packageDir: string): string[] {
+  const schemaPath = join(packageDir, "skills", "atomic-workflow-architect", "assets", "model-launch-manifest.schema.json");
+  const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as JsonSchemaRule;
+  if (schema.$id !== "urn:wesley:atomic:model-launch-manifest:1.0.0-prelive") {
+    return ["$: unexpected model launch-manifest schema ID"];
+  }
+  return validateSchemaValue(manifest, schema, schema);
+}
+
 export class AtomicConnectivityRuntimeAdapter implements RuntimeAdapter {
   readonly name = "atomic" as const;
   private readonly options: AtomicConnectivityRuntimeOptions;

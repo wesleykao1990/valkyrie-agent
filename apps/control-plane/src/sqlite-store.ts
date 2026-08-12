@@ -11,9 +11,13 @@ import {
   decodeJson,
   deterministicOutboxId,
   IdempotencyConflictError,
+  isoString,
   observeStoreClock,
   StorageConflictError,
   validateArtifactBatchInput,
+  validateInferenceCapability,
+  validateInferenceCompletion,
+  validateInferenceReservation,
   validateApprovalRequestBinding,
   validateApprovalResolutionBinding,
   validateApprovalExpiry,
@@ -34,6 +38,10 @@ import {
   type ArtifactBatchResult,
   type ControlPlaneStore,
   type IdempotencyInput,
+  type InferenceCapability,
+  type InferenceRequest,
+  type ReserveInferenceRequestInput,
+  type CompleteInferenceRequestInput,
   type MigrationResult,
   type MutableRunPatch,
   type OutboxEvent,
@@ -147,6 +155,8 @@ export class SqliteStore implements ControlPlaneStore {
     this.transaction(() => this.db.exec(`
       DELETE FROM idempotency_keys;
       DELETE FROM outbox_events;
+      DELETE FROM inference_requests;
+      DELETE FROM inference_capabilities;
       DELETE FROM sandbox_instances;
       DELETE FROM workspace_leases;
       DELETE FROM artifacts;
@@ -1027,6 +1037,178 @@ export class SqliteStore implements ControlPlaneStore {
     });
   }
 
+  async createInferenceCapability(capability: InferenceCapability): Promise<InferenceCapability> {
+    return this.transaction(() => {
+      const observedAt = observeStoreClock(this.clock);
+      validateInferenceCapability(capability, observedAt);
+      const existing = this.db.prepare("SELECT * FROM inference_capabilities WHERE id=? OR token_hash=?")
+        .get(capability.id, capability.tokenHash) as any;
+      if (existing) {
+        const mapped = this.mapInferenceCapability(existing);
+        if (canonicalJson(mapped) !== canonicalJson(capability)) {
+          throw new StorageConflictError("Inference capability identity was already used with different content");
+        }
+        return mapped;
+      }
+      this.db.prepare(`INSERT INTO inference_capabilities
+        (id,run_id,project_id,workflow,token_hash,provider,model,api,roles_json,max_requests,max_input_tokens,
+         max_output_tokens,max_cost_micros,max_elapsed_ms,issued_at,expires_at,state,policy_hash)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+          capability.id, capability.runId, capability.projectId, capability.workflow, capability.tokenHash,
+          capability.provider, capability.model, capability.api, JSON.stringify(capability.roles), capability.maxRequests,
+          capability.maxInputTokens, capability.maxOutputTokens, capability.maxCostMicros, capability.maxElapsedMs,
+          capability.issuedAt, capability.expiresAt, capability.state, capability.policyHash,
+        );
+      this.insertOutbox("inference.capability.created", capability.id, {
+        capabilityId: capability.id, runId: capability.runId, provider: capability.provider,
+        model: capability.model, policyHash: capability.policyHash,
+      }, capability.policyHash);
+      return capability;
+    });
+  }
+
+  async getInferenceCapability(id: string): Promise<InferenceCapability | null> {
+    const row = this.db.prepare("SELECT * FROM inference_capabilities WHERE id=?").get(id) as any;
+    return row ? this.mapInferenceCapability(row) : null;
+  }
+
+  async getInferenceCapabilityByTokenHash(tokenHash: string): Promise<InferenceCapability | null> {
+    const row = this.db.prepare("SELECT * FROM inference_capabilities WHERE token_hash=?").get(tokenHash) as any;
+    return row ? this.mapInferenceCapability(row) : null;
+  }
+
+  async reserveInferenceRequest(input: ReserveInferenceRequestInput): Promise<{ capability: InferenceCapability; request: InferenceRequest; replayed: boolean }> {
+    validateInferenceReservation(input);
+    return this.transaction(() => {
+      const observedAt = input.reservedAt ?? observeStoreClock(this.clock);
+      const row = this.db.prepare("SELECT * FROM inference_capabilities WHERE token_hash=?").get(input.tokenHash) as any;
+      if (!row) throw new StorageConflictError("Inference capability is not recognized");
+      const capability = this.mapInferenceCapability(row);
+      const existing = this.db.prepare("SELECT * FROM inference_requests WHERE id=? OR (capability_id=? AND role=?)")
+        .get(input.id, capability.id, input.role) as any;
+      if (existing) {
+        const request = this.mapInferenceRequest(existing);
+        if (request.id !== input.id || request.capabilityId !== capability.id || request.runId !== input.runId
+            || request.role !== input.role || request.requestHash !== input.requestHash) {
+          throw new StorageConflictError("Inference request identity was already used with different content");
+        }
+        return { capability, request, replayed: true };
+      }
+      if (capability.state !== "active" || capability.expiresAt <= observedAt) {
+        throw new StorageConflictError("Inference capability is not active");
+      }
+      if (capability.runId !== input.runId || !capability.roles.includes(input.role)) {
+        throw new StorageConflictError("Inference request is outside its run or role scope");
+      }
+      const count = Number((this.db.prepare("SELECT count(*) AS count FROM inference_requests WHERE capability_id=?")
+        .get(capability.id) as any).count);
+      if (count >= capability.maxRequests) throw new StorageConflictError("Inference request count budget is exhausted");
+      const request: InferenceRequest = {
+        id: input.id, capabilityId: capability.id, runId: input.runId, role: input.role,
+        requestHash: input.requestHash, state: "reserved", providerRequestId: null, responseHash: null,
+        inputTokens: 0, outputTokens: 0, costMicros: 0, reservedAt: observedAt, completedAt: null, failureCode: null,
+      };
+      this.db.prepare(`INSERT INTO inference_requests
+        (id,capability_id,run_id,role,request_hash,state,provider_request_id,response_hash,input_tokens,output_tokens,
+         cost_micros,reserved_at,completed_at,failure_code) VALUES (?,?,?,?,?,'reserved',NULL,NULL,0,0,0,?,NULL,NULL)`)
+        .run(request.id, request.capabilityId, request.runId, request.role, request.requestHash, request.reservedAt);
+      this.insertOutbox("inference.request.reserved", request.id, {
+        requestId: request.id, capabilityId: capability.id, runId: request.runId, role: request.role,
+      }, request.requestHash);
+      return { capability, request, replayed: false };
+    });
+  }
+
+  async completeInferenceRequest(input: CompleteInferenceRequestInput): Promise<{ capability: InferenceCapability; request: InferenceRequest; replayed: boolean }> {
+    validateInferenceCompletion(input);
+    return this.transaction(() => {
+      const row = this.db.prepare("SELECT * FROM inference_requests WHERE id=?").get(input.id) as any;
+      if (!row) throw new StorageConflictError("Inference request was not reserved");
+      const request = this.mapInferenceRequest(row);
+      const capabilityRow = this.db.prepare("SELECT * FROM inference_capabilities WHERE id=?").get(request.capabilityId) as any;
+      if (!capabilityRow) throw new StorageConflictError("Inference capability is missing");
+      const capability = this.mapInferenceCapability(capabilityRow);
+      const completedAt = input.completedAt ?? observeStoreClock(this.clock);
+      if (request.state !== "reserved") {
+        const matches = request.state === input.state && request.responseHash === (input.responseHash ?? null)
+          && request.providerRequestId === (input.providerRequestId ?? null) && request.inputTokens === input.inputTokens
+          && request.outputTokens === input.outputTokens && request.costMicros === input.costMicros
+          && request.failureCode === (input.failureCode ?? null);
+        if (!matches) throw new StorageConflictError("Inference request was already completed differently");
+        return { capability, request, replayed: true };
+      }
+      const totals = this.db.prepare(`SELECT coalesce(sum(input_tokens),0) AS input_tokens,
+        coalesce(sum(output_tokens),0) AS output_tokens,coalesce(sum(cost_micros),0) AS cost_micros
+        FROM inference_requests WHERE capability_id=? AND state='completed'`).get(capability.id) as any;
+      if (Number(totals.input_tokens) + input.inputTokens > capability.maxInputTokens
+          || Number(totals.output_tokens) + input.outputTokens > capability.maxOutputTokens
+          || Number(totals.cost_micros) + input.costMicros > capability.maxCostMicros) {
+        throw new StorageConflictError("Inference completion exceeds its aggregate token or cost budget");
+      }
+      this.db.prepare(`UPDATE inference_requests SET state=?,provider_request_id=?,response_hash=?,input_tokens=?,
+        output_tokens=?,cost_micros=?,completed_at=?,failure_code=? WHERE id=? AND state='reserved'`).run(
+          input.state, input.providerRequestId ?? null, input.responseHash ?? null, input.inputTokens,
+          input.outputTokens, input.costMicros, completedAt, input.failureCode ?? null, input.id,
+        );
+      const count = Number((this.db.prepare("SELECT count(*) AS count FROM inference_requests WHERE capability_id=?")
+        .get(capability.id) as any).count);
+      const costTotal = Number(totals.cost_micros) + input.costMicros;
+      if (count >= capability.maxRequests || (capability.maxCostMicros > 0 && costTotal >= capability.maxCostMicros)) {
+        this.db.prepare("UPDATE inference_capabilities SET state='exhausted' WHERE id=? AND state='active'").run(capability.id);
+      }
+      this.insertOutbox(`inference.request.${input.state}`, input.id, {
+        requestId: input.id, capabilityId: capability.id, runId: request.runId, role: request.role,
+        inputTokens: input.inputTokens, outputTokens: input.outputTokens, costMicros: input.costMicros,
+      }, input.responseHash ?? input.failureCode!);
+      const finalRequest = this.mapInferenceRequest(this.db.prepare("SELECT * FROM inference_requests WHERE id=?").get(input.id) as any);
+      const finalCapability = this.mapInferenceCapability(this.db.prepare("SELECT * FROM inference_capabilities WHERE id=?").get(capability.id) as any);
+      return { capability: finalCapability, request: finalRequest, replayed: false };
+    });
+  }
+
+  async revokeInferenceCapability(id: string, observedAt?: string): Promise<InferenceCapability | null> {
+    return this.transaction(() => {
+      const row = this.db.prepare("SELECT * FROM inference_capabilities WHERE id=?").get(id) as any;
+      if (!row) return null;
+      const current = this.mapInferenceCapability(row);
+      const now = observedAt ?? observeStoreClock(this.clock);
+      const nextState = current.state === "active" ? (current.expiresAt <= now ? "expired" : "revoked") : current.state;
+      if (nextState !== current.state) {
+        this.db.prepare("UPDATE inference_capabilities SET state=? WHERE id=? AND state='active'").run(nextState, id);
+        this.insertOutbox("inference.capability.closed", id, { capabilityId: id, runId: current.runId, state: nextState }, nextState);
+      }
+      return this.mapInferenceCapability(this.db.prepare("SELECT * FROM inference_capabilities WHERE id=?").get(id) as any);
+    });
+  }
+
+  async expireInferenceCapabilities(observedAt: string, limit = 100): Promise<InferenceCapability[]> {
+    const at = isoString(observedAt);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+      throw new StorageConflictError("Inference capability expiry limit must be between 1 and 1000");
+    }
+    return this.transaction(() => {
+      const rows = this.db.prepare(`SELECT * FROM inference_capabilities
+        WHERE state='active' AND expires_at<=? ORDER BY expires_at,id LIMIT ?`).all(at, limit) as any[];
+      const expired: InferenceCapability[] = [];
+      for (const row of rows) {
+        const capability = this.mapInferenceCapability(row);
+        const updated = this.db.prepare("UPDATE inference_capabilities SET state='expired' WHERE id=? AND state='active' AND expires_at<=?")
+          .run(capability.id, at);
+        if (updated.changes !== 1) continue;
+        this.insertOutbox("inference.capability.closed", capability.id, {
+          capabilityId: capability.id, runId: capability.runId, state: "expired",
+        }, "expired");
+        expired.push({ ...capability, state: "expired" });
+      }
+      return expired;
+    });
+  }
+
+  async listInferenceRequests(runId: string): Promise<InferenceRequest[]> {
+    return (this.db.prepare("SELECT * FROM inference_requests WHERE run_id=? ORDER BY reserved_at,id").all(runId) as any[])
+      .map(this.mapInferenceRequest);
+  }
+
   async createArtifact(artifact: Artifact): Promise<void> {
     this.transaction(() => {
       this.db.prepare("INSERT INTO artifacts (id,run_id,kind,uri,checksum,media_type,created_at) VALUES (?,?,?,?,?,?,?)")
@@ -1240,6 +1422,24 @@ export class SqliteStore implements ControlPlaneStore {
     resolvedBy: row.resolved_by, decision: row.decision, projectId: row.project_id ?? null,
     workflow: row.workflow ?? null, evidenceDigest: row.evidence_digest ?? null,
     policyHash: row.policy_hash ?? null, expiresAt: row.expires_at ?? null,
+  });
+
+  private mapInferenceCapability = (row: any): InferenceCapability => ({
+    id: String(row.id), runId: String(row.run_id), projectId: String(row.project_id), workflow: String(row.workflow),
+    tokenHash: String(row.token_hash), provider: String(row.provider), model: String(row.model), api: "openai-completions",
+    roles: decodeJson(row.roles_json, []) as InferenceCapability["roles"], maxRequests: Number(row.max_requests),
+    maxInputTokens: Number(row.max_input_tokens), maxOutputTokens: Number(row.max_output_tokens),
+    maxCostMicros: Number(row.max_cost_micros), maxElapsedMs: Number(row.max_elapsed_ms), issuedAt: String(row.issued_at),
+    expiresAt: String(row.expires_at), state: String(row.state) as InferenceCapability["state"], policyHash: String(row.policy_hash),
+  });
+
+  private mapInferenceRequest = (row: any): InferenceRequest => ({
+    id: String(row.id), capabilityId: String(row.capability_id), runId: String(row.run_id),
+    role: String(row.role) as InferenceRequest["role"], requestHash: String(row.request_hash),
+    state: String(row.state) as InferenceRequest["state"], providerRequestId: row.provider_request_id ? String(row.provider_request_id) : null,
+    responseHash: row.response_hash ? String(row.response_hash) : null, inputTokens: Number(row.input_tokens),
+    outputTokens: Number(row.output_tokens), costMicros: Number(row.cost_micros), reservedAt: String(row.reserved_at),
+    completedAt: row.completed_at ? String(row.completed_at) : null, failureCode: row.failure_code ? String(row.failure_code) : null,
   });
 
   private mapArtifact = (row: any): Artifact => ({

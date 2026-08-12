@@ -11,7 +11,8 @@
 - Default runtimes: deterministic, explicitly labelled lifecycle simulations
 - Atomic module: integrated source 0.2.0, repository derivative 0.2.1
 - Atomic writer posture: fixed tool-only fixture implemented behind a default-off
-  flag; provider/model execution remains disabled
+  flag; M5b scoped inference/model workflow is contract-tested pre-live and
+  remains disabled/unregistered until provider review
 - Automatic episodic memory capture: disabled
 
 ## Completed milestones
@@ -39,9 +40,13 @@
   deploy, promotion, or cross-process Atomic durability. The opt-in live runner
   completed successfully; exact IDs and evidence are in `docs/VERIFICATION.md`.
 
-The original model-backed Milestone 5 is not complete. It still requires a
-reviewed local-model endpoint or scoped inference proxy plus real model/cost/token
-and independent model-verifier evidence.
+Milestone 5b is complete only through the credential-free pre-live boundary:
+scoped capability/storage, private gateway/bridge topology, fixed model workflow,
+fresh verifier, one-repair contracts, substantive evidence validation, and
+frozen-export rebinding are deterministic-test green. It still requires service/
+Hermes lifecycle composition, authenticated evidence-bound approval/recovery, a
+reviewed provider/model or local endpoint, a dedicated low-limit credential when
+applicable, and one actual end-to-end model exercise.
 
 ## Verification entry point
 
@@ -67,3 +72,5 @@ See `docs/VERIFICATION.md` for the recorded baseline/final evidence and
 10. `docs/adr/ADR-P004-external-writer-boundary.md`
 11. `docs/IMPLEMENTATION_PLAN_M5.md`
 12. `docs/adr/ADR-P005-atomic-writer-pilot.md`
+13. `docs/IMPLEMENTATION_PLAN_M5B_PRELIVE.md`
+14. `docs/adr/ADR-P006-scoped-inference-boundary.md`

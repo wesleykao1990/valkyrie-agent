@@ -15,6 +15,12 @@ apps/control-plane/public/app.js
 apps/control-plane/public/index.html
 apps/control-plane/public/styles.css
 apps/control-plane/src/atomic-fixture-pilot.ts
+apps/control-plane/src/atomic-model-pilot-configured.ts
+apps/control-plane/src/atomic-model-pilot-contract.ts
+apps/control-plane/src/atomic-model-pilot-coordinator.ts
+apps/control-plane/src/atomic-model-pilot-evidence.ts
+apps/control-plane/src/atomic-model-pilot-prelive.ts
+apps/control-plane/src/atomic-model-workflow-executor.ts
 apps/control-plane/src/atomic-rpc-client.ts
 apps/control-plane/src/atomic-runtime-adapter.ts
 apps/control-plane/src/atomic-workflow-protocol.ts
@@ -33,6 +39,8 @@ apps/control-plane/src/postgres-store.ts
 apps/control-plane/src/project-brain.ts
 apps/control-plane/src/runtime-registry.ts
 apps/control-plane/src/runtime.ts
+apps/control-plane/src/scoped-inference-bridge.ts
+apps/control-plane/src/scoped-inference-gateway.ts
 apps/control-plane/src/server.ts
 apps/control-plane/src/service.ts
 apps/control-plane/src/shutdown.ts
@@ -72,6 +80,7 @@ docs/IMPLEMENTATION_PLAN_M1_M2.md
 docs/IMPLEMENTATION_PLAN_M3_MINIMUM.md
 docs/IMPLEMENTATION_PLAN_M4.md
 docs/IMPLEMENTATION_PLAN_M5.md
+docs/IMPLEMENTATION_PLAN_M5B_PRELIVE.md
 docs/NEXT_SESSION_PROMPT.md
 docs/PROMPT_FOR_CODEX_OR_CLAUDE.md
 docs/PROTOTYPE_SCOPE.md
@@ -84,6 +93,7 @@ docs/adr/ADR-P002-atomic-package-boundary.md
 docs/adr/ADR-P003-read-only-native-runtime-pilot.md
 docs/adr/ADR-P004-external-writer-boundary.md
 docs/adr/ADR-P005-atomic-writer-pilot.md
+docs/adr/ADR-P006-scoped-inference-boundary.md
 fixtures/atomic-pilot-template/.atomic/settings.json
 fixtures/atomic-pilot-template/README.md
 fixtures/atomic-pilot-template/package.json
@@ -96,12 +106,14 @@ infra/postgres/003_run_workspace_ownership.sql
 infra/postgres/004_fenced_writer_leases.sql
 infra/postgres/005_sandbox_instances.sql
 infra/postgres/006_pilot_approval_bindings.sql
+infra/postgres/007_scoped_inference_capabilities.sql
 infra/sqlite/001_initial.sql
 infra/sqlite/002_storage_guarantees.sql
 infra/sqlite/003_legacy_ownership_guards.sql
 infra/sqlite/004_fenced_writer_leases.sql
 infra/sqlite/005_sandbox_instances.sql
 infra/sqlite/006_pilot_approval_bindings.sql
+infra/sqlite/007_scoped_inference_capabilities.sql
 package-lock.json
 package.json
 packages/atomic-workflow-architect/AGENTS.md
@@ -118,6 +130,8 @@ packages/atomic-workflow-architect/integration/CODEX_CLAUDE_HANDOFF.md
 packages/atomic-workflow-architect/integration/CONTROL_PLANE_INTEGRATION.md
 packages/atomic-workflow-architect/integration/HERMES_USAGE.md
 packages/atomic-workflow-architect/integration/INSTALLATION_AND_OPERATIONS.md
+packages/atomic-workflow-architect/lib/atomic-fixture-model-pilot-core.d.mts
+packages/atomic-workflow-architect/lib/atomic-fixture-model-pilot-core.mjs
 packages/atomic-workflow-architect/lib/atomic-fixture-pilot-core.d.mts
 packages/atomic-workflow-architect/lib/atomic-fixture-pilot-core.mjs
 packages/atomic-workflow-architect/lib/router-core.d.mts
@@ -141,6 +155,8 @@ packages/atomic-workflow-architect/skills/atomic-workflow-architect/SKILL.md
 packages/atomic-workflow-architect/skills/atomic-workflow-architect/assets/launch-manifest-template.json
 packages/atomic-workflow-architect/skills/atomic-workflow-architect/assets/launch-manifest.schema.json
 packages/atomic-workflow-architect/skills/atomic-workflow-architect/assets/memory-proposal-template.md
+packages/atomic-workflow-architect/skills/atomic-workflow-architect/assets/model-launch-manifest-template.json
+packages/atomic-workflow-architect/skills/atomic-workflow-architect/assets/model-launch-manifest.schema.json
 packages/atomic-workflow-architect/skills/atomic-workflow-architect/assets/prelaunch-decision-template.md
 packages/atomic-workflow-architect/skills/atomic-workflow-architect/assets/run-contract-template.md
 packages/atomic-workflow-architect/skills/atomic-workflow-architect/assets/workflow-promotion-review-template.md
@@ -171,6 +187,7 @@ packages/atomic-workflow-architect/test-stubs/bastani-workflows.d.ts
 packages/atomic-workflow-architect/test-stubs/node-builtins.d.ts
 packages/atomic-workflow-architect/test-stubs/typebox.d.ts
 packages/atomic-workflow-architect/tsconfig.json
+packages/atomic-workflow-architect/workflows/atomic-fixture-model-pilot.ts
 packages/atomic-workflow-architect/workflows/atomic-fixture-pilot.ts
 packages/atomic-workflow-architect/workflows/idea-to-decision.ts
 packages/atomic-workflow-architect/workflows/project-blueprint.ts
@@ -197,8 +214,14 @@ scripts/setup-local-pilot.ts
 scripts/smoke-environment.ts
 scripts/test-postgres-storage.ts
 scripts/test-unit.ts
+tests/atomic-fixture-model-workflow.test.ts
 tests/atomic-fixture-pilot-integration.test.ts
 tests/atomic-fixture-workflow.test.ts
+tests/atomic-model-pilot-configured.test.ts
+tests/atomic-model-pilot-contract.test.ts
+tests/atomic-model-pilot-coordinator.test.ts
+tests/atomic-model-pilot-prelive.test.ts
+tests/atomic-model-workflow-executor.test.ts
 tests/atomic-rpc-client.test.ts
 tests/atomic-runtime-adapter.test.ts
 tests/atomic-workflow-protocol.test.ts
@@ -213,6 +236,8 @@ tests/oci-sandbox-provider.test.ts
 tests/policy.test.ts
 tests/project-brain.test.ts
 tests/reset-demo.test.ts
+tests/scoped-inference-bridge.test.ts
+tests/scoped-inference-gateway.test.ts
 tests/server-auth.test.ts
 tests/setup-atomic-fixture.test.ts
 tests/shutdown.test.ts

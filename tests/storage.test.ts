@@ -552,6 +552,77 @@ async function exercisePilotApprovalBindingContract(
   clock.set(startingTime);
 }
 
+async function exerciseScopedInferenceContract(store: ControlPlaneStore, prefix: string, clock: MutableStoreClock): Promise<void> {
+  const startingTime = clock.current();
+  const ownedRun = { ...run(`${prefix}_inference`, "running"), workflow: "atomic-fixture-model-pilot" };
+  await store.createRun(ownedRun);
+  const issuedAt = new Date(clock.current()).toISOString();
+  const capability = {
+    id: `${prefix}_capability`, runId: ownedRun.id, projectId: ownedRun.projectId,
+    workflow: ownedRun.workflow!, tokenHash: "1".repeat(64), provider: "fake-provider", model: "fake-model",
+    api: "openai-completions" as const, roles: ["implementer", "verifier_initial"] as const,
+    maxRequests: 2, maxInputTokens: 100, maxOutputTokens: 50, maxCostMicros: 1_000,
+    maxElapsedMs: 5_000, issuedAt, expiresAt: new Date(clock.current() + 60_000).toISOString(),
+    state: "active" as const, policyHash: "2".repeat(64),
+  };
+  assert.deepEqual(await store.createInferenceCapability({ ...capability, roles: [...capability.roles] }), { ...capability, roles: [...capability.roles] });
+  assert.deepEqual(await store.createInferenceCapability({ ...capability, roles: [...capability.roles] }), { ...capability, roles: [...capability.roles] });
+  await assert.rejects(store.createInferenceCapability({ ...capability, roles: [...capability.roles], model: "other-model" }), /different content/i);
+
+  const firstInput = {
+    id: `${prefix}_inference_request_1`, tokenHash: capability.tokenHash, runId: ownedRun.id,
+    role: "implementer" as const, requestHash: "3".repeat(64), reservedAt: issuedAt,
+  };
+  const first = await store.reserveInferenceRequest(firstInput);
+  assert.equal(first.replayed, false);
+  assert.equal((await store.reserveInferenceRequest(firstInput)).replayed, true);
+  await assert.rejects(store.reserveInferenceRequest({
+    ...firstInput, id: `${prefix}_wrong_role`, role: "repair", requestHash: "9".repeat(64),
+  }), /role scope/i);
+  const completed = await store.completeInferenceRequest({
+    id: first.request.id, state: "completed", responseHash: "4".repeat(64), providerRequestId: `${prefix}_provider_1`,
+    inputTokens: 40, outputTokens: 20, costMicros: 400, completedAt: new Date(clock.current() + 1_000).toISOString(),
+  });
+  assert.equal(completed.replayed, false);
+  assert.equal((await store.completeInferenceRequest({
+    id: first.request.id, state: "completed", responseHash: "4".repeat(64), providerRequestId: `${prefix}_provider_1`,
+    inputTokens: 40, outputTokens: 20, costMicros: 400, completedAt: new Date(clock.current() + 2_000).toISOString(),
+  })).replayed, true);
+  const second = await store.reserveInferenceRequest({
+    id: `${prefix}_inference_request_2`, tokenHash: capability.tokenHash, runId: ownedRun.id,
+    role: "verifier_initial", requestHash: "5".repeat(64), reservedAt: issuedAt,
+  });
+  await assert.rejects(store.completeInferenceRequest({
+    id: second.request.id, state: "completed", responseHash: "6".repeat(64), inputTokens: 61,
+    outputTokens: 1, costMicros: 1, completedAt: new Date(clock.current() + 2_000).toISOString(),
+  }), /aggregate token or cost budget/i);
+  await store.completeInferenceRequest({
+    id: second.request.id, state: "failed", failureCode: "upstream_timeout", inputTokens: 0,
+    outputTokens: 0, costMicros: 0, completedAt: new Date(clock.current() + 2_000).toISOString(),
+  });
+  assert.equal((await store.getInferenceCapability(capability.id))?.state, "exhausted");
+  assert.equal((await store.listInferenceRequests(ownedRun.id)).length, 2);
+  assert.equal((await store.revokeInferenceCapability(capability.id))?.state, "exhausted");
+
+  const expiring = {
+    ...capability,
+    id: `${prefix}_capability_expiring`,
+    tokenHash: "7".repeat(64),
+    roles: ["verifier_final" as const],
+    maxRequests: 1,
+    expiresAt: new Date(clock.current() + 30_000).toISOString(),
+  };
+  await store.createInferenceCapability(expiring);
+  assert.deepEqual(await store.expireInferenceCapabilities(new Date(clock.current() + 29_999).toISOString(), 1), []);
+  clock.set(clock.current() + 30_000);
+  const expired = await store.expireInferenceCapabilities(new Date(clock.current()).toISOString(), 1);
+  assert.deepEqual(expired.map((item) => [item.id, item.state]), [[expiring.id, "expired"]]);
+  assert.deepEqual(await store.expireInferenceCapabilities(new Date(clock.current()).toISOString(), 1), [], "expiry maintenance replays without duplicate closure");
+  assert.ok((await store.listPendingOutbox()).some((event) =>
+    event.topic === "inference.capability.closed" && event.aggregateId === expiring.id));
+  clock.set(startingTime);
+}
+
 async function exercisePostgresApprovalLockExpiry(
   store: ControlPlaneStore,
   databaseUrl: string,
@@ -1011,9 +1082,9 @@ test("SQLite migrations are explicit, repeatable, and current", async () => {
   const store = new SqliteStore(":memory:");
   try {
     const first = await store.migrate();
-    assert.deepEqual(first.map((item) => [item.version, item.status]), [[1, "applied"], [2, "applied"], [3, "applied"], [4, "applied"], [5, "applied"], [6, "applied"]]);
+    assert.deepEqual(first.map((item) => [item.version, item.status]), loadMigrationFiles("sqlite").map((item) => [item.version, "applied"]));
     const second = await store.migrate();
-    assert.deepEqual(second.map((item) => item.status), ["already_applied", "already_applied", "already_applied", "already_applied", "already_applied", "already_applied"]);
+    assert.deepEqual(second.map((item) => item.status), loadMigrationFiles("sqlite").map(() => "already_applied"));
     assert.deepEqual(await store.healthCheck(), { ok: true, backend: "sqlite", migrationsCurrent: true });
   } finally {
     await store.close();
@@ -1052,7 +1123,7 @@ test("SQLite adopts a legacy unversioned database and rejects migration checksum
 
     const adopted = new SqliteStore(path);
     const applied = await adopted.migrate();
-    assert.deepEqual(applied.map((item) => item.status), ["applied", "applied", "applied", "applied", "applied", "applied"]);
+    assert.deepEqual(applied.map((item) => item.status), loadMigrationFiles("sqlite").map(() => "applied"));
     assert.equal((await adopted.healthCheck()).migrationsCurrent, true);
     await adopted.close();
 
@@ -1479,6 +1550,7 @@ test("pilot approvals bind project, workflow, evidence, policy, and authoritativ
   try {
     await seed(store);
     await exercisePilotApprovalBindingContract(store, "sqlite", clock);
+    await exerciseScopedInferenceContract(store, "sqlite", clock);
   } finally {
     await store.close();
   }
@@ -1581,9 +1653,10 @@ test("PostgreSQL storage contract smoke", { skip: !postgresUrl }, async () => {
   });
   try {
     const migrationOutput = await store.migrate();
-    assert.deepEqual(migrationOutput.map((item) => item.version), [1, 2, 3, 4, 5, 6]);
+    const postgresMigrations = loadMigrationFiles("postgres");
+    assert.deepEqual(migrationOutput.map((item) => item.version), postgresMigrations.map((item) => item.version));
     const repeatedMigrations = await store.migrate();
-    assert.deepEqual(repeatedMigrations.map((item) => item.status), ["already_applied", "already_applied", "already_applied", "already_applied", "already_applied", "already_applied"]);
+    assert.deepEqual(repeatedMigrations.map((item) => item.status), postgresMigrations.map(() => "already_applied"));
     assert.deepEqual(await store.healthCheck(), { ok: true, backend: "postgres", migrationsCurrent: true });
     assert.deepEqual(await store.getWorkspaceLease("pg_legacy_fenced_ws"), {
       workspaceId: "pg_legacy_fenced_ws",
@@ -1617,6 +1690,7 @@ test("PostgreSQL storage contract smoke", { skip: !postgresUrl }, async () => {
     await exerciseQueuedStartClaimContract(store, "postgres", clock);
     await exerciseRunAdmissionContract(store, "postgres");
     await exercisePilotApprovalBindingContract(store, "postgres", clock);
+    await exerciseScopedInferenceContract(store, "postgres", clock);
     await exercisePostgresApprovalLockExpiry(store, postgresUrl!, clock);
     const runsBeforeCandidates = (await store.listRuns()).length;
     const candidates = Array.from({ length: 8 }, (_, index) => {

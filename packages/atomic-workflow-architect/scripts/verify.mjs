@@ -15,8 +15,11 @@ const required = [
   "extensions/auto-route.ts",
   "lib/atomic-fixture-pilot-core.d.mts",
   "lib/atomic-fixture-pilot-core.mjs",
+  "lib/atomic-fixture-model-pilot-core.d.mts",
+  "lib/atomic-fixture-model-pilot-core.mjs",
   "skills/atomic-workflow-architect/SKILL.md",
   "workflows/atomic-fixture-pilot.ts",
+  "workflows/atomic-fixture-model-pilot.ts",
   "workflows/idea-to-decision.ts",
   "workflows/project-blueprint.ts",
   "workflows/request-preflight.ts",
@@ -36,6 +39,8 @@ const required = [
   "skills/atomic-workflow-architect/references/17-session-context-and-project-memory.md",
   "skills/atomic-workflow-architect/assets/launch-manifest.schema.json",
   "skills/atomic-workflow-architect/assets/launch-manifest-template.json",
+  "skills/atomic-workflow-architect/assets/model-launch-manifest.schema.json",
+  "skills/atomic-workflow-architect/assets/model-launch-manifest-template.json",
 ];
 
 for (const path of required) await access(join(root, path));
@@ -106,7 +111,7 @@ if (!extension.includes('event.source === "extension"') && !extension.includes('
 if (!extension.includes("event.streamingBehavior")) throw new Error("extension must skip steering/follow-up input");
 if (!extension.includes('action === "test"')) throw new Error("extension must expose routing test command");
 
-const workflowFiles = ["atomic-fixture-pilot.ts", "idea-to-decision.ts", "project-blueprint.ts", "request-preflight.ts"];
+const workflowFiles = ["atomic-fixture-model-pilot.ts", "atomic-fixture-pilot.ts", "idea-to-decision.ts", "project-blueprint.ts", "request-preflight.ts"];
 for (const name of workflowFiles) {
   const source = await readFile(join(root, "workflows", name), "utf8");
   for (const expected of ['from "@bastani/workflows"', 'from "typebox"', "workflow({", "outputs:"]) {
@@ -136,6 +141,44 @@ for (const requiredFixtureText of [
   }
 }
 const fixtureCore = await readFile(join(root, "lib/atomic-fixture-pilot-core.mjs"), "utf8");
+
+const modelLaunchSchema = JSON.parse(await readFile(join(root, "skills/atomic-workflow-architect/assets/model-launch-manifest.schema.json"), "utf8"));
+const modelLaunchTemplate = JSON.parse(await readFile(join(root, "skills/atomic-workflow-architect/assets/model-launch-manifest-template.json"), "utf8"));
+if (modelLaunchSchema.$id !== "urn:wesley:atomic:model-launch-manifest:1.0.0-prelive") {
+  throw new Error("unexpected model launch-manifest schema ID");
+}
+for (const field of ["inference", "inference_policy_sha256", "package_sha256", "workspace", "sandbox", "approval"]) {
+  if (!modelLaunchSchema.required.includes(field) || !Object.hasOwn(modelLaunchTemplate, field)) {
+    throw new Error(`model launch manifest must require and template ${field}`);
+  }
+}
+if (modelLaunchTemplate.inference.credential_in_writer !== false
+    || modelLaunchTemplate.inference.live_provider_verified !== false
+    || modelLaunchTemplate.sandbox.network_policy !== "run_internal_gateway_only"
+    || modelLaunchTemplate.bounds.max_repairs !== 1
+    || modelLaunchTemplate.bounds.max_concurrency !== 1) {
+  throw new Error("model launch manifest template weakens the pre-live inference boundary");
+}
+
+const modelFixtureWorkflow = await readFile(join(root, "workflows/atomic-fixture-model-pilot.ts"), "utf8");
+for (const requiredModelText of [
+  'context: "fresh"',
+  'context: "fork"',
+  "forkFromSessionFile: implementer.sessionFile",
+  'model: ATOMIC_FIXTURE_MODEL_ALIASES.implementer',
+  'model: ATOMIC_FIXTURE_MODEL_ALIASES.verifier_initial',
+  'model: ATOMIC_FIXTURE_MODEL_ALIASES.repair',
+  'model: ATOMIC_FIXTURE_MODEL_ALIASES.verifier_final',
+  "max_repair_rounds: 1",
+]) {
+  const source = requiredModelText === "max_repair_rounds: 1"
+    ? await readFile(join(root, "lib/atomic-fixture-model-pilot-core.mjs"), "utf8")
+    : modelFixtureWorkflow;
+  if (!source.includes(requiredModelText)) throw new Error(`atomic-fixture-model-pilot missing bounded model doctrine: ${requiredModelText}`);
+}
+for (const forbidden of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "sk-", "~/.atomic", "~/.codex", "~/.claude"]) {
+  if (modelFixtureWorkflow.includes(forbidden)) throw new Error(`atomic-fixture-model-pilot must not receive provider credentials or host homes: ${forbidden}`);
+}
 for (const requiredFixtureCoreText of [
   '"/usr/local/bin/node", "--test"',
   '"/usr/bin/git", "diff", "--check"',

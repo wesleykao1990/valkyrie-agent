@@ -202,7 +202,7 @@ function writeExclusive(path: string, body: string | Buffer): void {
   }
 }
 
-function copyReviewedPackage(sourceInput: string, destinationInput: string): { files: number; bytes: number; digest: string } {
+export function copyReviewedAtomicPackage(sourceInput: string, destinationInput: string): { files: number; bytes: number; digest: string } {
   const sourceStat = lstatSync(sourceInput);
   if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) throw new Error("Atomic package source must be a regular directory");
   const source = realpathSync(sourceInput);
@@ -238,7 +238,7 @@ function copyReviewedPackage(sourceInput: string, destinationInput: string): { f
   return { files, bytes, digest: digest.digest("hex") };
 }
 
-function readContainedWorkspaceFile(handle: OciSandboxHandle, relativePath: string): Buffer {
+export function readContainedWorkspaceFile(handle: OciSandboxHandle, relativePath: string): Buffer {
   const worktree = realpathSync(join(handle.workspacePath, handle.workingDirectoryRelativePath));
   const candidate = resolve(worktree, ...relativePath.split("/"));
   if (candidate === worktree || !candidate.startsWith(`${worktree}${sep}`)) throw new Error("Atomic evidence path escaped the worktree");
@@ -1026,7 +1026,7 @@ export class AtomicFixturePilotCoordinator {
     if (binding.baseCommit !== this.repositoryCommit) {
       throw new Error("Atomic fixture writer did not use the exact reviewed repository commit");
     }
-    const packageCopy = copyReviewedPackage(this.packageDir, join(staged.path, "atomic-package"));
+    const packageCopy = copyReviewedAtomicPackage(this.packageDir, join(staged.path, "atomic-package"));
     const pack = this.brain.buildContextPack(project, ATOMIC_FIXTURE_REQUEST, { runId: run.id, taskId: task.id });
     const packBody = canonicalJson(pack);
     const packChecksum = contextPackChecksum(pack);

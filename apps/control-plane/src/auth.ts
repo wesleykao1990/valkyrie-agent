@@ -25,17 +25,17 @@ function validateToken(raw: string, source: string): string {
   return token;
 }
 
-function readTokenFile(path: string): string {
+export function readPrivateSecretFile(path: string, label = "SECRET_FILE", minimumCharacters = 16): string {
   const absolutePath = resolve(path);
   const linkStatus = lstatSync(absolutePath);
   if (linkStatus.isSymbolicLink() || !linkStatus.isFile()) {
-    throw new Error("CONTROL_PLANE_AUTH_TOKEN_FILE must name a regular, non-symlink file");
+    throw new Error(`${label} must name a regular, non-symlink file`);
   }
   if (process.platform !== "win32" && (linkStatus.mode & 0o777) !== 0o600) {
-    throw new Error("CONTROL_PLANE_AUTH_TOKEN_FILE must use mode 0600");
+    throw new Error(`${label} must use mode 0600`);
   }
   if (linkStatus.size > MAXIMUM_TOKEN_BYTES) {
-    throw new Error(`CONTROL_PLANE_AUTH_TOKEN_FILE exceeds the ${MAXIMUM_TOKEN_BYTES}-byte limit`);
+    throw new Error(`${label} exceeds the ${MAXIMUM_TOKEN_BYTES}-byte limit`);
   }
 
   let descriptor: number | undefined;
@@ -43,15 +43,19 @@ function readTokenFile(path: string): string {
     descriptor = openSync(absolutePath, constants.O_RDONLY | constants.O_NOFOLLOW);
     const openedStatus = fstatSync(descriptor);
     if (!openedStatus.isFile()) {
-      throw new Error("CONTROL_PLANE_AUTH_TOKEN_FILE must name a regular file");
+      throw new Error(`${label} must name a regular file`);
     }
     if (process.platform !== "win32" && (openedStatus.mode & 0o777) !== 0o600) {
-      throw new Error("CONTROL_PLANE_AUTH_TOKEN_FILE must use mode 0600");
+      throw new Error(`${label} must use mode 0600`);
     }
     if (openedStatus.size > MAXIMUM_TOKEN_BYTES) {
-      throw new Error(`CONTROL_PLANE_AUTH_TOKEN_FILE exceeds the ${MAXIMUM_TOKEN_BYTES}-byte limit`);
+      throw new Error(`${label} exceeds the ${MAXIMUM_TOKEN_BYTES}-byte limit`);
     }
-    return readFileSync(descriptor, "utf8");
+    const value = readFileSync(descriptor, "utf8").trim();
+    if (value.length < minimumCharacters || /\s|[\u0000-\u001f\u007f]/u.test(value)) {
+      throw new Error(`${label} must contain one non-whitespace secret of at least ${minimumCharacters} characters`);
+    }
+    return value;
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
   }
@@ -69,7 +73,7 @@ export function loadControlPlaneAuth(
     return { token: validateToken(inlineToken, "CONTROL_PLANE_AUTH_TOKEN"), source: "environment" };
   }
   if (tokenFile) {
-    return { token: validateToken(readTokenFile(tokenFile), "CONTROL_PLANE_AUTH_TOKEN_FILE"), source: "file" };
+    return { token: validateToken(readPrivateSecretFile(tokenFile, "CONTROL_PLANE_AUTH_TOKEN_FILE", MINIMUM_TOKEN_CHARACTERS), "CONTROL_PLANE_AUTH_TOKEN_FILE"), source: "file" };
   }
   return undefined;
 }

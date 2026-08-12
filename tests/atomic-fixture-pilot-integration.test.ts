@@ -1262,7 +1262,7 @@ test("human cancellation aborts an active native workflow and performs no govern
     const cancelled = await item.service.cancelRun(runId);
     assert.equal(cancelled.run.status, "cancelled");
     assert.equal(cancelled.run.stage, "cancelled");
-    assert.equal(cancelled.run.metadata.cancelledBy, "human");
+    assert.equal(cancelled.run.metadata.cancelledBy, "authenticated-control-plane-client");
     assert.equal(cancelled.run.metadata.externalActionPerformed, false);
     assert.equal((await item.store.listArtifacts(runId)).length, 0);
     assert.equal((await item.store.listApprovals()).length, 0);

@@ -31,6 +31,7 @@ export interface AppConfig {
   claudeExpectedVersion: string;
   claudeRuntimeEnvAllowlist: string[];
   atomicFixturePilot: AtomicFixturePilotConfig;
+  atomicFixtureModelPilot: AtomicFixtureModelPilotConfig;
 }
 
 export interface AtomicFixturePilotConfig {
@@ -42,6 +43,24 @@ export interface AtomicFixturePilotConfig {
   root: string;
   user?: string;
   maxCostUsd: number;
+}
+
+export interface AtomicFixtureModelPilotConfig {
+  enabled: boolean;
+  provider?: string;
+  model?: string;
+  upstreamBaseUrl?: string;
+  credentialFile?: string;
+  credentialHeader: "bearer" | "x-api-key";
+  allowCredentialFreeLoopback: boolean;
+  gatewayPort: number;
+  acceptedPackageSha256?: string;
+  acceptedImageDigest?: string;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  maxCostUsd: number;
+  inputCostMicrosPerMillion: number;
+  outputCostMicrosPerMillion: number;
 }
 
 export type RuntimeAdapterMode = "mock" | "native";
@@ -84,6 +103,45 @@ function optionalAbsolutePath(name: string): string | undefined {
   return resolve(value);
 }
 
+function safeModelId(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  if (!value) return undefined;
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value)) throw new Error(`${name} must be a safe provider/model ID`);
+  return value;
+}
+
+function optionalSha256(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  if (!value) return undefined;
+  if (!/^[a-f0-9]{64}$/.test(value)) throw new Error(`${name} must be a lowercase SHA-256 digest`);
+  return value;
+}
+
+function credentialHeader(name: string): "bearer" | "x-api-key" {
+  const value = (process.env[name] ?? "bearer").trim().toLowerCase();
+  if (value !== "bearer" && value !== "x-api-key") throw new Error(`${name} must be bearer or x-api-key`);
+  return value;
+}
+
+function nonnegativeNumber(name: string, fallback: number, maximum: number): number {
+  const value = Number(process.env[name] ?? String(fallback));
+  if (!Number.isFinite(value) || value < 0 || value > maximum) throw new Error(`${name} must be nonnegative and at most ${maximum}`);
+  return value;
+}
+
+function modelUpstreamBaseUrl(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  if (!value) return undefined;
+  let parsed: URL;
+  try { parsed = new URL(value); } catch { throw new Error(`${name} must be a valid provider base URL`); }
+  const loopback = isLoopbackHost(parsed.hostname);
+  if ((parsed.protocol !== "https:" && !(parsed.protocol === "http:" && loopback))
+      || parsed.username || parsed.password || parsed.pathname !== "/v1" || parsed.search || parsed.hash) {
+    throw new Error(`${name} must be an HTTPS /v1 provider URL or an HTTP loopback /v1 URL without credentials, query, or fragment`);
+  }
+  return parsed.href.replace(/\/$/, "");
+}
+
 export function loadConfig(): AppConfig {
   const backend = (process.env.CONTROL_PLANE_STORE ?? "sqlite").trim().toLowerCase();
   if (backend !== "sqlite" && backend !== "postgres") {
@@ -102,8 +160,9 @@ export function loadConfig(): AppConfig {
     claude: adapterMode("CLAUDE_ADAPTER"),
   };
   const atomicFixturePilotEnabled = booleanFlag("ATOMIC_FIXTURE_PILOT_ENABLED", false);
+  const atomicFixtureModelPilotEnabled = booleanFlag("ATOMIC_FIXTURE_MODEL_PILOT_ENABLED", false);
   const auth = loadControlPlaneAuth();
-  if (!auth && (Object.values(runtimeAdapters).includes("native") || atomicFixturePilotEnabled)) {
+  if (!auth && (Object.values(runtimeAdapters).includes("native") || atomicFixturePilotEnabled || atomicFixtureModelPilotEnabled)) {
     throw new Error("Control-plane bearer authentication is required when a native runtime or the Atomic fixture pilot is enabled");
   }
   if (!auth && !isLoopbackHost(host)) {
@@ -132,6 +191,49 @@ export function loadConfig(): AppConfig {
     }
   }
 
+  const atomicFixtureModelPilot: AtomicFixtureModelPilotConfig = {
+    enabled: atomicFixtureModelPilotEnabled,
+    provider: safeModelId("ATOMIC_FIXTURE_MODEL_PROVIDER"),
+    model: safeModelId("ATOMIC_FIXTURE_MODEL_ID"),
+    upstreamBaseUrl: modelUpstreamBaseUrl("ATOMIC_FIXTURE_MODEL_UPSTREAM_BASE_URL"),
+    credentialFile: optionalAbsolutePath("ATOMIC_FIXTURE_MODEL_CREDENTIAL_FILE"),
+    credentialHeader: credentialHeader("ATOMIC_FIXTURE_MODEL_CREDENTIAL_HEADER"),
+    allowCredentialFreeLoopback: booleanFlag("ATOMIC_FIXTURE_MODEL_ALLOW_CREDENTIAL_FREE_LOOPBACK", false),
+    gatewayPort: positiveNumber("ATOMIC_FIXTURE_MODEL_GATEWAY_PORT", 8790, 65_535),
+    acceptedPackageSha256: optionalSha256("ATOMIC_FIXTURE_MODEL_ACCEPTED_PACKAGE_SHA256"),
+    acceptedImageDigest: process.env.ATOMIC_FIXTURE_MODEL_ACCEPTED_IMAGE_DIGEST?.trim() || undefined,
+    maxInputTokens: positiveNumber("ATOMIC_FIXTURE_MODEL_MAX_INPUT_TOKENS", 32_000, 128_000),
+    maxOutputTokens: positiveNumber("ATOMIC_FIXTURE_MODEL_MAX_OUTPUT_TOKENS", 8_000, 32_768),
+    maxCostUsd: positiveNumber("ATOMIC_FIXTURE_MODEL_MAX_COST_USD", 1, 5),
+    inputCostMicrosPerMillion: nonnegativeNumber("ATOMIC_FIXTURE_MODEL_INPUT_COST_MICROS_PER_MILLION", 0, 100_000_000),
+    outputCostMicrosPerMillion: nonnegativeNumber("ATOMIC_FIXTURE_MODEL_OUTPUT_COST_MICROS_PER_MILLION", 0, 100_000_000),
+  };
+  if (atomicFixtureModelPilot.enabled) {
+    if (!atomicFixturePilot.enabled) throw new Error("ATOMIC_FIXTURE_MODEL_PILOT_ENABLED requires the isolated Atomic fixture pilot boundary");
+    if (!atomicFixtureModelPilot.provider || !atomicFixtureModelPilot.model || !atomicFixtureModelPilot.upstreamBaseUrl) {
+      throw new Error("The Atomic model pilot requires an explicit provider, model, and upstream base URL");
+    }
+    const upstream = new URL(atomicFixtureModelPilot.upstreamBaseUrl);
+    const credentialFreeLoopback = isLoopbackHost(upstream.hostname) && atomicFixtureModelPilot.allowCredentialFreeLoopback;
+    if (!atomicFixtureModelPilot.credentialFile
+        && !credentialFreeLoopback) {
+      throw new Error("The Atomic model pilot requires a private credential file unless an explicit credential-free loopback provider is selected");
+    }
+    if (!credentialFreeLoopback
+        && (process.env.ATOMIC_FIXTURE_MODEL_INPUT_COST_MICROS_PER_MILLION === undefined
+          || process.env.ATOMIC_FIXTURE_MODEL_OUTPUT_COST_MICROS_PER_MILLION === undefined)) {
+      throw new Error("External Atomic model pilots require explicit input/output provider prices for budget accounting");
+    }
+    if (!atomicFixtureModelPilot.acceptedPackageSha256 || !atomicFixtureModelPilot.acceptedImageDigest
+        || !/^sha256:[a-f0-9]{64}$/.test(atomicFixtureModelPilot.acceptedImageDigest)) {
+      throw new Error("The Atomic model pilot requires accepted package and immutable image digests");
+    }
+    if (atomicFixturePilot.image !== atomicFixtureModelPilot.acceptedImageDigest
+        && !atomicFixturePilot.image?.endsWith(`@${atomicFixtureModelPilot.acceptedImageDigest}`)) {
+      throw new Error("The Atomic model pilot accepted image digest must match the configured runner image");
+    }
+  }
+
   return {
     host,
     port: Number(process.env.PORT ?? "8787"),
@@ -157,6 +259,7 @@ export function loadConfig(): AppConfig {
     claudeExpectedVersion: process.env.CLAUDE_EXPECTED_VERSION?.trim() || "2.1.81",
     claudeRuntimeEnvAllowlist: envAllowlist("CLAUDE_RUNTIME_ENV_ALLOWLIST"),
     atomicFixturePilot,
+    atomicFixtureModelPilot,
   };
 }
 

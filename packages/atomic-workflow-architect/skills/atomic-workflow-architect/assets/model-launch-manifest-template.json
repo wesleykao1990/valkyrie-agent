@@ -1,0 +1,59 @@
+{
+  "schema_version": "1.0.0-model-prelive",
+  "run_id": "run_replace_me",
+  "project_id": "atomic-pilot",
+  "task_id": "task_atomic_fixture_m5b",
+  "request": "Replace with the literal reviewed fixture request.",
+  "root_runtime": "atomic",
+  "workflow": {
+    "name": "atomic-fixture-model-pilot",
+    "version": "0.1.0-prelive",
+    "workflow_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "core_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "package_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "context_pack_ref": "context://replace-me",
+  "contract_ref": "artifact://replace-me/run-contract",
+  "workspace": {
+    "workspace_id": "workspace_replace_me",
+    "owner_id": "atomic_fixture_model_writer",
+    "fencing_token": 1,
+    "lease_expires_at": "2099-01-01T00:00:00.000Z"
+  },
+  "sandbox": {
+    "image_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "policy_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "network_policy": "run_internal_gateway_only"
+  },
+  "inference": {
+    "capability_id": "icap_replace_me",
+    "capability_token_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "provider": "replace-provider",
+    "model": "replace-model",
+    "api": "openai-completions",
+    "role_models": {
+      "implementer": "fixture-implementer",
+      "verifier_initial": "fixture-verifier-initial",
+      "repair": "fixture-repair",
+      "verifier_final": "fixture-verifier-final"
+    },
+    "max_requests": 4,
+    "max_input_tokens": 32000,
+    "max_output_tokens": 8000,
+    "max_cost_micros": 1000000,
+    "max_elapsed_ms": 240000,
+    "expires_at": "2099-01-01T00:00:00.000Z",
+    "credential_in_writer": false,
+    "live_provider_verified": false
+  },
+  "inference_policy_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "budget": { "currency": "USD", "max_cost_usd": 1 },
+  "bounds": { "max_duration_seconds": 240, "max_turns": 4, "max_repairs": 1, "max_concurrency": 1, "max_child_depth": 0 },
+  "crossProcessResume": false,
+  "final_action": "stop_before_external_action",
+  "approval": {
+    "action": "accept_atomic_fixture_model_result",
+    "exact_effect": "Record a safe mock acceptance receipt only; do not create a PR, merge, deploy, mutate an external/product database, expand credentials, or promote memory.",
+    "required": true
+  }
+}
