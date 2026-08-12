@@ -9,7 +9,7 @@ import {
 } from "./atomic-fixture-pilot-core.mjs";
 
 export const ATOMIC_FIXTURE_MODEL_WORKFLOW_NAME = "atomic-fixture-model-pilot";
-export const ATOMIC_FIXTURE_MODEL_WORKFLOW_VERSION = "0.1.0-prelive";
+export const ATOMIC_FIXTURE_MODEL_WORKFLOW_VERSION = "0.2.0";
 export const ATOMIC_FIXTURE_MODEL_REQUEST =
   "Implement normalizeProjectSlug in the disposable Atomic pilot fixture using the bounded model workflow and stop after verified evidence for control-plane approval.";
 export const ATOMIC_FIXTURE_MODEL_CONTEXT_ROOT = "/run-context";
@@ -45,7 +45,7 @@ export const ATOMIC_FIXTURE_MODEL_PATHS = Object.freeze({
 
 const SHA = /^[a-f0-9]{64}$/;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
-const INPUTS = ["capability_policy_sha256", "contract_sha256", "control_plane_run_id", "expected_before_sha256", "package_sha256"];
+const INPUTS = ["capability_policy_sha256", "contract_sha256", "control_plane_run_id", "expected_before_sha256", "live_provider_expected", "package_sha256"];
 
 function hash(value) { return createHash("sha256").update(value).digest("hex"); }
 function json(value) { return `${JSON.stringify(value, null, 2)}\n`; }
@@ -90,6 +90,7 @@ export function validateAtomicFixtureModelInputs(value) {
     throw new Error(`Atomic model fixture inputs must contain exactly ${INPUTS.join(", ")}`);
   }
   if (typeof input.control_plane_run_id !== "string" || !SAFE_ID.test(input.control_plane_run_id)) throw new Error("control_plane_run_id is invalid");
+  if (typeof input.live_provider_expected !== "boolean") throw new Error("live_provider_expected must be boolean");
   if (input.expected_before_sha256 !== ATOMIC_FIXTURE_EXPECTED_BEFORE_SHA256) throw new Error("expected_before_sha256 is not the reviewed fixture");
   return Object.freeze({
     control_plane_run_id: input.control_plane_run_id,
@@ -97,6 +98,7 @@ export function validateAtomicFixtureModelInputs(value) {
     expected_before_sha256: input.expected_before_sha256,
     capability_policy_sha256: digest(input.capability_policy_sha256, "capability_policy_sha256"),
     package_sha256: digest(input.package_sha256, "package_sha256"),
+    live_provider_expected: input.live_provider_expected,
   });
 }
 
@@ -113,14 +115,16 @@ export async function preflightAtomicFixtureModel(options) {
   }
   const inference = object(contract.inference, "model run contract inference");
   if (inference.policySha256 !== options.inputs.capability_policy_sha256 || inference.credentialInWriter !== false
-      || inference.fakeProvider !== false) throw new Error("Model inference policy binding is invalid");
+      || inference.fakeProvider !== false || inference.liveProviderExpected !== options.inputs.live_provider_expected
+      || inference.liveProviderVerified !== false) throw new Error("Model inference policy binding is invalid");
   const packageIdentity = object(contract.atomicPackage, "model run contract package");
   if (packageIdentity.packageSha256 !== options.inputs.package_sha256) throw new Error("Model package digest binding is invalid");
   const launch = await readRegular(context, "atomic-model-launch-manifest.json", "model launch manifest");
   const launchValue = object(JSON.parse(launch.body.toString("utf8")), "model launch manifest");
-  if (launchValue.schema_version !== "1.0.0-model-prelive" || launchValue.run_id !== options.inputs.control_plane_run_id
+  if (launchValue.schema_version !== "1.1.0-model" || launchValue.run_id !== options.inputs.control_plane_run_id
       || launchValue.inference_policy_sha256 !== options.inputs.capability_policy_sha256
-      || launchValue.package_sha256 !== options.inputs.package_sha256 || launchValue.crossProcessResume !== false) {
+      || launchValue.package_sha256 !== options.inputs.package_sha256 || launchValue.crossProcessResume !== false
+      || object(launchValue.inference, "model launch inference").live_provider_expected !== options.inputs.live_provider_expected) {
     throw new Error("Model launch manifest binding is invalid");
   }
   const source = await readRegular(workspace, ATOMIC_FIXTURE_TARGET, "model fixture source");
@@ -194,7 +198,7 @@ export async function emitAtomicFixtureModelEvidence(options) {
     schema_version: "1.0.0", action: "mock_only", external_action_performed: false,
   });
   const evidenceValue = {
-    schema_version: "1.0.0-model-prelive",
+    schema_version: "1.1.0-model",
     control_plane_run_id: options.inputs.control_plane_run_id,
     native_workflow_run_id: String(options.nativeRunId),
     workflow: ATOMIC_FIXTURE_MODEL_WORKFLOW_NAME,
@@ -208,7 +212,7 @@ export async function emitAtomicFixtureModelEvidence(options) {
     draft_pr_mock: draftPrMock,
     context: copied,
     model_execution_expected: true,
-    live_provider_verified: false,
+    live_provider_verified: options.inputs.live_provider_expected,
     final_action: "stop_before_external_action",
   };
   const evidence = await writeArtifact(workspace, ATOMIC_FIXTURE_MODEL_PATHS.evidence, evidenceValue);
@@ -220,6 +224,6 @@ export async function emitAtomicFixtureModelEvidence(options) {
     memory_proposal_path: memoryProposal.path, draft_pr_mock_path: draftPrMock.path,
     context_pack_path: copied.contextPack.path, run_contract_path: copied.runContract.path,
     launch_manifest_path: copied.launchManifest.path, repair_count: options.repairCount,
-    checks_passed: true, verifier_passed: true, live_provider_verified: false,
+    checks_passed: true, verifier_passed: true, live_provider_verified: options.inputs.live_provider_expected,
   };
 }

@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0.0-model-prelive",
+  "schema_version": "1.1.0-model",
   "run_id": "run_replace_me",
   "project_id": "atomic-pilot",
   "task_id": "task_atomic_fixture_m5b",
@@ -7,7 +7,7 @@
   "root_runtime": "atomic",
   "workflow": {
     "name": "atomic-fixture-model-pilot",
-    "version": "0.1.0-prelive",
+    "version": "0.2.0",
     "workflow_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "core_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   },
@@ -44,6 +44,7 @@
     "max_elapsed_ms": 240000,
     "expires_at": "2099-01-01T00:00:00.000Z",
     "credential_in_writer": false,
+    "live_provider_expected": false,
     "live_provider_verified": false
   },
   "inference_policy_sha256": "1111111111111111111111111111111111111111111111111111111111111111",

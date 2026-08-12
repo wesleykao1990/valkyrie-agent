@@ -150,6 +150,7 @@ test("pre-live coordinator composes accepted package, read-only capability, nati
           expected_before_sha256: "8db91027a68c9d7bd68bb2c3d04e592ca29039f15b8df506cfce0de6e27f69d2",
           capability_policy_sha256: contractValue.inference.policySha256,
           package_sha256: contractValue.atomicPackage.packageSha256,
+          live_provider_expected: false,
         },
         nativeRunId: "11111111-2222-4333-8444-555555555555", checks, verifier, repairCount: 0,
       });
@@ -177,7 +178,8 @@ test("pre-live coordinator composes accepted package, read-only capability, nati
     assert.equal(result.liveProviderVerified, false);
     assert.equal(result.native.output.live_provider_verified, false);
     assert.equal((await store.getInferenceCapability(result.capabilityId))?.state, "revoked");
-    assert.equal((await store.getRun(run.id))?.metadata.atomicModelPilotPrelive, true);
+    assert.equal((await store.getRun(run.id))?.metadata.atomicModelPilotMode, "credential_free_fixture");
+    assert.equal((await store.getRun(run.id))?.metadata.modelExecutionAttempted, true);
     assert.deepEqual((await store.listInferenceRequests(run.id)).map((item) => item.role).sort(),
       ["implementer", "verifier_final", "verifier_initial"], "pre-live contract binds the expected simulated provider stages");
     const events = await store.listEvents(run.id);

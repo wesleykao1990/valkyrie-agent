@@ -108,7 +108,7 @@ export function validateAtomicLaunchManifest(manifest: unknown, packageDir: stri
 export function validateAtomicModelLaunchManifest(manifest: unknown, packageDir: string): string[] {
   const schemaPath = join(packageDir, "skills", "atomic-workflow-architect", "assets", "model-launch-manifest.schema.json");
   const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as JsonSchemaRule;
-  if (schema.$id !== "urn:wesley:atomic:model-launch-manifest:1.0.0-prelive") {
+  if (schema.$id !== "urn:wesley:atomic:model-launch-manifest:1.1.0") {
     return ["$: unexpected model launch-manifest schema ID"];
   }
   return validateSchemaValue(manifest, schema, schema);

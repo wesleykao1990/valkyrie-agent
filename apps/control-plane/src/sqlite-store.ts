@@ -890,6 +890,18 @@ export class SqliteStore implements ControlPlaneStore {
     return (rows as any[]).map(this.mapApproval);
   }
 
+  async listExpiredApprovals(projectId: string, workflow: string, observedAt: string, limit = 100): Promise<Approval[]> {
+    const at = isoString(observedAt);
+    if (!projectId.trim() || !workflow.trim()) throw new StorageConflictError("Expired approval query requires project and workflow");
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+      throw new StorageConflictError("Expired approval query limit must be between 1 and 1000");
+    }
+    const rows = this.db.prepare(`SELECT * FROM approvals
+      WHERE project_id=? AND workflow=? AND state='pending' AND expires_at<=?
+      ORDER BY expires_at,id LIMIT ?`).all(projectId, workflow, at, limit) as any[];
+    return rows.map(this.mapApproval);
+  }
+
   async resolveApproval(id: string, state: string, decision: string, resolvedBy: string): Promise<void> {
     await this.resolveApprovalTransaction({ approvalId: id, state, decision, resolvedBy });
   }

@@ -12,7 +12,7 @@ const testFiles = readdirSync("tests")
 
 const result = spawnSync(
   process.execPath,
-  ["--experimental-strip-types", "--test", ...testFiles],
+  ["--experimental-strip-types", "--test", "--test-concurrency=1", ...testFiles],
   { env: environment, stdio: "inherit" },
 );
 if (result.error) throw result.error;

@@ -1,7 +1,8 @@
 # Milestone 5b pre-live implementation plan
 
-Status: credential-free boundary implementation is deterministic-test verified;
-service/Hermes lifecycle composition and the live provider/model exercise remain pending.
+Status: credential-free boundary and authenticated service/Hermes lifecycle are
+deterministic-test verified in SQLite and PostgreSQL; only provider selection,
+credential injection, and the live model exercise remain pending.
 
 ## Objective
 
@@ -28,7 +29,7 @@ still be composed before live enablement.
 5. Add the native Atomic model workflow, a separate model-pilot launch schema,
    strict package/image/policy digests, implementer continuity, fresh verifier
    context, deterministic checks, and a single evidence-backed repair.
-6. Add an internal, deliberately unregistered coordinator that composes exact
+6. Add a fixed coordinator that composes exact
    worktree/fence/context/package/image bindings, native execution, substantive
    workspace-evidence validation, frozen-export rebinding, raw-event retention,
    bridge teardown, capability revocation, and private-context cleanup.
@@ -36,19 +37,23 @@ still be composed before live enablement.
    SQLite/PostgreSQL parity tests for the delivered boundary.
 8. Update setup, rollback, security, verification, and continuation
    documentation without requesting or storing a credential.
+9. Register only the literal project/task/objective/workflow through authenticated
+   service, HTTP, and restricted MCP operations with transactional one-run
+   admission, durable claim retry, cancellation, provider-aware reconciliation,
+   bounded expiry maintenance, and `crossProcessResume=false`.
+10. Re-open and checksum all governed artifact bytes before bounded review or
+    approval, bind the operator-intended safe-mock gate to exact evidence/policy/
+    expiry, keep memory proposed, and test the same lifecycle in SQLite/PostgreSQL.
+11. Provide `npm run smoke:atomic-model`; it makes no call until a separately
+    configured server exists and stops before approval by default.
 
 ## Still required before a live pilot
 
-1. Register the model workflow behind the authenticated service/Hermes boundary
-   only after durable schedule/cancel/restart semantics match the M5a coordinator.
-2. Add evidence-bound approval, bounded artifact reads, safe mock acceptance,
-   and authenticated actor provenance for model-run evidence.
-3. Wire the delivered indexed capability-expiry operation into service
-   maintenance and add provider-aware reconciliation; keep
-   `crossProcessResume=false` and one active coordinator instance.
-4. Select/review the provider and model, accepted digests, token prices, spend
+1. Select/review the provider and model, accepted digests, token prices, spend
    ceiling, and dedicated credential or reviewed credential-free local endpoint.
-5. Run the actual Docker/Atomic/provider pilot and record native IDs, usage,
+2. Create and inspect the dedicated local Docker `Internal=true` bridge named in
+   `ATOMIC_FIXTURE_MODEL_NETWORK`, then start the default-off configured server.
+3. Run the actual Docker/Atomic/provider pilot and record native IDs, usage,
    cost, artifacts, cleanup, and a real operator evidence decision.
 
 ## Migrations and rollback

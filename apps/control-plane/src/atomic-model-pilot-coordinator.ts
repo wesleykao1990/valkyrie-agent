@@ -39,7 +39,7 @@ export const ATOMIC_MODEL_PILOT_APPROVAL_ACTION = "accept_atomic_fixture_model_r
 export const ATOMIC_MODEL_PILOT_APPROVAL_EFFECT =
   "Record an evidence-bound safe mock receipt in the control-plane ledger only. Do not create a PR, access GitHub, merge, deploy, change an external or product database, expand credential access, or promote memory.";
 
-const ARTIFACTS: readonly ArtifactManifestEntry[] = Object.freeze([
+export const ATOMIC_MODEL_PILOT_ARTIFACTS: readonly ArtifactManifestEntry[] = Object.freeze([
   ["evidence.json", "atomic-model-pilot-evidence", "application/json"],
   ["candidate.patch", "candidate-patch", "text/x-diff"],
   ["checks-initial.json", "deterministic-checks-initial", "application/json"],
@@ -54,6 +54,16 @@ const ARTIFACTS: readonly ArtifactManifestEntry[] = Object.freeze([
 ].map(([name, kind, mediaType]) => ({ relativePath: `.valkyrie-model-output/${name}`, kind, mediaType })));
 
 interface ModelRpcProvider extends WriterSandboxProvider {
+  preflightAtomicRunner?(): Promise<{
+    enabled: boolean;
+    available: boolean;
+    atomicVersion?: string;
+    imageRef?: string;
+    imageDigest?: string;
+    provenanceDigest?: string;
+    provenanceLabels?: Readonly<Record<string, string>>;
+    reason?: string;
+  }>;
   openAtomicRpc(handle: OciSandboxHandle): Promise<AtomicRpcClient>;
 }
 
@@ -70,6 +80,7 @@ export interface AtomicModelPilotCoordinatorOptions {
   acceptedPackageSha256: string;
   acceptedImageDigest: string;
   maxCostUsd: number;
+  liveProviderExpected?: boolean;
   bridge: Pick<ScopedInferenceBridge, "start" | "stop">;
   now?: () => Date;
 }
@@ -78,15 +89,23 @@ export interface AtomicModelPilotResult {
   boundary: WriterSandboxWorkloadResult;
   native: AtomicModelWorkflowExecution;
   capabilityId: string;
-  liveProviderVerified: false;
+  liveProviderVerified: boolean;
+}
+
+export interface AtomicModelPilotPreflight {
+  enabled: true;
+  available: boolean;
+  workflow: typeof ATOMIC_MODEL_PILOT_WORKFLOW;
+  executionMode: "isolated-writer";
+  modelExecutionAttempted: false;
+  liveProviderExpected: boolean;
+  reason?: string;
+  runner?: Awaited<ReturnType<NonNullable<ModelRpcProvider["preflightAtomicRunner"]>>>;
 }
 
 function sha(value: string | Buffer): string { return createHash("sha256").update(value).digest("hex"); }
 
-/**
- * Pre-live coordinator for the literal disposable model fixture. It is not
- * registered by index/service until a live provider and topology are approved.
- */
+/** Coordinates the literal disposable model fixture through scoped inference. */
 export class AtomicModelPilotCoordinator {
   private active = false;
   private readonly clock: () => Date;
@@ -103,7 +122,67 @@ export class AtomicModelPilotCoordinator {
         || (process.platform !== "win32" && (contextStat.mode & 0o077) !== 0)) {
       throw new Error("Atomic model coordinator context root must be canonical, private, and non-symlinked");
     }
-    this.options = { ...options, contextRoot: realpathSync(contextRoot) };
+    this.options = { ...options, liveProviderExpected: options.liveProviderExpected ?? false, contextRoot: realpathSync(contextRoot) };
+  }
+
+  async preflight(): Promise<AtomicModelPilotPreflight> {
+    try {
+      if (!this.options.provider.preflightAtomicRunner) {
+        throw new Error("Atomic model runner preflight is unavailable");
+      }
+      const runner = await this.options.provider.preflightAtomicRunner();
+      if (!runner.enabled || !runner.available || runner.imageDigest !== this.options.acceptedImageDigest
+          || !runner.atomicVersion || !runner.provenanceDigest || !runner.provenanceLabels) {
+        return {
+          enabled: true,
+          available: false,
+          workflow: ATOMIC_MODEL_PILOT_WORKFLOW,
+          executionMode: "isolated-writer",
+          modelExecutionAttempted: false,
+          liveProviderExpected: this.options.liveProviderExpected ?? false,
+          runner,
+          reason: runner.reason ?? "Atomic model runner evidence did not match the accepted deployment",
+        };
+      }
+      return {
+        enabled: true,
+        available: true,
+        workflow: ATOMIC_MODEL_PILOT_WORKFLOW,
+        executionMode: "isolated-writer",
+        modelExecutionAttempted: false,
+        liveProviderExpected: this.options.liveProviderExpected ?? false,
+        runner,
+        reason: `Verified credential-isolated Atomic ${runner.atomicVersion} runner ${runner.imageDigest}; preflight made no provider request`,
+      };
+    } catch (error) {
+      return {
+        enabled: true,
+        available: false,
+        workflow: ATOMIC_MODEL_PILOT_WORKFLOW,
+        executionMode: "isolated-writer",
+        modelExecutionAttempted: false,
+        liveProviderExpected: this.options.liveProviderExpected ?? false,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  contextExists(runId: string): boolean {
+    return existsSync(resolve(this.options.contextRoot, sha(runId)));
+  }
+
+  cleanupContext(runId: string): void {
+    const contextPath = resolve(this.options.contextRoot, sha(runId));
+    if (!existsSync(contextPath)) return;
+    const root = realpathSync(this.options.contextRoot);
+    const real = realpathSync(contextPath);
+    const marker = join(real, ".valkyrie-run-id");
+    const item = lstatSync(marker);
+    if (!real.startsWith(`${root}/`) || !item.isFile() || item.isSymbolicLink()
+        || readFileSync(marker, "utf8") !== `${runId}\n`) {
+      throw new Error("Atomic model context cleanup ownership could not be proven");
+    }
+    rmSync(real, { recursive: true });
   }
 
   async run(input: { run: Run; project: Project; taskId: string; contextPack: Record<string, unknown>; signal: AbortSignal }): Promise<AtomicModelPilotResult> {
@@ -129,12 +208,44 @@ export class AtomicModelPilotCoordinator {
         project: input.project,
         repositoryPath: this.options.repositoryPath,
         contextPath,
-        artifacts: ARTIFACTS,
+        artifacts: ATOMIC_MODEL_PILOT_ARTIFACTS,
         baseRef: this.options.repositoryCommit,
         completion: "evidence_ready",
-        validateExports: (exports) => {
+        validateExports: async (exports) => {
           if (!evidenceSnapshot) throw new Error("Atomic model frozen export validation has no accepted workspace snapshot");
           assertAtomicModelFrozenExports(evidenceSnapshot, exports);
+          if (!prepared || !native) throw new Error("Atomic model export validation lost its native execution binding");
+          const current = await this.options.store.getRun(input.run.id);
+          if (!current) throw new Error("Atomic model run disappeared before frozen export validation");
+          const normalize = (items: readonly {
+            relativePath: string;
+            kind: string;
+            mediaType: string;
+            checksum: string;
+            sizeBytes: number;
+          }[]) => items.map((item) => ({
+            relativePath: item.relativePath,
+            kind: item.kind,
+            mediaType: item.mediaType,
+            checksum: item.checksum,
+            sizeBytes: item.sizeBytes,
+          })).sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+          await this.options.store.updateRun(current.id, { metadata: {
+            ...current.metadata,
+            atomicModelFrozenExportsValidated: true,
+            atomicModelValidatedWorkspaceArtifacts: normalize(evidenceSnapshot.artifacts),
+            atomicModelFrozenExportArtifacts: normalize(exports),
+            atomicModelCapabilityId: prepared.capability.id,
+            atomicModelPolicySha256: prepared.capability.policyHash,
+            nativeSessionId: native.nativeSessionId,
+            nativeWorkflowRunId: native.nativeWorkflowRunId,
+            nativeCursor: native.nativeCursor,
+            repairCount: native.output.repair_count,
+            nativeInputTokens: evidenceSnapshot.totalInputTokens,
+            nativeOutputTokens: evidenceSnapshot.totalOutputTokens,
+            nativeCostMicros: evidenceSnapshot.totalCostMicros,
+            liveProviderVerified: this.options.liveProviderExpected,
+          } });
         },
         prepareContext: async (binding: Readonly<WriterSandboxWorkloadBinding>) => {
           if (binding.baseCommit !== this.options.repositoryCommit) {
@@ -160,8 +271,19 @@ export class AtomicModelPilotCoordinator {
             imageDigest: this.options.acceptedImageDigest, acceptedPackageSha256: this.options.acceptedPackageSha256,
             acceptedImageDigest: this.options.acceptedImageDigest, leaseExpiresAt: lease.expiresAt,
             maxCostUsd: this.options.maxCostUsd, approvalEffect: ATOMIC_MODEL_PILOT_APPROVAL_EFFECT,
+            liveProviderExpected: this.options.liveProviderExpected ?? false,
             contextPack: input.contextPack, now: this.clock,
           });
+          const current = await this.options.store.getRun(input.run.id);
+          if (!current) throw new Error("Atomic model run disappeared after capability issuance");
+          await this.options.store.updateRun(current.id, { metadata: {
+            ...current.metadata,
+            atomicModelCapabilityId: prepared.capability.id,
+            atomicModelPolicySha256: prepared.capability.policyHash,
+            atomicModelContextPrepared: true,
+            crossProcessResume: false,
+            externalActionPerformed: false,
+          } });
           bridge = await this.options.bridge.start(input.run.id);
         },
         execute: async (handle): Promise<OciRunResult> => {
@@ -176,6 +298,7 @@ export class AtomicModelPilotCoordinator {
                 expected_before_sha256: ATOMIC_FIXTURE_EXPECTED_BEFORE_SHA256,
                 capability_policy_sha256: prepared.capability.policyHash,
                 package_sha256: this.options.acceptedPackageSha256,
+                live_provider_expected: this.options.liveProviderExpected ?? false,
               },
               signal: input.signal,
               onRecord: async (record, ordinal) => {
@@ -188,7 +311,12 @@ export class AtomicModelPilotCoordinator {
                   runId: input.run.id,
                   type: "atomic.native.raw",
                   message: "Preserved one bounded native Atomic model-workflow record",
-                  payload: { ordinal, rawNative: record, providerExecutionMode: "prelive_unverified", liveProviderVerified: false },
+                  payload: {
+                    ordinal,
+                    rawNative: record,
+                    providerExecutionMode: this.options.liveProviderExpected ? "live_scoped_gateway" : "credential_free_fixture",
+                    liveProviderVerified: false,
+                  },
                   createdAt: this.clock().toISOString(),
                 });
               },
@@ -200,8 +328,9 @@ export class AtomicModelPilotCoordinator {
               contextPath,
               capabilityId: prepared.capability.id,
               native,
+              liveProviderExpected: this.options.liveProviderExpected ?? false,
             });
-            const summary = "Atomic model workflow produced bounded pre-live evidence\n";
+            const summary = "Atomic model workflow produced bounded provider-backed evidence\n";
             return { exitCode: 0, stdout: summary, stderr: "", stdoutBytes: Buffer.byteLength(summary), stderrBytes: 0 };
           } finally { await client.stop().catch(() => undefined); }
         },
@@ -211,7 +340,8 @@ export class AtomicModelPilotCoordinator {
       const refreshed = await this.options.store.getRun(input.run.id);
       if (refreshed) await this.options.store.updateRun(refreshed.id, { metadata: {
         ...refreshed.metadata,
-        atomicModelPilotPrelive: true,
+        atomicModelPilotMode: this.options.liveProviderExpected ? "live_scoped_gateway" : "credential_free_fixture",
+        modelExecutionAttempted: true,
         atomicModelCapabilityId: prepared.capability.id,
         atomicModelPolicySha256: prepared.capability.policyHash,
         nativeSessionId: native.nativeSessionId,
@@ -221,24 +351,17 @@ export class AtomicModelPilotCoordinator {
         nativeInputTokens: evidenceSnapshot?.totalInputTokens,
         nativeOutputTokens: evidenceSnapshot?.totalOutputTokens,
         nativeCostMicros: evidenceSnapshot?.totalCostMicros,
-        liveProviderVerified: false,
+        liveProviderVerified: this.options.liveProviderExpected,
       } });
-      return { boundary: result, native, capabilityId: prepared.capability.id, liveProviderVerified: false };
+      return { boundary: result, native, capabilityId: prepared.capability.id, liveProviderVerified: this.options.liveProviderExpected ?? false };
     } finally {
       const cleanupErrors: unknown[] = [];
       if (bridge) try { await this.options.bridge.stop(bridge); } catch (error) { cleanupErrors.push(error); }
       if (prepared) try {
         await revokeAtomicModelPilotCapability(this.options.store, prepared.capability.id, this.clock().toISOString());
       } catch (error) { cleanupErrors.push(error); }
-      if (existsSync(contextPath)) try {
-          const marker = join(contextPath, ".valkyrie-run-id");
-          const item = lstatSync(marker);
-          if (!item.isFile() || item.isSymbolicLink() || readFileSync(marker, "utf8") !== `${input.run.id}\n`
-              || !realpathSync(contextPath).startsWith(`${realpathSync(this.options.contextRoot)}/`)) {
-            throw new Error("Atomic model context cleanup ownership could not be proven");
-          }
-          rmSync(contextPath, { recursive: true });
-        } catch (error) { cleanupErrors.push(error); }
+      if (existsSync(contextPath)) try { this.cleanupContext(input.run.id); }
+        catch (error) { cleanupErrors.push(error); }
       this.active = false;
       if (cleanupErrors.length > 0) throw new AggregateError(cleanupErrors, "Atomic model pilot cleanup was not fully proven");
     }

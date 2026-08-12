@@ -15,17 +15,19 @@ const media: Record<string, string> = {
 
 const ATOMIC_FIXTURE_ARTIFACT_READ_ERROR =
   "Atomic fixture artifact evidence is unavailable or no longer matches the pending approval";
+const ATOMIC_MODEL_FIXTURE_ARTIFACT_READ_ERROR =
+  "Atomic model fixture artifact evidence is unavailable or no longer matches the pending approval";
 
 export function createControlPlaneServer(
   service: ControlPlaneService,
   store: ControlPlaneStore,
   publicDir: string,
-  options: { enableDemoReset?: boolean; authToken?: string } = {},
+  options: { enableDemoReset?: boolean; authToken?: string; operatorId?: string } = {},
 ) {
   const enableSqliteDemoReset = store.backend === "sqlite" && (options.enableDemoReset ?? true);
   return createServer(async (req, res) => {
     try {
-      await route(req, res, service, store, publicDir, enableSqliteDemoReset, options.authToken);
+      await route(req, res, service, store, publicDir, enableSqliteDemoReset, options.authToken, options.operatorId);
     } catch (error) {
       console.error(error);
       sendError(res, error, 400);
@@ -41,6 +43,7 @@ async function route(
   publicDir: string,
   enableDemoReset: boolean,
   authToken?: string,
+  operatorId?: string,
 ) {
   const method = req.method ?? "GET";
   const url = new URL(req.url ?? "/", "http://localhost");
@@ -109,12 +112,19 @@ async function route(
   }
 
   match = path.match(/^\/api\/runs\/([^/]+)\/cancel$/);
-  if (method === "POST" && match) return sendJson(res, 200, await service.cancelRun(decodeURIComponent(match[1])));
+  if (method === "POST" && match) return sendJson(res, 200, await service.cancelRun(
+    decodeURIComponent(match[1]),
+    operatorId ?? "authenticated-control-plane-client",
+  ));
 
   match = path.match(/^\/api\/approvals\/([^/]+)\/resolve$/);
   if (method === "POST" && match) {
     const body = await readJson(req);
-    return sendJson(res, 200, await service.resolveApproval(decodeURIComponent(match[1]), String(body.decision ?? ""), "wesley"));
+    return sendJson(res, 200, await service.resolveApproval(
+      decodeURIComponent(match[1]),
+      String(body.decision ?? ""),
+      operatorId ?? "authenticated-control-plane-client",
+    ));
   }
 
   match = path.match(/^\/api\/atomic-fixture\/approvals\/([^/]+)\/resolve$/);
@@ -123,7 +133,7 @@ async function route(
     return sendJson(res, 200, await service.resolveAtomicFixtureApproval(
       decodeURIComponent(match[1]),
       String(body.decision ?? ""),
-      "wesley",
+      operatorId ?? "authenticated-control-plane-client",
     ));
   }
 
@@ -138,6 +148,29 @@ async function route(
       // Never serialize a filesystem/store exception from this human-review
       // surface: native fs errors commonly embed absolute host paths.
       return sendJson(res, 400, { error: ATOMIC_FIXTURE_ARTIFACT_READ_ERROR });
+    }
+  }
+
+  match = path.match(/^\/api\/atomic-model-fixture\/approvals\/([^/]+)\/resolve$/);
+  if (method === "POST" && match) {
+    if (!operatorId) return sendJson(res, 403, { error: "Atomic model approval requires a configured operator principal" });
+    const body = await readJson(req);
+    return sendJson(res, 200, await service.resolveAtomicModelFixtureApproval(
+      decodeURIComponent(match[1]),
+      String(body.decision ?? ""),
+      operatorId,
+    ));
+  }
+
+  match = path.match(/^\/api\/atomic-model-fixture\/runs\/([^/]+)\/artifacts\/([^/]+)$/);
+  if (method === "GET" && match) {
+    try {
+      return sendJson(res, 200, await service.readAtomicModelFixtureArtifact(
+        decodeURIComponent(match[1]),
+        decodeURIComponent(match[2]),
+      ));
+    } catch {
+      return sendJson(res, 400, { error: ATOMIC_MODEL_FIXTURE_ARTIFACT_READ_ERROR });
     }
   }
 

@@ -231,10 +231,10 @@ Before any model-backed or general-repository writing runtime:
 5. keep PR creation, merge, deploy, destructive database change, secret expansion,
    and canonical promotion behind separate policy decisions.
 
-### M5b pre-live inference boundary
+### M5b scoped inference boundary (live provider not yet exercised)
 
-The repository now contains the disabled, credential-free M5b preparation, not a
-live model claim. Four role-scoped requests (implementer, initial fresh verifier,
+The repository now contains the disabled-by-default, authenticated M5b lifecycle,
+not a live model claim. Four role-scoped requests (implementer, initial fresh verifier,
 one optional repair, and final fresh verifier) are authorized by an opaque
 run-scoped capability. Storage retains only its SHA-256 digest and bounded usage
 metadata. The provider credential loading point requires a regular non-symlink
@@ -250,12 +250,19 @@ be HTTPS `/v1`; credential-free HTTP requires explicit loopback opt-in. The
 runner/package digests must equal explicit accepted deployment values before a
 capability is issued.
 
+Service admission is transactionally capped at one nonterminal model run. Durable
+claims, cancellation, capability revocation/expiry, bridge and sandbox restart
+reconciliation, frozen artifact re-verification, exact approval expiry, and safe
+mock acceptance are composed behind fixed HTTP/MCP operations. The configured
+operator identity is evidence provenance, not proof that a person is present.
+The model live smoke therefore stops before approval by default.
+
 Atomic native `--approve` in this fixed workflow authorizes only the two custom
 fixture tools (bounded reads and replacement of one disposable source file).
 Built-in filesystem, shell, web, subagent, intercom, and general editing tools are
-excluded. It is not final-action approval. M5b live enablement remains blocked on
-a provider/model decision, dedicated low-limit credential or reviewed local
-model, actual Docker/provider exercise, and authenticated human actor provenance.
+excluded. It is not final-action approval. M5b live verification remains blocked
+on Wesley's provider/model decision, dedicated low-limit credential or reviewed
+local model, and an actual Docker/provider exercise with human evidence review.
 
 ## Storage and retained command data
 
@@ -277,6 +284,10 @@ model, actual Docker/provider exercise, and authenticated human actor provenance
   expiry fields for the M5a final gate plus an expiry index. Older binaries reject
   the v6 ledger; rollback requires a verified pre-v6 backup or separate compatible
   database. There is no destructive down migration.
+  Migration 007 adds run-scoped inference capability/request hashes, bounded
+  usage/cost evidence, and indexed expiry. Plaintext gateway/provider tokens are
+  not stored. Older binaries reject the v7 ledger; rollback requires a verified
+  pre-v7 backup or separate compatible database.
 - A fence protects database state, not raw filesystem writes. Terminating and
   inspecting the exact labeled container remains mandatory before release/reuse.
 - Idempotency/outbox/events may retain objectives, native output, approval effects,

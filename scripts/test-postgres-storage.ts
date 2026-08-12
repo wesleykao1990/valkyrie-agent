@@ -47,6 +47,10 @@ try {
     TEST_DATABASE_URL: `postgresql://valkyrie@127.0.0.1:${port}/postgres`,
   };
   run(process.execPath, ["--experimental-strip-types", "--test", "tests/storage.test.ts"], testEnvironment);
+  run(process.execPath, ["--experimental-strip-types", "--test", "tests/atomic-model-pilot-lifecycle.test.ts"], {
+    ...testEnvironment,
+    RUN_POSTGRES_MODEL_LIFECYCLE_TESTS: "1",
+  });
 } finally {
   if (started) {
     spawnSync(process.env.PG_CTL_COMMAND ?? "pg_ctl", ["-D", dataDir, "-m", "fast", "-w", "stop"], {

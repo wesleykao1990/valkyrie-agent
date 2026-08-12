@@ -22,6 +22,13 @@ The first model workflow remains the fixed disposable fixture. Atomic owns these
 
 The control plane owns outer admission, workspace/container/fence, gateway capability, aggregate budget, artifact export, approval, and safe mock receipt. No real PR, merge, deployment, product database mutation, or memory promotion occurs.
 
+The fixed lifecycle is registered only when every feature flag, bearer token,
+operator ID, internal network, immutable image/package digest, provider/model,
+price, and credential/loopback boundary validates. It uses transactional one-run
+admission, retrying start claims, provider-aware restart cleanup, bounded indexed
+expiry, byte-reverified artifact review, and an exact safe-mock approval. The live
+smoke stops before that approval by default.
+
 M5b is single-active-control-plane-instance until durable cancellation ownership and provider-aware sandbox reattachment are separately proven. The process must fail closed when another pilot owner is active.
 
 ## Rejected alternatives
@@ -34,4 +41,4 @@ M5b is single-active-control-plane-instance until durable cancellation ownership
 
 ## Consequences
 
-The gateway and capability ledger add code and an operational component, but make the credential and network boundary testable before live spend. A live pilot remains blocked on accepted provider/model and runner/package digests, a dedicated low-limit credential, an authenticated human/operator decision path, and an actual end-to-end exercise.
+The gateway and capability ledger add code and an operational component, but make the credential and network boundary testable before live spend. The credential-free implementation is complete; a live pilot remains blocked on Wesley's provider/model and credential/local-endpoint decision plus an actual end-to-end exercise and human evidence review.

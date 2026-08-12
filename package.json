@@ -25,6 +25,7 @@
     "smoke:mcp": "node --experimental-strip-types scripts/mcp-smoke.ts",
     "smoke:native": "node --experimental-strip-types scripts/live-native-smoke.ts",
     "smoke:atomic-fixture": "node --experimental-strip-types scripts/atomic-fixture-live-smoke.ts",
+    "smoke:atomic-model": "node --experimental-strip-types scripts/atomic-model-pilot-live-smoke.ts",
     "smoke:sandbox": "node --experimental-strip-types --test --test-name-pattern=live.Docker-compatible.sandbox tests/oci-sandbox-provider.test.ts",
     "verify": "npm run typecheck && npm test && npm run test:postgres && npm run verify:atomic && npm run smoke:http && npm run smoke:mcp",
     "smoke:http": "node --experimental-strip-types scripts/http-smoke.ts"

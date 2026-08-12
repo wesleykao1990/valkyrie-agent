@@ -8,6 +8,7 @@ const fake = resolve("scripts/fake-atomic-rpc.ts");
 const inputs = {
   control_plane_run_id: "run_model_executor", contract_sha256: "a".repeat(64),
   expected_before_sha256: "b".repeat(64), capability_policy_sha256: "c".repeat(64), package_sha256: "d".repeat(64),
+  live_provider_expected: false,
 };
 
 function client(env: Record<string, string> = {}) {

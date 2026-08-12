@@ -98,3 +98,25 @@ test("inference bridge removes only an exactly-owned reservation after uncertain
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("inference bridge startup reconciliation removes only the fully inspected orphan", async () => {
+  const root = mkdtempSync(join(tmpdir(), "valkyrie-bridge-restart-"));
+  chmodSync(root, 0o700);
+  const socket = join(root, "inference.sock");
+  const server = createServer();
+  server.listen(socket); await once(server, "listening");
+  chmodSync(socket, 0o600);
+  const engine = new FakeBridgeEngine();
+  try {
+    const bridge = new ScopedInferenceBridge({ engine, image, networkName: "valkyrie-m5b", socketPath: socket, user: "501:20" });
+    await bridge.start("run_bridge");
+    assert.equal(await bridge.reconcileStartup(), 1);
+    const inventory = [...engine.calls].reverse().find((call) => call.operation === "inventory");
+    assert.ok(inventory?.args.includes("--no-trunc"));
+    assert.ok(inventory?.args.includes("label=valkyrie.kind=inference-bridge"));
+    assert.deepEqual(engine.calls.slice(-2).map((call) => [call.operation, call.args.at(-1)]), [["inspect", id], ["rm", id]]);
+  } finally {
+    server.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

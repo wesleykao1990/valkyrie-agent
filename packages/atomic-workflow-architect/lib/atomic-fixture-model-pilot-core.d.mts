@@ -6,7 +6,7 @@ export const ATOMIC_FIXTURE_MODEL_OUTPUT_ROOT: string;
 export const ATOMIC_FIXTURE_MODEL_ALIASES: Readonly<Record<string, string>>;
 export const ATOMIC_FIXTURE_MODEL_BOUNDS: Readonly<Record<string, number>>;
 export const ATOMIC_FIXTURE_MODEL_PATHS: Readonly<Record<string, string>>;
-export function validateAtomicFixtureModelInputs(value: unknown): Readonly<Record<string, string>>;
+export function validateAtomicFixtureModelInputs(value: unknown): Readonly<Record<string, string | boolean>>;
 export function preflightAtomicFixtureModel(options: Record<string, any>): Promise<any>;
 export function runAtomicFixtureModelChecks(options: Record<string, any>): Promise<any>;
 export function writeAtomicFixtureModelReview(options: Record<string, any>): Promise<any>;

@@ -70,6 +70,7 @@ export interface AtomicFixtureModelWorkflowInputs {
   expected_before_sha256: string;
   capability_policy_sha256: string;
   package_sha256: string;
+  live_provider_expected: boolean;
 }
 
 export interface AtomicFixtureModelWorkflowOutput {
@@ -87,7 +88,7 @@ export interface AtomicFixtureModelWorkflowOutput {
   repair_count: 0 | 1;
   checks_passed: true;
   verifier_passed: true;
-  live_provider_verified: false;
+  live_provider_verified: boolean;
 }
 
 export interface AtomicWorkflowListDetail {
@@ -150,6 +151,7 @@ export function buildAtomicFixtureModelWorkflowDispatchCommand(input: AtomicFixt
   for (const field of ["contract_sha256", "expected_before_sha256", "capability_policy_sha256", "package_sha256"] as const) {
     assertHash(input[field], field);
   }
+  if (typeof input.live_provider_expected !== "boolean") throw new TypeError("live_provider_expected must be boolean");
   return [
     `/workflow ${ATOMIC_FIXTURE_MODEL_WORKFLOW_NAME}`,
     "--no-picker",
@@ -267,7 +269,10 @@ export function parseAtomicFixtureWorkflowOutput(value: unknown): AtomicFixtureW
   return output as unknown as AtomicFixtureWorkflowOutput;
 }
 
-export function parseAtomicFixtureModelWorkflowOutput(value: unknown): AtomicFixtureModelWorkflowOutput {
+export function parseAtomicFixtureModelWorkflowOutput(
+  value: unknown,
+  expectedLiveProviderVerified?: boolean,
+): AtomicFixtureModelWorkflowOutput {
   const output = objectRecord(value);
   if (!output) throw new AtomicWorkflowProtocolError("Atomic model fixture output must be an object");
   const paths = {
@@ -292,8 +297,9 @@ export function parseAtomicFixtureModelWorkflowOutput(value: unknown): AtomicFix
     if (output[field] !== path) throw new AtomicWorkflowProtocolError(`Atomic model fixture ${field} is not the fixed artifact path`);
   }
   if ((output.repair_count !== 0 && output.repair_count !== 1) || output.checks_passed !== true
-      || output.verifier_passed !== true || output.live_provider_verified !== false) {
-    throw new AtomicWorkflowProtocolError("Atomic model fixture did not satisfy the bounded pre-live output contract");
+      || output.verifier_passed !== true || typeof output.live_provider_verified !== "boolean"
+      || (expectedLiveProviderVerified !== undefined && output.live_provider_verified !== expectedLiveProviderVerified)) {
+    throw new AtomicWorkflowProtocolError("Atomic model fixture did not satisfy the bounded provider-verification output contract");
   }
   return output as unknown as AtomicFixtureModelWorkflowOutput;
 }

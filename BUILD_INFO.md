@@ -10,9 +10,9 @@
 - Production-candidate data store: opt-in PostgreSQL
 - Default runtimes: deterministic, explicitly labelled lifecycle simulations
 - Atomic module: integrated source 0.2.0, repository derivative 0.2.1
-- Atomic writer posture: fixed tool-only fixture implemented behind a default-off
-  flag; M5b scoped inference/model workflow is contract-tested pre-live and
-  remains disabled/unregistered until provider review
+- Atomic writer posture: fixed tool-only fixture live-verified behind a default-off
+  flag; M5b scoped inference/model workflow and authenticated lifecycle are
+  credential-free contract-tested and default-off until provider review
 - Automatic episodic memory capture: disabled
 
 ## Completed milestones
@@ -40,13 +40,14 @@
   deploy, promotion, or cross-process Atomic durability. The opt-in live runner
   completed successfully; exact IDs and evidence are in `docs/VERIFICATION.md`.
 
-Milestone 5b is complete only through the credential-free pre-live boundary:
+Milestone 5b is complete through the credential-free lifecycle boundary:
 scoped capability/storage, private gateway/bridge topology, fixed model workflow,
 fresh verifier, one-repair contracts, substantive evidence validation, and
-frozen-export rebinding are deterministic-test green. It still requires service/
-Hermes lifecycle composition, authenticated evidence-bound approval/recovery, a
-reviewed provider/model or local endpoint, a dedicated low-limit credential when
-applicable, and one actual end-to-end model exercise.
+frozen-export rebinding plus authenticated service/Hermes admission, cancellation,
+restart, expiry, artifact review, approval, safe receipt, and SQLite/PostgreSQL
+parity are deterministic-test green. It still requires a reviewed provider/model
+or local endpoint, a dedicated low-limit credential when applicable, one actual
+end-to-end model exercise, and a real evidence review.
 
 ## Verification entry point
 

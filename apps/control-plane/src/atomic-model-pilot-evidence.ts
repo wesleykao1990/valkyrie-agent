@@ -52,6 +52,7 @@ export async function validateAtomicModelPilotEvidence(input: {
   contextPath: string;
   capabilityId: string;
   native: AtomicModelWorkflowExecution;
+  liveProviderExpected: boolean;
 }): Promise<AtomicModelEvidenceSnapshot> {
   const output = input.native.output;
   const paths = Object.values(ATOMIC_FIXTURE_MODEL_PATHS);
@@ -161,12 +162,12 @@ export async function validateAtomicModelPilotEvidence(input: {
     const item = artifact(path);
     return { path, sha256: item.checksum, size_bytes: item.sizeBytes };
   };
-  if (evidence.schema_version !== "1.0.0-model-prelive" || evidence.control_plane_run_id !== input.runId
+  if (evidence.schema_version !== "1.1.0-model" || evidence.control_plane_run_id !== input.runId
       || evidence.native_workflow_run_id !== input.native.nativeWorkflowRunId
       || evidence.workflow !== ATOMIC_FIXTURE_MODEL_WORKFLOW_NAME || evidence.repair_count !== output.repair_count
       || evidence.package_sha256 !== acceptedPackage.packageSha256
       || evidence.capability_policy_sha256 !== acceptedInference.policySha256
-      || evidence.model_execution_expected !== true || evidence.live_provider_verified !== false
+      || evidence.model_execution_expected !== true || evidence.live_provider_verified !== input.liveProviderExpected
       || evidence.final_action !== "stop_before_external_action"
       || canonicalJson(evidence.checks) !== canonicalJson(binding(output.checks_final_path))
       || canonicalJson(evidence.verifier) !== canonicalJson(binding(output.verifier_final_path))
@@ -195,6 +196,11 @@ export async function validateAtomicModelPilotEvidence(input: {
   if (canonicalJson(actualRoles) !== canonicalJson([...expectedRoles].sort())
       || requests.some((request) => request.state !== "completed" || !request.responseHash || !SHA.test(request.responseHash))) {
     throw new Error("Atomic model provider usage does not match the native stage contract");
+  }
+  if (output.live_provider_verified !== input.liveProviderExpected
+      || acceptedInference.liveProviderExpected !== input.liveProviderExpected
+      || acceptedInference.liveProviderVerified !== false) {
+    throw new Error("Atomic model provider-verification evidence changed from its trusted launch binding");
   }
   const totalInputTokens = requests.reduce((sum, request) => sum + request.inputTokens, 0);
   const totalOutputTokens = requests.reduce((sum, request) => sum + request.outputTokens, 0);

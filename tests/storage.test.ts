@@ -450,6 +450,15 @@ async function exercisePilotApprovalBindingContract(
   };
   await request(expiringApproval, "expiring");
   clock.set(clock.current() + 5_001);
+  assert.deepEqual(
+    (await store.listExpiredApprovals("ovalo", "test", clock.now().toISOString(), 100)).map((item) => item.id),
+    [expiringApproval.id],
+  );
+  assert.deepEqual(await store.listExpiredApprovals("ovalo", "another-workflow", clock.now().toISOString(), 100), []);
+  await assert.rejects(
+    store.listExpiredApprovals("ovalo", "test", clock.now().toISOString(), 0),
+    /limit must be between 1 and 1000/i,
+  );
   await assert.rejects(store.resolveApprovalTransaction({
     approvalId: expiringApproval.id,
     state: "approved",

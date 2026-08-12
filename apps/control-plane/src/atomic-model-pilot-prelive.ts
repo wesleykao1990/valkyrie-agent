@@ -61,6 +61,7 @@ export interface AtomicModelPilotContextInput {
   leaseExpiresAt: string;
   maxCostUsd: number;
   approvalEffect: string;
+  liveProviderExpected: boolean;
   contextPack: Record<string, unknown>;
   now?: () => Date;
 }
@@ -113,7 +114,7 @@ export async function prepareAtomicModelPilotContext(
     const contextPack = `${canonicalJson(normalizedContextPack)}\n`;
     const contextPackFile = writeExclusive(contextRoot, "context-pack.json", contextPack);
     const runContractValue = {
-      schemaVersion: "1.0.0-model-prelive",
+      schemaVersion: "1.1.0-model",
       runId: input.binding.runId,
       projectId: input.binding.projectId,
       taskId: input.taskId,
@@ -134,6 +135,7 @@ export async function prepareAtomicModelPilotContext(
         capabilityTokenSha256: issued.capability.tokenHash,
         credentialInWriter: false,
         fakeProvider: false,
+        liveProviderExpected: input.liveProviderExpected,
         liveProviderVerified: false,
       },
       approval: { action: "accept_atomic_fixture_model_result", exactEffect: input.approvalEffect },
@@ -161,6 +163,7 @@ export async function prepareAtomicModelPilotContext(
       roleModels: input.policy.roleModels,
       maxCostUsd: input.maxCostUsd,
       approvalEffect: input.approvalEffect,
+      liveProviderExpected: input.liveProviderExpected,
     });
     const launchFile = writeExclusive(contextRoot, "atomic-model-launch-manifest.json", `${canonicalJson(manifest)}\n`);
     const modelsFile = writeExclusive(contextRoot, "atomic-agent/models.json", `${agent.modelsJson}\n`);

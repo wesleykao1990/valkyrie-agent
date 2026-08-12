@@ -955,6 +955,18 @@ export class PostgresStore implements ControlPlaneStore {
     return result.rows.map(this.mapApproval);
   }
 
+  async listExpiredApprovals(projectId: string, workflow: string, observedAt: string, limit = 100): Promise<Approval[]> {
+    const at = isoString(observedAt);
+    if (!projectId.trim() || !workflow.trim()) throw new StorageConflictError("Expired approval query requires project and workflow");
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+      throw new StorageConflictError("Expired approval query limit must be between 1 and 1000");
+    }
+    const result = await this.pool.query(`SELECT * FROM approvals
+      WHERE project_id=$1 AND workflow=$2 AND state='pending' AND expires_at<=$3
+      ORDER BY expires_at,id LIMIT $4`, [projectId, workflow, at, limit]);
+    return result.rows.map(this.mapApproval);
+  }
+
   async resolveApproval(id: string, state: string, decision: string, resolvedBy: string): Promise<void> {
     await this.resolveApprovalTransaction({ approvalId: id, state, decision, resolvedBy });
   }

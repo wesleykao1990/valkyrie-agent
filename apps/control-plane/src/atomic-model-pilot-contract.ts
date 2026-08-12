@@ -81,9 +81,10 @@ export function buildAtomicModelLaunchManifest(input: {
   roleModels: ScopedInferencePolicy["roleModels"];
   maxCostUsd: number;
   approvalEffect: string;
+  liveProviderExpected: boolean;
 }): Record<string, unknown> {
   return {
-    schema_version: "1.0.0-model-prelive",
+    schema_version: "1.1.0-model",
     run_id: input.runId,
     project_id: input.projectId,
     task_id: input.taskId,
@@ -118,6 +119,7 @@ export function buildAtomicModelLaunchManifest(input: {
       max_elapsed_ms: input.capability.maxElapsedMs,
       expires_at: input.capability.expiresAt,
       credential_in_writer: false,
+      live_provider_expected: input.liveProviderExpected,
       live_provider_verified: false,
     },
     inference_policy_sha256: input.capability.policyHash,

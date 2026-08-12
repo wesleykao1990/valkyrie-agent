@@ -202,6 +202,17 @@ returns a conflict.
     expiry (15 minutes in the current coordinator). Approve records a safe mock receipt after writer cleanup; it cannot
     create a PR, merge, deploy, mutate an external database, expand credentials,
     or promote the proposed memory.
+- `POST /api/atomic-model-fixture/approvals/:approvalId/resolve`
+  - `{ "decision":"approve" | "deny" | "request_changes" }`
+  - Available only when the fixed model pilot and configured operator principal
+    are enabled. It resolves only `accept_atomic_fixture_model_result`, after
+    re-opening every governed artifact and rechecking exact run/project/workflow,
+    evidence digest, sandbox policy, expiry, and cleanup. Approve records only a
+    safe mock receipt.
+- `GET /api/atomic-model-fixture/runs/:runId/artifacts/:artifactId`
+  - Returns one bounded UTF-8 artifact from the pending model-pilot gate after a
+    no-follow checksum/size/media verification. It never returns a host path and
+    serializes only a fixed pathless failure.
 
 ## Idea and demo mutations
 

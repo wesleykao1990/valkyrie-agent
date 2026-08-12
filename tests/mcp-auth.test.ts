@@ -33,6 +33,17 @@ test("MCP sends bearer auth and enforces its configured tool allowlist", async (
         content: "patch bytes\n",
       }));
     }
+    if (request.url === "/api/atomic-model-fixture/runs/run_model/artifacts/artifact_model") {
+      return response.end(JSON.stringify({
+        runId: "run_model",
+        artifactId: "artifact_model",
+        checksum: "b".repeat(64),
+        content: "{\"approved\":true}\n",
+      }));
+    }
+    if (request.url === "/api/atomic-model-fixture/approvals/approval_model/resolve") {
+      return response.end(JSON.stringify({ run: { id: "run_model", status: "completed" } }));
+    }
     return response.end(JSON.stringify({ projects: [{ id: "ovalo" }] }));
   });
   api.listen(0, "127.0.0.1");
@@ -43,7 +54,7 @@ test("MCP sends bearer auth and enforces its configured tool allowlist", async (
   environment.CONTROL_PLANE_AUTH_TOKEN = token;
   environment.CONTROL_PLANE_API = `http://127.0.0.1:${port}`;
   environment.CONTROL_PLANE_MCP_TOOL_ALLOWLIST =
-    "projects_list,runtimes_status,runs_start,atomic_fixture_artifact_read";
+    "projects_list,runtimes_status,runs_start,atomic_fixture_artifact_read,atomic_model_fixture_artifact_read,atomic_model_fixture_approval_resolve";
   const child = spawn(
     process.execPath,
     ["--experimental-strip-types", "apps/mcp-server/src/index.ts"],
@@ -92,9 +103,12 @@ test("MCP sends bearer auth and enforces its configured tool allowlist", async (
     const listed = await rpc("tools/list");
     assert.deepEqual(listed.result.tools.map((item: any) => item.name), [
       "projects_list", "runtimes_status", "runs_start", "atomic_fixture_artifact_read",
+      "atomic_model_fixture_artifact_read", "atomic_model_fixture_approval_resolve",
     ]);
     const runStartTool = listed.result.tools.find((item: any) => item.name === "runs_start");
-    assert.deepEqual(runStartTool.inputSchema.properties.workflow.enum, ["runtime-connectivity", "atomic-fixture-pilot"]);
+    assert.deepEqual(runStartTool.inputSchema.properties.workflow.enum, [
+      "runtime-connectivity", "atomic-fixture-pilot", "atomic-fixture-model-pilot",
+    ]);
     const artifactReadTool = listed.result.tools.find((item: any) =>
       item.name === "atomic_fixture_artifact_read");
     assert.deepEqual(artifactReadTool.inputSchema.required, ["runId", "artifactId"]);
@@ -115,6 +129,16 @@ test("MCP sends bearer auth and enforces its configured tool allowlist", async (
       arguments: { runId: "run_fixture", artifactId: "artifact_fixture" },
     });
     assert.match(artifact.result.content[0].text, /patch bytes/);
+    const modelArtifact = await rpc("tools/call", {
+      name: "atomic_model_fixture_artifact_read",
+      arguments: { runId: "run_model", artifactId: "artifact_model" },
+    });
+    assert.match(modelArtifact.result.content[0].text, /approved/);
+    const modelApproval = await rpc("tools/call", {
+      name: "atomic_model_fixture_approval_resolve",
+      arguments: { approvalId: "approval_model", decision: "approve" },
+    });
+    assert.match(modelApproval.result.content[0].text, /completed/);
 
     const invalidArtifact = await rpc("tools/call", {
       name: "atomic_fixture_artifact_read",
@@ -133,7 +157,7 @@ test("MCP sends bearer auth and enforces its configured tool allowlist", async (
     const denied = await rpc("tools/call", { name: "memory_search", arguments: {} });
     assert.equal(denied.error.code, -32601);
     assert.match(denied.error.message, /not available/);
-    assert.deepEqual(receivedAuthorization, [`Bearer ${token}`, `Bearer ${token}`, `Bearer ${token}`]);
+    assert.deepEqual(receivedAuthorization, Array(5).fill(`Bearer ${token}`));
     assert.doesNotMatch(stderr, new RegExp(token));
   } finally {
     child.kill("SIGTERM");

@@ -16,13 +16,20 @@
 - [x] Live Colima/Docker OCI pass with a reviewed digest-pinned fixture image
 - [x] Durable migration-005 sandbox lifecycle and exact-label restart/orphan
   reconciliation with SQLite/PostgreSQL parity
+- [x] Default-off M5a Atomic tool-only fixture, live immutable-runner proof,
+  governed evidence, safe-mock acceptance, and proposed-only memory
+- [x] Credential-free M5b model lifecycle: scoped gateway/capabilities, fixed
+  Atomic model workflow, bounded repair/fresh verifier, service/Hermes admission,
+  restart/cancel/expiry/artifact review, and SQLite/PostgreSQL parity
 
 ## P0
 
 - [ ] Linear project/issue read adapter
 - [ ] Linear idea creation with idempotency
-- [ ] Compose a verified writer boundary into the first non-production Atomic
-  pilot; keep model writers disabled until its egress/credential policy is explicit
+- [x] Compose a verified writer boundary into the first non-production Atomic
+  pilot; keep the model path default-off behind its scoped egress/credential policy
+- [ ] Run the fixed M5b pilot with one reviewed provider/model and record actual
+  model, token, cost, verifier, artifact, cleanup, and human-review evidence
 - [ ] OpenViking read-only retrieval evaluation
 - [ ] Production audit log/retention policy (checksummed artifact registration is
   implemented for the fixture boundary)

@@ -207,8 +207,9 @@ the existing approval row: `project_id`, `workflow`, lowercase SHA-256
 `evidence_digest`, lowercase SHA-256 `policy_hash`, and `expires_at`. The five
 fields must be either all present or all null so legacy approvals remain valid but
 cannot be mistaken for a fixture gate. An index on project/workflow/state/expiry
-supports a future bounded expiry query; the current fixture-only maintenance loop
-still scans pending approvals in process and is not a production-scale dispatcher.
+supports the registered fixture coordinators' bounded oldest-first expiry pages;
+each maintenance pass is capped and fails visibly if its backlog exceeds that
+bound. This is still not a production approval dispatcher or retention policy.
 Approval resolution/expiry verifies the
 complete expected binding and updates approval, run, event, and outbox in one
 transaction. The migration is checksummed and forward-only; rollback from schema
@@ -290,13 +291,13 @@ capabilities and provider credentials are never stored. Reservation and
 completion are transactional in SQLite and PostgreSQL; a role cannot spend
 twice, changed replay conflicts, and aggregate request/token/cost limits fail
 closed. `expireInferenceCapabilities(observedAt, limit)` closes an indexed,
-bounded page with matching outbox evidence; it is ready for the model
-coordinator's still-pending service maintenance loop. Migration 007 is
+bounded page with matching outbox evidence; the registered model lifecycle calls
+it from normal service maintenance in bounded pages. Migration 007 is
 checksummed and forward-only. Binary rollback requires
 a verified pre-v7 backup or separate compatible data set; an older binary must
 reject the v7 ledger.
 
-The pre-live M5b tests use an in-memory fake upstream and private Unix socket.
+The credential-free M5b tests use an in-memory fake upstream and private Unix socket.
 They do not contact a provider and do not establish model quality. Normal test
 wrappers strip every `ATOMIC_FIXTURE_MODEL_*` setting so an inherited credential,
 endpoint, or enable flag cannot turn verification into live inference.

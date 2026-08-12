@@ -50,10 +50,10 @@ test("pre-live context binds an accepted image/package and exposes only a hashed
       },
       taskId: "task_model", request: "fixed request", policy,
       gatewayBaseUrl: "http://valkyrie-inference:8790/v1", packageSha256: packageSha,
-      workflowVersion: "0.1.0-prelive", workflowSha256: "e".repeat(64), coreSha256: "f".repeat(64),
+      workflowVersion: "0.2.0", workflowSha256: "e".repeat(64), coreSha256: "f".repeat(64),
       imageDigest: image, acceptedPackageSha256: packageSha, acceptedImageDigest: image,
       leaseExpiresAt: "2026-08-12T00:10:00.000Z", maxCostUsd: 1,
-      approvalEffect: "Record an evidence-bound safe mock receipt only.", contextPack: { objective: "fixed" },
+      approvalEffect: "Record an evidence-bound safe mock receipt only.", contextPack: { objective: "fixed" }, liveProviderExpected: false,
       now: () => new Date(now),
     });
     const token = readFileSync(join(context, "inference-capability"), "utf8").trim();
@@ -88,10 +88,10 @@ test("pre-live context rejects a package or image outside the accepted deploymen
       },
       taskId: "task_reject", request: "fixed", policy, gatewayBaseUrl: "http://valkyrie-inference:8790/v1",
       packageSha256: "d".repeat(64), acceptedPackageSha256: "e".repeat(64),
-      workflowVersion: "0.1.0-prelive", workflowSha256: "f".repeat(64), coreSha256: "1".repeat(64),
+      workflowVersion: "0.2.0", workflowSha256: "f".repeat(64), coreSha256: "1".repeat(64),
       imageDigest: `sha256:${"2".repeat(64)}`, acceptedImageDigest: `sha256:${"3".repeat(64)}`,
       leaseExpiresAt: "2026-08-12T00:10:00.000Z", maxCostUsd: 1,
-      approvalEffect: "safe mock", contextPack: {}, now: () => new Date(now),
+      approvalEffect: "safe mock", contextPack: {}, now: () => new Date(now), liveProviderExpected: false,
     }), /allowlist/i);
     assert.deepEqual(await store.listInferenceRequests("run_reject"), []);
   } finally {

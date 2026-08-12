@@ -39,15 +39,16 @@ test("Atomic model launch manifest binds the exact capability without plaintext 
   };
   const manifest = buildAtomicModelLaunchManifest({
     runId: capability.runId, projectId: capability.projectId, taskId: "task_fixture", request: "Fixed fixture request",
-    workflowVersion: "0.1.0-prelive", workflowSha256: "c".repeat(64), coreSha256: "d".repeat(64),
+    workflowVersion: "0.2.0", workflowSha256: "c".repeat(64), coreSha256: "d".repeat(64),
     packageSha256: "e".repeat(64), contextPackRef: "context://fixture", contractRef: "artifact://fixture/contract",
     workspaceId: "workspace_fixture", ownerId: "atomic_model_writer", fencingToken: 1,
     leaseExpiresAt: capability.expiresAt, imageDigest: `sha256:${"f".repeat(64)}`, sandboxPolicySha256: "1".repeat(64),
     capability, roleModels: policy.roleModels, maxCostUsd: 1,
-    approvalEffect: "Record a safe mock receipt only; no external action.",
+    approvalEffect: "Record a safe mock receipt only; no external action.", liveProviderExpected: false,
   });
   assert.deepEqual(validateAtomicModelLaunchManifest(manifest, resolve("packages/atomic-workflow-architect")), []);
   assert.equal(JSON.stringify(manifest).includes("vki_"), false);
   assert.equal((manifest.inference as any).credential_in_writer, false);
+  assert.equal((manifest.inference as any).live_provider_expected, false);
   assert.equal((manifest.inference as any).capability_token_sha256, capability.tokenHash);
 });

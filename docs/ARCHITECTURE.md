@@ -162,6 +162,34 @@ deployment, destructive database action, secret expansion, or canonical-memory
 write. A complete model-backed M5 depends on a reviewed local-model endpoint or a
 scoped inference proxy that keeps provider credentials outside the writer.
 
+## M5b Atomic model fixture composition (default off)
+
+`AtomicModelPilotLifecycleCoordinator` admits only the fixed Atomic Pilot project,
+model-fixture task, literal objective, Atomic root, and
+`atomic-fixture-model-pilot` workflow. It creates no new workflow engine: Atomic's
+main session owns the implementer, initial fresh verifier, optional single repair
+fork, and final fresh verifier. The control plane owns the exact clean base commit,
+writer fence, isolated container, bounded Project Brain pack, inference policy,
+artifacts, expiry, approval, and safe mock receipt.
+
+The writer joins one inspected local `Internal=true` Docker bridge but has no
+public credential or direct provider authority. A separate no-secret bridge can
+reach only the private host Unix-socket gateway. The gateway holds the reviewed
+provider credential, accepts an opaque expiring run capability, fixes role/model
+and request shape, and transactionally accounts request/token/cost/time limits in
+SQLite/PostgreSQL. The container gets only the capability file and fixed internal
+endpoint; host model homes, OAuth, keychain, Docker socket, and provider secret
+are never mounted or forwarded.
+
+After Atomic succeeds, deterministic checks and substantive source/test/patch/
+fresh-verifier evidence are rebound to stopped frozen exports. The container,
+bridge, worktree, capability, and lease must be cleaned/revoked before the run can
+enter an evidence/policy/expiry-bound approval. Authenticated HTTP/MCP may read
+only bounded rehashed UTF-8 artifacts and resolve only the safe mock action.
+Restart recovery never claims native cross-process resume. A fake provider proves
+contracts only; `liveProviderVerified` becomes true solely for a launch bound to
+live execution whose durable role requests and native evidence all agree.
+
 ## Prototype substitution
 
 The production architecture uses PostgreSQL and a read-only OpenViking trial. The

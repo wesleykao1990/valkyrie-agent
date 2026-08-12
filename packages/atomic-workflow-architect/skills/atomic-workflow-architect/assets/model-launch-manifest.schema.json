@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:wesley:atomic:model-launch-manifest:1.0.0-prelive",
+  "$id": "urn:wesley:atomic:model-launch-manifest:1.1.0",
   "title": "Valkyrie Atomic model pilot launch manifest",
   "type": "object",
   "additionalProperties": false,
@@ -11,7 +11,7 @@
     "crossProcessResume", "final_action", "approval"
   ],
   "properties": {
-    "schema_version": { "const": "1.0.0-model-prelive" },
+    "schema_version": { "const": "1.1.0-model" },
     "run_id": { "$ref": "#/$defs/stableId" },
     "project_id": { "$ref": "#/$defs/stableId" },
     "task_id": { "$ref": "#/$defs/stableId" },
@@ -54,7 +54,7 @@
       "required": [
         "capability_id", "capability_token_sha256", "provider", "model", "api", "role_models",
         "max_requests", "max_input_tokens", "max_output_tokens", "max_cost_micros",
-        "max_elapsed_ms", "expires_at", "credential_in_writer", "live_provider_verified"
+        "max_elapsed_ms", "expires_at", "credential_in_writer", "live_provider_expected", "live_provider_verified"
       ],
       "properties": {
         "capability_id": { "$ref": "#/$defs/stableId" },
@@ -79,6 +79,7 @@
         "max_elapsed_ms": { "type": "integer", "minimum": 100, "maximum": 600000 },
         "expires_at": { "$ref": "#/$defs/nonEmpty" },
         "credential_in_writer": { "const": false },
+        "live_provider_expected": { "type": "boolean" },
         "live_provider_verified": { "const": false }
       }
     },

@@ -144,6 +144,7 @@ test("Atomic model pilot is default-off and requires accepted digests plus a cre
     "ATOMIC_FIXTURE_MODEL_PROVIDER", "ATOMIC_FIXTURE_MODEL_ID", "ATOMIC_FIXTURE_MODEL_UPSTREAM_BASE_URL",
     "ATOMIC_FIXTURE_MODEL_CREDENTIAL_FILE", "ATOMIC_FIXTURE_MODEL_ALLOW_CREDENTIAL_FREE_LOOPBACK",
     "ATOMIC_FIXTURE_MODEL_ACCEPTED_PACKAGE_SHA256", "ATOMIC_FIXTURE_MODEL_ACCEPTED_IMAGE_DIGEST",
+    "ATOMIC_FIXTURE_MODEL_NETWORK", "CONTROL_PLANE_OPERATOR_ID",
     "ATOMIC_FIXTURE_MODEL_INPUT_COST_MICROS_PER_MILLION", "ATOMIC_FIXTURE_MODEL_OUTPUT_COST_MICROS_PER_MILLION",
     "ENABLE_DEMO_RESET", "CONTROL_PLANE_AUTH_TOKEN",
   ] as const;
@@ -161,10 +162,14 @@ test("Atomic model pilot is default-off and requires accepted digests plus a cre
     process.env.ATOMIC_FIXTURE_PILOT_IMAGE = `fixture.invalid/atomic@${digest}`;
     process.env.ATOMIC_FIXTURE_PILOT_ROOT = "/tmp/atomic-pilot-root";
     process.env.ENABLE_DEMO_RESET = "false";
+    assert.throws(() => loadConfig(), /CONTROL_PLANE_OPERATOR_ID/);
+    process.env.CONTROL_PLANE_OPERATOR_ID = "wesley-local-operator";
     assert.throws(() => loadConfig(), /explicit provider, model, and upstream/);
     process.env.ATOMIC_FIXTURE_MODEL_PROVIDER = "future-provider";
     process.env.ATOMIC_FIXTURE_MODEL_ID = "future-model";
     process.env.ATOMIC_FIXTURE_MODEL_UPSTREAM_BASE_URL = "https://api.example.invalid/v1";
+    assert.throws(() => loadConfig(), /internal Docker network/);
+    process.env.ATOMIC_FIXTURE_MODEL_NETWORK = "valkyrie-model-test";
     assert.throws(() => loadConfig(), /private credential file/);
     process.env.ATOMIC_FIXTURE_MODEL_CREDENTIAL_FILE = "/tmp/future-provider-token";
     assert.throws(() => loadConfig(), /provider prices/);
@@ -210,6 +215,7 @@ test("disposable fixture processes ignore inherited persistent storage and repos
     "DATABASE_URL",
     "TEST_DATABASE_URL",
     "RUN_POSTGRES_STORAGE_CONTRACT_TESTS",
+    "RUN_POSTGRES_MODEL_LIFECYCLE_TESTS",
     "POSTGRES_AUTO_MIGRATE",
     "REPOSITORY_PATH_OVALO",
     "ATOMIC_ADAPTER",
@@ -218,6 +224,7 @@ test("disposable fixture processes ignore inherited persistent storage and repos
     "CONTROL_PLANE_AUTH_TOKEN",
     "CONTROL_PLANE_AUTH_TOKEN_FILE",
     "CONTROL_PLANE_MCP_TOOL_ALLOWLIST",
+    "CONTROL_PLANE_OPERATOR_ID",
     "ATOMIC_FIXTURE_MODEL_PILOT_ENABLED",
     "ATOMIC_FIXTURE_MODEL_CREDENTIAL_FILE",
   ] as const;
@@ -227,6 +234,7 @@ test("disposable fixture processes ignore inherited persistent storage and repos
     process.env.DATABASE_URL = "postgresql://persistent.example/control_plane";
     process.env.TEST_DATABASE_URL = "postgresql://persistent.example/test";
     process.env.RUN_POSTGRES_STORAGE_CONTRACT_TESTS = "1";
+    process.env.RUN_POSTGRES_MODEL_LIFECYCLE_TESTS = "1";
     process.env.POSTGRES_AUTO_MIGRATE = "true";
     process.env.REPOSITORY_PATH_OVALO = "/sensitive/repository";
     process.env.ATOMIC_ADAPTER = "native";
@@ -235,6 +243,7 @@ test("disposable fixture processes ignore inherited persistent storage and repos
     process.env.CONTROL_PLANE_AUTH_TOKEN = "0123456789abcdefghijklmnopqrstuvwxyz-ABCDE";
     process.env.CONTROL_PLANE_AUTH_TOKEN_FILE = "/sensitive/token";
     process.env.CONTROL_PLANE_MCP_TOOL_ALLOWLIST = "projects_list";
+    process.env.CONTROL_PLANE_OPERATOR_ID = "wesley-local-operator";
     process.env.ATOMIC_FIXTURE_MODEL_PILOT_ENABLED = "true";
     process.env.ATOMIC_FIXTURE_MODEL_CREDENTIAL_FILE = "/sensitive/provider-token";
 
@@ -247,6 +256,7 @@ test("disposable fixture processes ignore inherited persistent storage and repos
     assert.equal(environment.DATABASE_URL, undefined);
     assert.equal(environment.TEST_DATABASE_URL, undefined);
     assert.equal(environment.RUN_POSTGRES_STORAGE_CONTRACT_TESTS, undefined);
+    assert.equal(environment.RUN_POSTGRES_MODEL_LIFECYCLE_TESTS, undefined);
     assert.equal(environment.REPOSITORY_PATH_OVALO, undefined);
     assert.equal(environment.ATOMIC_ADAPTER, undefined);
     assert.equal(environment.CODEX_ADAPTER, undefined);
@@ -254,6 +264,7 @@ test("disposable fixture processes ignore inherited persistent storage and repos
     assert.equal(environment.CONTROL_PLANE_AUTH_TOKEN, undefined);
     assert.equal(environment.CONTROL_PLANE_AUTH_TOKEN_FILE, undefined);
     assert.equal(environment.CONTROL_PLANE_MCP_TOOL_ALLOWLIST, undefined);
+    assert.equal(environment.CONTROL_PLANE_OPERATOR_ID, undefined);
     assert.equal(environment.ATOMIC_FIXTURE_MODEL_PILOT_ENABLED, undefined);
     assert.equal(environment.ATOMIC_FIXTURE_MODEL_CREDENTIAL_FILE, undefined);
   } finally {

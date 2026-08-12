@@ -162,6 +162,46 @@ export class ScopedInferenceBridge {
     await this.removeExact(handle.id);
   }
 
+  /**
+   * A model pilot cannot resume its native process across control-plane
+   * restarts. Remove only bridges whose exact image, socket, network, and
+   * ownership labels still match this configured provider.
+   */
+  async reconcileStartup(): Promise<number> {
+    const socket = resolve(this.options.socketPath);
+    const inventory = await this.options.engine.invoke("inventory", [
+      "ps", "--no-trunc", "--all",
+      "--filter", "label=valkyrie.managed=true",
+      "--filter", "label=valkyrie.kind=inference-bridge",
+      "--filter", `label=valkyrie.socket-sha256=${sha(socket)}`,
+      "--format", "{{.ID}}",
+    ], this.timeoutMs);
+    const ids = inventory.stdout.split(/\r?\n/u).filter(Boolean);
+    if (ids.length > 1_000 || new Set(ids).size !== ids.length || ids.some((id) => !CONTAINER.test(id))) {
+      throw new Error("Inference bridge startup inventory is malformed or exceeds its bound");
+    }
+    let removed = 0;
+    for (const id of ids) {
+      const inspected = await this.options.engine.invoke("inspect", ["inspect", id], this.timeoutMs);
+      let raw: any;
+      try { raw = JSON.parse(inspected.stdout); } catch { throw new Error("Inference bridge restart inspection is invalid"); }
+      const item = Array.isArray(raw) ? raw[0] : raw;
+      const runId = item?.Config?.Labels?.["valkyrie.run-id"];
+      if (typeof runId !== "string" || !SAFE.test(runId)) throw new Error("Inference bridge restart ownership label is invalid");
+      const labels = {
+        "valkyrie.managed": "true",
+        "valkyrie.kind": "inference-bridge",
+        "valkyrie.run-id": runId,
+        "valkyrie.socket-sha256": sha(socket),
+      };
+      const name = `valkyrie-inference-${sha(runId).slice(0, 20)}`;
+      this.assertInspect(raw, id, labels, socket, name);
+      await this.removeExact(id);
+      removed += 1;
+    }
+    return removed;
+  }
+
   private async removeExact(id: string): Promise<void> {
     await this.options.engine.invoke("rm", ["rm", "--force", "--volumes", id], this.timeoutMs);
   }

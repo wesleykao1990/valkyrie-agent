@@ -1078,6 +1078,8 @@ test("restart inventory requests untruncated Docker IDs before enforcing durable
       "label=valkyrie.managed=true",
       "--filter",
       "label=valkyrie.kind=writer-sandbox",
+      "--filter",
+      `label=valkyrie.policy-sha256=${item.provider.contract().policyHash}`,
       "--format",
       "{{.ID}}",
     ]);

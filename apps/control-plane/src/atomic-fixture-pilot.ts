@@ -899,13 +899,12 @@ export class AtomicFixturePilotCoordinator {
       approvalsRecovered += 1;
     }
 
-    const expiredApprovals = await this.expireApprovals(pendingApprovals);
+    const expiredApprovals = await this.expireApprovals();
     return { sandbox, queuedScheduled, approvalsRecovered, expiredApprovals };
   }
 
   async tick(): Promise<{ expiredApprovals: number }> {
-    const pendingApprovals = await this.store.listApprovals("pending");
-    return { expiredApprovals: await this.expireApprovals(pendingApprovals) };
+    return { expiredApprovals: await this.expireApprovals() };
   }
 
   async shutdown(): Promise<void> {
@@ -1608,37 +1607,43 @@ export class AtomicFixturePilotCoordinator {
     this.removeExistingStagedContext(run.id);
   }
 
-  private async expireApprovals(pendingApprovals: readonly Approval[]): Promise<number> {
+  private async expireApprovals(): Promise<number> {
     let expired = 0;
-    const observedMs = this.clock().getTime();
-    for (const approval of pendingApprovals) {
-      if (approval.action !== ATOMIC_FIXTURE_APPROVAL_ACTION
-        || !approval.expiresAt
-        || Date.parse(approval.expiresAt) > observedMs) continue;
-      const run = await this.store.getRun(approval.runId);
-      if (!run || !this.isPilotRun(run) || run.status !== "awaiting_approval") continue;
-      const binding = approvalBindingOf(approval);
-      if (!binding) throw new Error("Expired Atomic fixture approval lost its binding");
-      const at = this.clock().toISOString();
-      await this.store.expireApprovalTransaction({
-        approvalId: approval.id,
-        runPatch: {
-          status: "failed",
-          stage: "approval_expired",
-          completedAt: at,
-          nextActionAt: null,
-          metadata: { ...run.metadata, approvalExpired: true, externalActionPerformed: false },
-        },
-        event: {
-          id: `event_atomic_approval_expired_${sha(approval.id).slice(0, 32)}`,
-          runId: run.id,
-          type: "approval.expired",
-          message: "Atomic fixture approval expired without an external action",
-          payload: { approvalId: approval.id, evidenceDigest: binding.evidenceDigest },
-          createdAt: at,
-        },
-      });
-      expired += 1;
+    const observedAt = this.clock().toISOString();
+    for (let batch = 0; batch < 10; batch += 1) {
+      const pendingApprovals = await this.store.listExpiredApprovals(
+        ATOMIC_FIXTURE_PROJECT_ID,
+        ATOMIC_FIXTURE_WORKFLOW_NAME,
+        observedAt,
+        100,
+      );
+      for (const approval of pendingApprovals) {
+        const run = await this.store.getRun(approval.runId);
+        if (!run || !this.isPilotRun(run) || run.status !== "awaiting_approval") continue;
+        const binding = approvalBindingOf(approval);
+        if (!binding) throw new Error("Expired Atomic fixture approval lost its binding");
+        await this.store.expireApprovalTransaction({
+          approvalId: approval.id,
+          runPatch: {
+            status: "failed",
+            stage: "approval_expired",
+            completedAt: observedAt,
+            nextActionAt: null,
+            metadata: { ...run.metadata, approvalExpired: true, externalActionPerformed: false },
+          },
+          event: {
+            id: `event_atomic_approval_expired_${sha(approval.id).slice(0, 32)}`,
+            runId: run.id,
+            type: "approval.expired",
+            message: "Atomic fixture approval expired without an external action",
+            payload: { approvalId: approval.id, evidenceDigest: binding.evidenceDigest },
+            createdAt: observedAt,
+          },
+        });
+        expired += 1;
+      }
+      if (pendingApprovals.length < 100) break;
+      if (batch === 9) throw new Error("Atomic fixture approval expiry backlog exceeded the bounded maintenance pass");
     }
     return expired;
   }

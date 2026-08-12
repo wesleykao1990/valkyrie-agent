@@ -1,4 +1,4 @@
-# Session handoff — v0.3.0 through Milestone 5b pre-live
+# Session handoff — v0.3.0 through the credential-free Milestone 5b boundary
 
 Date: 2026-08-12
 
@@ -16,12 +16,14 @@ Date: 2026-08-12
   verifier, frozen governed evidence, terminal cleanup, an evidence-bound human
   gate, an evidence-derived proposed-only memory record, and a safe mock
   acceptance receipt after approval.
-- Milestone 5b is implemented through the credential-free pre-live boundary:
+- Milestone 5b is implemented through the complete credential-free boundary:
   scoped capability/accounting storage, a private Unix inference gateway,
   no-secret internal-network bridge, fixed Atomic model workflow, fresh initial
   and final verifiers, one optional implementer-continuity repair, raw native
-  evidence, and cleanup/revocation contracts. No provider/model was exercised;
-  live model quality, token/cost evidence, and authenticated human review remain.
+  evidence, cleanup/revocation, authenticated service/Hermes admission,
+  cancellation, restart, bounded maintenance, artifact review, evidence-bound
+  safe approval, and SQLite/PostgreSQL parity. No provider/model was exercised;
+  live model quality, real token/cost evidence, and human review remain.
 
 The M5a implementation, deterministic contracts, and live no-model runner smoke
 are complete. Exact immutable-image and native-run evidence is recorded in
@@ -67,6 +69,13 @@ The M5a slice primarily adds or changes:
 
 Use `git diff --stat` and draft PR #1 for the exact path list.
 
+The final credential-free M5b composition adds
+`atomic-model-pilot-lifecycle.ts`, model HTTP/MCP routes, the opt-in
+`atomic-model-pilot-live-smoke.ts`, service/index/config composition, exact
+internal-bridge restart cleanup, provider-aware OCI reconciliation, launch schema
+1.1, live-provider expectation binding, PostgreSQL lifecycle parity, and updated
+security/setup/continuation documentation.
+
 ## 4. Tests and verification evidence
 
 The recorded pre-M5 baseline was:
@@ -94,11 +103,12 @@ nine governed artifacts, read four back through MCP, used zero model tokens/cost
 completed the exact safe-mock approval, left memory proposed, and left no managed
 Docker container. The opt-in test client invoked approval automatically after its
 assertions; this proves the bound transition, not independent human review.
-Repository-wide `npm run verify` also passed: strict TypeScript; 214 general tests with 212
-passed, 0 failed, and 2 honest opt-in skips; disposable PostgreSQL 22/22; Atomic
-package verification (36 required files and 5 workflows); and authenticated
-HTTP/MCP smokes. The M5b preparation did not load a provider credential or make
-a live inference request.
+Final repository-wide `npm run verify` passed: strict TypeScript; 223 general
+tests with 220 passed, 0 failed, and 3 honest opt-in skips; disposable PostgreSQL
+storage 22/22 plus the full M5b lifecycle 7/7; Atomic package verification (36
+required files and 5 workflows); and authenticated HTTP/MCP smokes. The M5b
+lifecycle ran against both SQLite and PostgreSQL without loading a provider
+credential or making a live inference request.
 
 ## 5. Live integrations actually exercised
 
@@ -128,10 +138,12 @@ action, production secret, or canonical memory promotion.
 
 - M5a writes reviewed fixed bytes and has zero repair rounds. It measures
   integration/lifecycle correctness, not agent coding quality.
-- Its fresh verifier is deterministic and process-separated, not an independent
-  model context. M5b still needs real model implementation/review evidence.
-- The writer has network `none` and no provider credential. General or model-
-  backed writing is unavailable until inference is scoped outside the writer.
+- M5a's fresh verifier is deterministic and process-separated. M5b implements
+  fresh model roles and one bounded repair, but still needs live provider/model
+  output and independent review evidence before quality can be claimed.
+- M5a's writer has network `none`. M5b permits only an inspected internal Docker
+  network to a no-secret bridge; the provider credential remains in the host
+  gateway and is never placed in the writer.
 - `crossProcessResume=false`; active Atomic work is cleaned/quarantined and failed
   after restart. Only already-cleaned evidence can be recovered for a still-valid
   control-plane approval.
@@ -144,15 +156,15 @@ action, production secret, or canonical memory promotion.
 - M5a supports one active control-plane pilot coordinator process. Transactional
   admission works across PostgreSQL processes, but cancellation/native ownership
   handoff is not horizontally coordinated while `crossProcessResume=false`.
-- Atomic's fixed internal project/tool trust is pre-approved only inside the
-  credential-free, network-none M5a container. The separate control-plane gate is
-  operator-intended and evidence-bound, but M5a bearer auth does not attest human
-  presence; M5b needs a new reviewed native permission/HIL policy.
+- Atomic's fixed internal project/tool trust is pre-approved only for these exact
+  fixture workflows. The separate control-plane gate is operator-intended and
+  evidence-bound, but bearer auth does not attest human presence; never generalize
+  the fixture's blanket native trust to a broader writer.
 - The live smoke's approval was an automated operator-authorized test-client
   action with a fixed pilot principal. M5b needs authenticated actor provenance
   and a real person-in-the-loop review before claiming human acceptance.
-- Migration 006 is forward-only. Older binaries reject a v6 ledger; rollback needs
-  a verified pre-v6 backup or separate compatible database.
+- Migrations 006 and 007 are forward-only. Older binaries reject a v7 ledger;
+  rollback needs a verified pre-v7 backup or separate compatible database.
 - The nested Atomic module remains `UNLICENSED` despite public repository
   visibility.
 
@@ -169,10 +181,14 @@ action, production secret, or canonical memory promotion.
   `npm run smoke:atomic-fixture` from another terminal.
 - The complete copy-paste commands and failure notes are in `README.md`.
 - Full repository verification needs PostgreSQL 16 `initdb` and `pg_ctl`.
-- Hermes/Claude/mobile setup remains separate from the M5a writer.
-- The M5b model coordinator remains internal/unregistered. Finish its durable
-  service/Hermes schedule, cancel, restart, approval/artifact-read, and
-  capability-maintenance composition before requesting a provider credential.
+- Hermes/Claude/mobile setup remains separate from the fixture writers.
+- To run M5b live, Wesley must choose one reviewed provider/model (or explicit
+  credential-free loopback model), limits/prices, accepted package/image digests,
+  dedicated internal Docker network, and operator identity. An external provider
+  additionally needs a dedicated low-limit token in a private 0600 file.
+- Start the default-off configured server and run `npm run smoke:atomic-model`.
+  The smoke stops at `awaiting_approval` by default so the governed artifacts can
+  be reviewed before the separate safe-mock acceptance transition.
 
 ## 8. ADRs or decisions requiring Wesley
 
@@ -251,13 +267,13 @@ CONTROL_PLANE_API=http://127.0.0.1:8787 \
 If the registry container already exists, start/inspect it instead of creating a
 duplicate. Do not add provider credentials or substitute a mutable image tag.
 See `README.md` and `docs/STORAGE.md` for PostgreSQL migrations 006–007,
-pre-v7 rollback, and troubleshooting. There is intentionally no live M5b command
-yet; do not add a provider credential until the service lifecycle is registered
-and deterministically verified.
+pre-v7 rollback, and troubleshooting. M5b is default-off; configure the reviewed
+provider/model boundary described in `README.md`, then run
+`npm run smoke:atomic-model`. It makes real model calls and stops before approval
+unless the explicit safe-mock test-client override is supplied.
 
 ## 10. Copy-paste continuation prompt
 
 Use `docs/NEXT_SESSION_PROMPT.md`. It starts from the fixed M5a integration slice
-and credential-free M5b boundary, requires their evidence to be verified first,
-and finishes the model coordinator's authenticated lifecycle before provider
-selection or live spend.
+and completed credential-free M5b lifecycle, requires their evidence to be
+verified first, and selects/runs one reviewed live model pilot before Milestone 6.

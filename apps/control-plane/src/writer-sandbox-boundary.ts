@@ -275,7 +275,9 @@ export class WriterSandboxBoundary {
 
   async reconcileStartup(): Promise<WriterSandboxReconciliationSummary> {
     const states: SandboxInstanceState[] = ["provisioning", "ready", "running", "freezing", "exporting"];
-    const instances = await this.options.store.listSandboxInstances(states);
+    const policyHash = this.options.provider.contract().policyHash;
+    const instances = (await this.options.store.listSandboxInstances(states))
+      .filter((instance) => instance.policyHash === policyHash);
     const results = await this.options.provider.reconcileOrphans(instances.map((instance) => ({
       runId: instance.runId,
       workspaceId: instance.workspaceId,

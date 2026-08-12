@@ -362,6 +362,8 @@ export interface ControlPlaneStore {
   requestApprovalTransaction(input: ApprovalRequestInput): Promise<ApprovalRequestResult>;
   getApproval(id: string): Promise<Approval | null>;
   listApprovals(state?: string): Promise<Approval[]>;
+  /** Uses the project/workflow/state/expiry index and returns a bounded oldest-first page. */
+  listExpiredApprovals(projectId: string, workflow: string, observedAt: string, limit?: number): Promise<Approval[]>;
   resolveApproval(id: string, state: string, decision: string, resolvedBy: string): Promise<void>;
   resolveApprovalTransaction(input: ApprovalResolutionInput): Promise<ApprovalResolutionResult>;
   /** Closes an expired, evidence-bound pending approval without human authority. */

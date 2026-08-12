@@ -141,16 +141,16 @@ request, model-based verifier, token/cost, real GitHub PR, merge, deploy, Linear
 write, expanded secret access, or canonical promotion is implemented. Native
 cross-process resume remains false.
 
-### M5b — model-backed pilot: pending
+### M5b — model-backed pilot: credential-free implementation complete, live evidence pending
 
-Complete the original model-backed acceptance gate only after a reviewed local
-model endpoint or scoped inference proxy keeps provider credentials outside the
-writer and enforces provider/model/request/token/cost/time/concurrency policy.
-Then run real model implementation and a fresh independent model verifier under
-the same literal contract, workspace, deterministic checks, approval, and evidence
-boundaries. Add bounded evidence-driven repair continuity only for that model
-variant. Atomic must still own its graph, and real draft PR creation remains a
-separate final action.
+The fixed scoped inference gateway, role capabilities, model workflow, fresh
+verifiers, one-repair path, authenticated service/Hermes lifecycle, restart,
+artifact review, approval, and SQLite/PostgreSQL parity are implemented
+default-off. Normal verification is credential-free and cannot claim model
+quality. Wesley must still select a reviewed local endpoint or provider/model and
+dedicated low-limit credential, then run the explicit live smoke under the same
+literal contract. Atomic still owns its graph, and real draft PR creation remains
+a separate final action.
 
 ## Milestone 6 — Direct Codex/Claude comparison
 

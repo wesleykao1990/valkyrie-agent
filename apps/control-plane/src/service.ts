@@ -12,6 +12,11 @@ import {
   ATOMIC_FIXTURE_WORKFLOW_NAME,
   type AtomicFixturePilotCoordinator,
 } from "./atomic-fixture-pilot.ts";
+import {
+  ATOMIC_MODEL_PILOT_APPROVAL_ACTION,
+  ATOMIC_MODEL_PILOT_WORKFLOW,
+} from "./atomic-model-pilot-coordinator.ts";
+import type { AtomicModelPilotLifecycleCoordinator } from "./atomic-model-pilot-lifecycle.ts";
 
 function requestHash(value: unknown): string {
   const normalized = JSON.parse(JSON.stringify(value)) as unknown;
@@ -26,6 +31,7 @@ export const MEMORY_PROMOTION_PREVIEW_MAX_FUTURE_SKEW_MS = 30 * 1_000;
 interface ControlPlaneServiceOptions {
   now?: () => Date;
   atomicFixturePilot?: AtomicFixturePilotCoordinator;
+  atomicModelPilot?: AtomicModelPilotLifecycleCoordinator;
 }
 
 export class ControlPlaneService {
@@ -36,6 +42,7 @@ export class ControlPlaneService {
   private readonly workerId = id("worker");
   private readonly now: () => Date;
   private readonly atomicFixturePilot?: AtomicFixturePilotCoordinator;
+  private readonly atomicModelPilot?: AtomicModelPilotLifecycleCoordinator;
   private currentTick: Promise<void> | null = null;
   private approvalQueue = new Map<string, Promise<unknown>>();
 
@@ -52,6 +59,7 @@ export class ControlPlaneService {
     this.adapters = adapters;
     this.now = options.now ?? (() => new Date());
     this.atomicFixturePilot = options.atomicFixturePilot;
+    this.atomicModelPilot = options.atomicModelPilot;
   }
 
   listProjects(): Promise<Project[]> { return this.store.listProjects(); }
@@ -77,22 +85,42 @@ export class ControlPlaneService {
         } satisfies RuntimePreflight;
       }
     }));
-    if (!this.atomicFixturePilot) return adapterStatuses;
-    const pilot = await this.atomicFixturePilot.preflight();
-    return [...adapterStatuses, {
-      runtime: "atomic",
-      adapter: "native",
-      enabled: pilot.enabled,
-      available: pilot.available,
-      executionMode: pilot.executionMode,
-      workflow: pilot.workflow,
-      modelExecutionAttempted: pilot.modelExecutionAttempted,
-      version: pilot.runner?.atomicVersion,
-      authenticated: false,
-      capabilities: { steer: false, pause: false, resume: false, approve: false, artifacts: true },
-      controlPlaneFinalAcceptance: true,
-      reason: pilot.reason,
-    }];
+    const results = [...adapterStatuses];
+    if (this.atomicFixturePilot) {
+      const pilot = await this.atomicFixturePilot.preflight();
+      results.push({
+        runtime: "atomic",
+        adapter: "native",
+        enabled: pilot.enabled,
+        available: pilot.available,
+        executionMode: pilot.executionMode,
+        workflow: pilot.workflow,
+        modelExecutionAttempted: pilot.modelExecutionAttempted,
+        version: pilot.runner?.atomicVersion,
+        authenticated: false,
+        capabilities: { steer: false, pause: false, resume: false, approve: false, artifacts: true },
+        controlPlaneFinalAcceptance: true,
+        reason: pilot.reason,
+      });
+    }
+    if (this.atomicModelPilot) {
+      const pilot = await this.atomicModelPilot.preflight();
+      results.push({
+        runtime: "atomic",
+        adapter: "native",
+        enabled: pilot.enabled,
+        available: pilot.available,
+        executionMode: pilot.executionMode,
+        workflow: pilot.workflow,
+        modelExecutionAttempted: pilot.modelExecutionAttempted,
+        version: pilot.runner?.atomicVersion,
+        authenticated: "unknown",
+        capabilities: { steer: false, pause: false, resume: false, approve: false, artifacts: true },
+        controlPlaneFinalAcceptance: true,
+        reason: pilot.reason,
+      });
+    }
+    return results;
   }
 
   async portfolio() {
@@ -194,6 +222,9 @@ export class ControlPlaneService {
         if (this.atomicFixturePilot?.isPilotRun(replayed.run) && replayed.run.status === "queued") {
           this.atomicFixturePilot.schedule(replayed.run.id);
         }
+        if (this.atomicModelPilot?.isPilotRun(replayed.run) && replayed.run.status === "queued") {
+          this.atomicModelPilot.schedule(replayed.run.id);
+        }
         return {
           run: replayed,
           route: {
@@ -258,6 +289,67 @@ export class ControlPlaneService {
         admission: { workflow: ATOMIC_FIXTURE_WORKFLOW_NAME, maxNonterminal: 1 },
       });
       if (created.run.status === "queued") this.atomicFixturePilot.schedule(created.run.id);
+      return {
+        run: await this.getRun(created.run.id),
+        route: { runtime: "atomic" as const, reason: route.reason },
+      };
+    }
+
+    if (input.workflow === ATOMIC_MODEL_PILOT_WORKFLOW) {
+      if (!this.atomicModelPilot) throw new Error("Atomic model pilot is disabled");
+      const pilotBudgetUsd = this.atomicModelPilot.validateStart(input);
+      if (input.approvalPolicy?.preparePr === "automatic") {
+        throw new Error("Atomic model pilot requires a separate operator-intended final-action boundary");
+      }
+      const preflight = await this.atomicModelPilot.preflight();
+      if (!preflight.available) throw new Error(`Atomic model pilot is unavailable: ${preflight.reason ?? "preflight failed"}`);
+      const runner = preflight.runner;
+      if (!runner?.available || !runner.atomicVersion || !runner.imageDigest
+          || !runner.provenanceDigest || !runner.provenanceLabels) {
+        throw new Error("Atomic model pilot preflight omitted exact runner evidence");
+      }
+      const run: Run = {
+        id: id("run"),
+        taskId: task!.id,
+        projectId: project.id,
+        rootRuntime: "atomic",
+        workflow: ATOMIC_MODEL_PILOT_WORKFLOW,
+        status: "queued",
+        stage: null,
+        stageIndex: 0,
+        budgetUsd: pilotBudgetUsd,
+        costUsd: 0,
+        workspaceId: null,
+        nativeRunId: null,
+        nextActionAt: null,
+        startedAt: null,
+        completedAt: null,
+        metadata: {
+          routeReason: route.reason,
+          requestedObjective: input.objective,
+          approvalPolicy: { preparePr: "human" },
+          adapter: "atomic-model-pilot",
+          executionMode: "isolated-writer-scoped-inference",
+          atomicVersion: runner.atomicVersion,
+          atomicRunnerImageRef: runner.imageRef,
+          atomicRunnerImageDigest: runner.imageDigest,
+          atomicRunnerProvenanceDigest: runner.provenanceDigest,
+          atomicRunnerProvenanceLabels: { ...runner.provenanceLabels },
+          modelExecutionAttempted: false,
+          liveProviderExpected: preflight.liveProviderExpected,
+          liveProviderVerified: false,
+          automaticEpisodicCapture: false,
+          crossProcessResume: false,
+          externalActionPerformed: false,
+        },
+        createdAt: this.now().toISOString(),
+      };
+      const created = await this.store.createRunBundle({
+        run,
+        idempotency: key && hash ? { scope: "run.create", key, requestHash: hash } : undefined,
+        admission: { workflow: ATOMIC_MODEL_PILOT_WORKFLOW, maxNonterminal: 1 },
+      });
+      if (created.run.status === "queued") this.atomicModelPilot.schedule(created.run.id);
       return {
         run: await this.getRun(created.run.id),
         route: { runtime: "atomic" as const, reason: route.reason },
@@ -459,11 +551,15 @@ export class ControlPlaneService {
     return this.getRun(runId);
   }
 
-  async cancelRun(runId: string) {
+  async cancelRun(runId: string, resolvedBy = "authenticated-control-plane-client") {
     const run = await this.requireRun(runId);
     if (["completed", "failed", "cancelled"].includes(run.status)) return this.getRun(runId);
     if (this.atomicFixturePilot?.isPilotRun(run)) {
       await this.atomicFixturePilot.cancel(run);
+      return this.getRun(runId);
+    }
+    if (this.atomicModelPilot?.isPilotRun(run)) {
+      await this.atomicModelPilot.cancel(run, resolvedBy);
       return this.getRun(runId);
     }
     await this.requireAdapter(run.rootRuntime).cancel(run);
@@ -493,9 +589,22 @@ export class ControlPlaneService {
     return this.resolveApproval(approvalId, decision, resolvedBy);
   }
 
+  async resolveAtomicModelFixtureApproval(approvalId: string, decision: string, resolvedBy = "authenticated-operator") {
+    const approval = await this.store.getApproval(approvalId);
+    if (!approval || approval.action !== ATOMIC_MODEL_PILOT_APPROVAL_ACTION) {
+      throw new Error("Approval is not the evidence-bound Atomic model fixture final gate");
+    }
+    return this.resolveApproval(approvalId, decision, resolvedBy);
+  }
+
   async readAtomicFixtureArtifact(runId: string, artifactId: string) {
     if (!this.atomicFixturePilot) throw new Error("Atomic fixture pilot is disabled");
     return this.atomicFixturePilot.readApprovalArtifact(runId, artifactId);
+  }
+
+  async readAtomicModelFixtureArtifact(runId: string, artifactId: string) {
+    if (!this.atomicModelPilot) throw new Error("Atomic model pilot is disabled");
+    return this.atomicModelPilot.readApprovalArtifact(runId, artifactId);
   }
 
   private async resolveApprovalOnce(approvalId: string, decision: string, resolvedBy: string) {
@@ -507,6 +616,17 @@ export class ControlPlaneService {
         throw new Error("Atomic fixture approval cannot be resolved while its pilot is disabled");
       }
       await this.atomicFixturePilot.resolveApproval(
+        approval,
+        decision as "approve" | "deny" | "request_changes",
+        resolvedBy,
+      );
+      return this.getRun(run.id);
+    }
+    if (approval.action === ATOMIC_MODEL_PILOT_APPROVAL_ACTION) {
+      if (!this.atomicModelPilot || !this.atomicModelPilot.isPilotRun(run)) {
+        throw new Error("Atomic model approval cannot be resolved while its pilot is disabled");
+      }
+      await this.atomicModelPilot.resolveApproval(
         approval,
         decision as "approve" | "deny" | "request_changes",
         resolvedBy,
@@ -677,7 +797,7 @@ export class ControlPlaneService {
     };
 
     for (const run of candidates.queuedRuns) {
-      if (this.atomicFixturePilot?.isPilotRun(run)) continue;
+      if (this.atomicFixturePilot?.isPilotRun(run) || this.atomicModelPilot?.isPilotRun(run)) continue;
       const completedAt = nowIso();
       await this.store.updateRun(run.id, {
         status: "failed",
@@ -708,7 +828,7 @@ export class ControlPlaneService {
       ["running", "paused", "awaiting_approval"].includes(run.status)
       && run.metadata.adapter === "native"
       && run.metadata.crossProcessResume !== true,
-    ).filter((run) => !this.atomicFixturePilot?.isPilotRun(run));
+    ).filter((run) => !this.atomicFixturePilot?.isPilotRun(run) && !this.atomicModelPilot?.isPilotRun(run));
     for (const run of nativeOrphans) {
       const completedAt = nowIso();
       await this.store.updateRun(run.id, {
@@ -790,6 +910,10 @@ export class ControlPlaneService {
         strandedApprovalsAlreadySettled += 1;
         continue;
       }
+      if (approval.action === ATOMIC_MODEL_PILOT_APPROVAL_ACTION && this.atomicModelPilot?.isPilotRun(candidateRun)) {
+        strandedApprovalsAlreadySettled += 1;
+        continue;
+      }
       const run = await this.store.getRun(candidateRun.id);
       if (!run) {
         strandedApprovalsNeedingAttention += 1;
@@ -864,6 +988,11 @@ export class ControlPlaneService {
       await this.atomicFixturePilot?.tick();
     } catch (error) {
       firstError = error;
+    }
+    try {
+      await this.atomicModelPilot?.tick();
+    } catch (error) {
+      firstError ??= error;
     }
     const now = this.now();
     let runs: Run[] = [];

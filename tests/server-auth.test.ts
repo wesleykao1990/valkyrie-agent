@@ -17,6 +17,8 @@ test("HTTP bearer auth protects every API route while health and static files st
   mkdirSync(publicDir);
   writeFileSync(join(publicDir, "index.html"), "public developer console");
   const artifactReads: Array<{ runId: string; artifactId: string }> = [];
+  const modelArtifactReads: Array<{ runId: string; artifactId: string }> = [];
+  const modelApprovals: Array<{ approvalId: string; decision: string; resolvedBy: string }> = [];
   const service = {
     portfolio: async () => ({ projects: [] }),
     runtimeStatus: async () => [{ runtime: "atomic", adapter: "mock", available: true }],
@@ -37,12 +39,33 @@ test("HTTP bearer auth protects every API route while health and static files st
         content: "patch bytes\n",
       };
     },
+    readAtomicModelFixtureArtifact: async (runId: string, artifactId: string) => {
+      modelArtifactReads.push({ runId, artifactId });
+      return {
+        runId,
+        approvalId: "approval_model",
+        artifactId,
+        kind: "fresh-model-verifier-final",
+        mediaType: "application/json",
+        checksum: "c".repeat(64),
+        sizeBytes: 18,
+        evidenceDigest: "d".repeat(64),
+        content: "{\"approved\":true}\n",
+      };
+    },
+    resolveAtomicModelFixtureApproval: async (approvalId: string, decision: string, resolvedBy: string) => {
+      modelApprovals.push({ approvalId, decision, resolvedBy });
+      return { run: { id: "run_model", status: "completed" } };
+    },
   } as unknown as ControlPlaneService;
   const store = {
     backend: "sqlite",
     healthCheck: async () => ({ ok: true, backend: "sqlite", migrationsCurrent: true }),
   } as unknown as ControlPlaneStore;
-  const server = createControlPlaneServer(service, store, publicDir, { authToken: token });
+  const server = createControlPlaneServer(service, store, publicDir, {
+    authToken: token,
+    operatorId: "wesley-local-operator",
+  });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const port = (server.address() as AddressInfo).port;
@@ -72,6 +95,9 @@ test("HTTP bearer auth protects every API route while health and static files st
       `${base}/api/atomic-fixture/runs/run_fixture/artifacts/artifact_fixture`,
     );
     assert.equal(artifactWithoutAuth.status, 401);
+    assert.equal((await fetch(
+      `${base}/api/atomic-model-fixture/runs/run_model/artifacts/artifact_model`,
+    )).status, 401);
 
     const runtimes = await fetch(`${base}/api/runtimes`, {
       headers: { authorization: `Bearer ${token}` },
@@ -101,6 +127,28 @@ test("HTTP bearer auth protects every API route while health and static files st
       { runId: "run_fixture", artifactId: "artifact_fixture" },
       { runId: "run_fixture", artifactId: "artifact_internal_failure" },
     ]);
+
+    const modelArtifact = await fetch(
+      `${base}/api/atomic-model-fixture/runs/run_model/artifacts/artifact_model`,
+      { headers: { authorization: `Bearer ${token}` } },
+    );
+    assert.equal(modelArtifact.status, 200);
+    assert.equal((await modelArtifact.json() as Record<string, unknown>).content, "{\"approved\":true}\n");
+    const resolved = await fetch(
+      `${base}/api/atomic-model-fixture/approvals/approval_model/resolve`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ decision: "approve" }),
+      },
+    );
+    assert.equal(resolved.status, 200);
+    assert.deepEqual(modelArtifactReads, [{ runId: "run_model", artifactId: "artifact_model" }]);
+    assert.deepEqual(modelApprovals, [{
+      approvalId: "approval_model",
+      decision: "approve",
+      resolvedBy: "wesley-local-operator",
+    }]);
   } finally {
     server.close();
     await once(server, "close");

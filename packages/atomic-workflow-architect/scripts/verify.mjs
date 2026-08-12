@@ -144,7 +144,7 @@ const fixtureCore = await readFile(join(root, "lib/atomic-fixture-pilot-core.mjs
 
 const modelLaunchSchema = JSON.parse(await readFile(join(root, "skills/atomic-workflow-architect/assets/model-launch-manifest.schema.json"), "utf8"));
 const modelLaunchTemplate = JSON.parse(await readFile(join(root, "skills/atomic-workflow-architect/assets/model-launch-manifest-template.json"), "utf8"));
-if (modelLaunchSchema.$id !== "urn:wesley:atomic:model-launch-manifest:1.0.0-prelive") {
+if (modelLaunchSchema.$id !== "urn:wesley:atomic:model-launch-manifest:1.1.0") {
   throw new Error("unexpected model launch-manifest schema ID");
 }
 for (const field of ["inference", "inference_policy_sha256", "package_sha256", "workspace", "sandbox", "approval"]) {
@@ -153,11 +153,12 @@ for (const field of ["inference", "inference_policy_sha256", "package_sha256", "
   }
 }
 if (modelLaunchTemplate.inference.credential_in_writer !== false
+    || modelLaunchTemplate.inference.live_provider_expected !== false
     || modelLaunchTemplate.inference.live_provider_verified !== false
     || modelLaunchTemplate.sandbox.network_policy !== "run_internal_gateway_only"
     || modelLaunchTemplate.bounds.max_repairs !== 1
     || modelLaunchTemplate.bounds.max_concurrency !== 1) {
-  throw new Error("model launch manifest template weakens the pre-live inference boundary");
+  throw new Error("model launch manifest template weakens the credential-free inference boundary");
 }
 
 const modelFixtureWorkflow = await readFile(join(root, "workflows/atomic-fixture-model-pilot.ts"), "utf8");

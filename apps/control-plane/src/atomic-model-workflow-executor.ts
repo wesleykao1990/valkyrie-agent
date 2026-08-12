@@ -121,7 +121,7 @@ export async function executeAtomicFixtureModelWorkflow(input: {
       else await delay(Math.min(pollMs, remaining(deadline)), undefined, { signal: input.signal });
     }
     if (terminal.status !== "completed") throw new Error(`Atomic model workflow ended ${terminal.status}`);
-    const output = parseAtomicFixtureModelWorkflowOutput(terminal.output);
+    const output = parseAtomicFixtureModelWorkflowOutput(terminal.output, input.inputs.live_provider_expected);
     const entries = object((await input.client.getEntries(undefined, { signal: input.signal, timeoutMs: remaining(deadline) })).data, "Atomic entries");
     await recordChain;
     return {

@@ -73,13 +73,14 @@ const implementationSchema = Type.Object({
 
 export default workflow({
   name: ATOMIC_FIXTURE_MODEL_WORKFLOW_NAME,
-  description: "Pre-live bounded model workflow for one disposable fixture: implementer, deterministic checks, fresh verifier, one forked repair, evidence, and no external action.",
+  description: "Bounded model workflow for one disposable fixture: implementer, deterministic checks, fresh verifier, one forked repair, evidence, and no external action.",
   inputs: {
     control_plane_run_id: Type.String(),
     contract_sha256: Type.String(),
     expected_before_sha256: Type.String(),
     capability_policy_sha256: Type.String(),
     package_sha256: Type.String(),
+    live_provider_expected: Type.Boolean(),
   },
   outputs: {
     evidence_manifest_path: Type.String(), patch_path: Type.String(), checks_initial_path: Type.String(),

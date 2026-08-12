@@ -35,15 +35,12 @@ checksums nine governed artifacts, cleans the container/worktree/lease, then ask
 for one evidence-bound human acceptance. Approval records a safe mock receipt;
 the memory remains only a proposal.
 
-This does **not** establish Atomic model execution or a model-based independent
-reviewer. It supplies no provider credential, performs no real GitHub/PR, merge,
-deployment, Linear, OpenViking, destructive database, or canonical-memory action,
-and advertises no cross-process Atomic durability. The credential-free M5b work
-now includes a scoped inference gateway/bridge contract and fixed model workflow,
-but no provider has been called and the model path is not registered as a normal
-Hermes run. Live enablement still requires the explicit provider/model decision,
-operator credential boundary, service/approval/recovery composition, and an
-actual evidence-reviewed pilot.
+This does **not** establish model quality. It supplies no provider credential,
+performs no real GitHub/PR, merge, deployment, Linear, OpenViking, destructive
+database, or canonical-memory action, and advertises no cross-process Atomic
+durability. The default-off M5b path is now registered behind an even narrower
+fixed contract, but no provider has been called. Live enablement still requires
+Wesley's provider/model/credential decision and an actual evidence-reviewed run.
 
 ## Requirements
 
@@ -440,10 +437,10 @@ admission transactional across processes, but cancellation and native ownership
 handoff are intentionally not horizontally coordinated while
 `crossProcessResume=false`.
 
-## Milestone 5b status: ready up to the live-model boundary
+## Milestone 5b status: credential-free engineering complete; live model pending
 
-The credential-free M5b preparation is implemented but deliberately not
-registered as a normal Hermes run yet. It adds:
+The default-off M5b path is registered through the authenticated service, HTTP,
+and restricted Hermes MCP boundary for exactly one disposable task. It adds:
 
 - a second fixed `atomic-fixture-model-pilot` native Atomic workflow;
 - fresh implementer, fresh initial verifier, at most one repair forked from the
@@ -457,17 +454,18 @@ registered as a normal Hermes run yet. It adds:
 - credential-free fake Atomic/upstream contract tests, failure cleanup,
   capability revocation, raw native record retention, substantive source/test/
   patch/check/verifier/context validation, and frozen-export rebinding.
+- transactional single-run admission, retrying durable start claims, cancellation,
+  provider-aware restart reconciliation, indexed capability/approval expiry,
+  bounded artifact reads, an exact evidence-bound operator gate, safe mock receipt,
+  and proposed-only memory in both SQLite and PostgreSQL.
 
 These tests prove the boundary and state machine, not a model's correctness. The
-workflow always reports `live_provider_verified=false`; no provider request is
-made by `npm test` or `npm run verify`.
-
-The remaining credential-free engineering before this becomes a normal Hermes
-pilot is intentionally explicit: durable scheduling/cancellation/restart around
-the model coordinator, evidence-bound approval and artifact review, and bounded
-capability-expiry maintenance must be composed into the service. Until that is
-implemented and verified, setting the model environment variables does not
-expose the workflow through HTTP or MCP.
+normal suite binds `live_provider_expected=false`, reports
+`live_provider_verified=false`, strips all model settings, and makes no provider
+request. A configured live server binds `live_provider_expected=true`; it may set
+`live_provider_verified=true` only after all expected role requests are durably
+completed within the capability's request/token/cost/time policy and the native,
+deterministic, frozen-export evidence agrees.
 
 For later live enablement, configure the commented
 `ATOMIC_FIXTURE_MODEL_*` values in `.env.example`. An external provider requires
@@ -478,11 +476,27 @@ the writer receives only a short-lived capability file. Do not provide a key
 until the provider/model, limits, accepted package/image digests, and intended
 spend have been reviewed.
 
+The internal Docker network must be a dedicated local bridge created with
+`--internal` and named by `ATOMIC_FIXTURE_MODEL_NETWORK`. Set
+`CONTROL_PLANE_OPERATOR_ID` to the authenticated local operator identity recorded
+on cancellation and final-gate events. Once Wesley chooses the provider/model,
+start the configured server and run:
+
+```bash
+npm run smoke:atomic-model
+```
+
+The smoke makes real model calls but stops at `awaiting_approval`, reads and
+rehashes the patch, final checks, final fresh verifier, and evidence manifest,
+then prints the approval ID. It does not approve by default. After an actual
+review, resolve through Hermes or explicitly set
+`VALKYRIE_ATOMIC_MODEL_SMOKE_APPROVE=true` to exercise only the safe mock receipt.
+
 Disable the slice by stopping the server and leaving
-`ATOMIC_FIXTURE_PILOT_ENABLED` unset/false. Migration 006 only adds complete
-evidence/policy/expiry bindings to approvals. It is checksummed and forward-only;
-there is no destructive down migration. An older binary must use a verified
-pre-v6 backup or separate compatible database, not the migrated ledger.
+`ATOMIC_FIXTURE_MODEL_PILOT_ENABLED` unset/false. Migration 007 adds only hashed,
+bounded capability/request/accounting state; migration 006 adds the approval
+bindings. Both are checksummed and forward-only. An older binary must use a
+verified pre-v7 backup or separate compatible database, not the migrated ledger.
 
 SQLite applies migration 006 automatically on the next start. For an explicitly
 selected PostgreSQL development database, back it up first and run:

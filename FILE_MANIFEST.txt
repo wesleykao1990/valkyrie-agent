@@ -19,6 +19,7 @@ apps/control-plane/src/atomic-model-pilot-configured.ts
 apps/control-plane/src/atomic-model-pilot-contract.ts
 apps/control-plane/src/atomic-model-pilot-coordinator.ts
 apps/control-plane/src/atomic-model-pilot-evidence.ts
+apps/control-plane/src/atomic-model-pilot-lifecycle.ts
 apps/control-plane/src/atomic-model-pilot-prelive.ts
 apps/control-plane/src/atomic-model-workflow-executor.ts
 apps/control-plane/src/atomic-rpc-client.ts
@@ -200,6 +201,7 @@ project-brain/Projects/Ovalo/Project.md
 project-brain/Projects/Signal Ledger/Project.md
 project-brain/Shared/Agent Policies.md
 scripts/atomic-fixture-live-smoke.ts
+scripts/atomic-model-pilot-live-smoke.ts
 scripts/fake-atomic-rpc.ts
 scripts/fake-direct-runtime.ts
 scripts/fake-oci-engine.ts
@@ -220,6 +222,7 @@ tests/atomic-fixture-workflow.test.ts
 tests/atomic-model-pilot-configured.test.ts
 tests/atomic-model-pilot-contract.test.ts
 tests/atomic-model-pilot-coordinator.test.ts
+tests/atomic-model-pilot-lifecycle.test.ts
 tests/atomic-model-pilot-prelive.test.ts
 tests/atomic-model-workflow-executor.test.ts
 tests/atomic-rpc-client.test.ts

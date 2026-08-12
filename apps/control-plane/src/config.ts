@@ -15,6 +15,7 @@ export interface AppConfig {
   seedDemoData: boolean;
   enableDemoReset: boolean;
   authToken?: string;
+  operatorId?: string;
   runtimeAdapters: {
     atomic: RuntimeAdapterMode;
     codex: RuntimeAdapterMode;
@@ -54,6 +55,7 @@ export interface AtomicFixtureModelPilotConfig {
   credentialHeader: "bearer" | "x-api-key";
   allowCredentialFreeLoopback: boolean;
   gatewayPort: number;
+  networkName?: string;
   acceptedPackageSha256?: string;
   acceptedImageDigest?: string;
   maxInputTokens: number;
@@ -110,6 +112,13 @@ function safeModelId(name: string): string | undefined {
   return value;
 }
 
+function safeNetworkName(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  if (!value) return undefined;
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/.test(value)) throw new Error(`${name} must be a safe local Docker network name`);
+  return value;
+}
+
 function optionalSha256(name: string): string | undefined {
   const value = process.env[name]?.trim();
   if (!value) return undefined;
@@ -161,6 +170,7 @@ export function loadConfig(): AppConfig {
   };
   const atomicFixturePilotEnabled = booleanFlag("ATOMIC_FIXTURE_PILOT_ENABLED", false);
   const atomicFixtureModelPilotEnabled = booleanFlag("ATOMIC_FIXTURE_MODEL_PILOT_ENABLED", false);
+  const operatorId = safeModelId("CONTROL_PLANE_OPERATOR_ID");
   const auth = loadControlPlaneAuth();
   if (!auth && (Object.values(runtimeAdapters).includes("native") || atomicFixturePilotEnabled || atomicFixtureModelPilotEnabled)) {
     throw new Error("Control-plane bearer authentication is required when a native runtime or the Atomic fixture pilot is enabled");
@@ -200,6 +210,7 @@ export function loadConfig(): AppConfig {
     credentialHeader: credentialHeader("ATOMIC_FIXTURE_MODEL_CREDENTIAL_HEADER"),
     allowCredentialFreeLoopback: booleanFlag("ATOMIC_FIXTURE_MODEL_ALLOW_CREDENTIAL_FREE_LOOPBACK", false),
     gatewayPort: positiveNumber("ATOMIC_FIXTURE_MODEL_GATEWAY_PORT", 8790, 65_535),
+    networkName: safeNetworkName("ATOMIC_FIXTURE_MODEL_NETWORK"),
     acceptedPackageSha256: optionalSha256("ATOMIC_FIXTURE_MODEL_ACCEPTED_PACKAGE_SHA256"),
     acceptedImageDigest: process.env.ATOMIC_FIXTURE_MODEL_ACCEPTED_IMAGE_DIGEST?.trim() || undefined,
     maxInputTokens: positiveNumber("ATOMIC_FIXTURE_MODEL_MAX_INPUT_TOKENS", 32_000, 128_000),
@@ -210,8 +221,15 @@ export function loadConfig(): AppConfig {
   };
   if (atomicFixtureModelPilot.enabled) {
     if (!atomicFixturePilot.enabled) throw new Error("ATOMIC_FIXTURE_MODEL_PILOT_ENABLED requires the isolated Atomic fixture pilot boundary");
+    if (!operatorId) throw new Error("CONTROL_PLANE_OPERATOR_ID is required when the Atomic model pilot is enabled");
     if (!atomicFixtureModelPilot.provider || !atomicFixtureModelPilot.model || !atomicFixtureModelPilot.upstreamBaseUrl) {
       throw new Error("The Atomic model pilot requires an explicit provider, model, and upstream base URL");
+    }
+    if (!atomicFixtureModelPilot.networkName) {
+      throw new Error("The Atomic model pilot requires an explicit inspected internal Docker network");
+    }
+    if (atomicFixtureModelPilot.gatewayPort !== 8790) {
+      throw new Error("The Atomic model pilot gateway port is fixed to 8790 in this reviewed bridge contract");
     }
     const upstream = new URL(atomicFixtureModelPilot.upstreamBaseUrl);
     const credentialFreeLoopback = isLoopbackHost(upstream.hostname) && atomicFixtureModelPilot.allowCredentialFreeLoopback;
@@ -247,6 +265,7 @@ export function loadConfig(): AppConfig {
     seedDemoData: sqliteDemo && booleanFlag("SEED_DEMO_DATA", true),
     enableDemoReset,
     authToken: auth?.token,
+    operatorId,
     runtimeAdapters,
     atomicCommand: process.env.ATOMIC_COMMAND?.trim() || "atomic",
     atomicExpectedVersion: process.env.ATOMIC_EXPECTED_VERSION?.trim() || "0.9.12",

@@ -66,6 +66,7 @@ test("Atomic model workflow dispatch and output keep fake/live evidence distinct
   const command = buildAtomicFixtureModelWorkflowDispatchCommand({
     control_plane_run_id: "run_model_protocol", contract_sha256: "a".repeat(64),
     expected_before_sha256: "b".repeat(64), capability_policy_sha256: "c".repeat(64), package_sha256: "d".repeat(64),
+    live_provider_expected: false,
   });
   assert.match(command, /^\/workflow atomic-fixture-model-pilot --no-picker /);
   const output = parseAtomicFixtureModelWorkflowOutput({
@@ -83,10 +84,11 @@ test("Atomic model workflow dispatch and output keep fake/live evidence distinct
     repair_count: 1, checks_passed: true, verifier_passed: true, live_provider_verified: false,
   });
   assert.equal(output.repair_count, 1);
-  assert.throws(() => parseAtomicFixtureModelWorkflowOutput({ ...output, live_provider_verified: true }), /pre-live output contract/);
+  assert.equal(parseAtomicFixtureModelWorkflowOutput({ ...output, live_provider_verified: true }, true).live_provider_verified, true);
+  assert.throws(() => parseAtomicFixtureModelWorkflowOutput({ ...output, live_provider_verified: true }, false), /provider-verification/);
   assert.throws(() => buildAtomicFixtureModelWorkflowDispatchCommand({
     control_plane_run_id: "bad run", contract_sha256: "a".repeat(64), expected_before_sha256: "b".repeat(64),
-    capability_policy_sha256: "c".repeat(64), package_sha256: "d".repeat(64),
+    capability_policy_sha256: "c".repeat(64), package_sha256: "d".repeat(64), live_provider_expected: false,
   }), /safe/);
 });
 

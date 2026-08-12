@@ -371,10 +371,13 @@ memory and registered the authenticated restricted pilot wrapper.
 hermes -p valkyrieeval mcp test valkyrie_project_os
 ```
 
-passed and discovered the then-current 11 pilot tools. The current M5a wrapper has
-13 tools, adding the narrow `atomic_fixture_approval_resolve` and bounded
-`atomic_fixture_artifact_read` surfaces; these new tools were exercised by the
-standalone authenticated M5a MCP smoke, not by a new Hermes model conversation.
+passed and discovered the then-current 11 pilot tools. The current restricted
+wrapper has 15 tools: M5a added the narrow
+`atomic_fixture_approval_resolve` and bounded `atomic_fixture_artifact_read`
+surfaces, while credential-free M5b adds the equally narrow model-fixture approval
+and artifact-read counterparts. The M5a tools were exercised by the standalone
+authenticated M5a MCP smoke; the M5b tools are deterministic contract evidence,
+not a new Hermes model conversation or live provider call.
 Configuration reads returned both
 memory flags as `false`; `prompt-size --json` reported zero tools and zero bytes
 for memory/user-profile contributions. With `gpt-5.6-sol` through the
@@ -421,24 +424,68 @@ behavior under a broader writer workload remain future evidence.
 - Production credentials, destructive database action, or canonical memory
   promotion in the live native smoke.
 
-## Milestone 5b pre-live evidence
+## Milestone 5b credential-free lifecycle evidence
 
-The credential-free preparation adds migration 007, the fixed
+The credential-free implementation adds migration 007, the fixed
 `atomic-fixture-model-pilot`, four role/model capabilities, a private Unix-socket
 gateway, an inspected internal-network bridge contract, read-only staged Atomic
 model configuration, accepted package/image bindings, raw native record
-retention, one bounded repair, and a new final fresh verifier. Deterministic fakes
-exercise success, native failure, policy/model/capability tamper, replay,
-request/token/cost bounds, provider failure redaction, package/image rejection,
-bridge cleanup and uncertain-create recovery, capability expiry/revocation,
-substantive artifact/context verification, and stopped-export rebinding.
+retention, one bounded repair, and a new final fresh verifier. It is registered
+default-off through service, authenticated HTTP, and the restricted Hermes MCP;
+it includes transactional one-run admission, retrying durable claims,
+cancellation, provider-aware restart reconciliation, bounded artifact reads,
+indexed capability/approval expiry, an evidence-bound safe-mock operator gate,
+and proposed-only memory. The same lifecycle runs against SQLite and disposable
+PostgreSQL.
 
-This evidence is explicitly pre-live. The fake Atomic process does not make model
-requests, the fake upstream does not prove model quality, every terminal output
-keeps `live_provider_verified=false`, and normal verification strips all
-`ATOMIC_FIXTURE_MODEL_*` environment settings. No provider credential was loaded
-or requested in this session. Exact final test counts are recorded after the
-repository-wide verification run below.
+Deterministic fakes exercise success, native failure, policy/model/capability
+tamper, replay, request/token/cost bounds, provider failure redaction,
+package/image rejection, bridge cleanup and uncertain-create recovery,
+capability expiry/revocation, substantive artifact/context verification,
+stopped-export rebinding, approval/tamper rejection, cancellation, restart, and
+durable concurrency admission.
+
+This is complete credential-free lifecycle evidence, not live model evidence.
+The fake Atomic process does not make provider requests, the fake upstream does
+not prove model quality, and normal verification binds
+`live_provider_expected=false`, requires `live_provider_verified=false`, strips
+all `ATOMIC_FIXTURE_MODEL_*` settings, and loads no provider credential. A live
+configured run may claim verification only after every expected role request is
+durably completed and the native, deterministic, and frozen-export evidence
+agrees. `npm run smoke:atomic-model` is the separate opt-in live command; it was
+not run in this credential-free session.
+
+## Repository-wide verification through credential-free M5b
+
+The final repository-wide command passed on 12 August 2026:
+
+```bash
+npm run verify
+```
+
+- `npm run typecheck`: passed with strict checking enabled.
+- `npm test`: 223 tests total; 220 passed, 0 failed, and 3 honest opt-in
+  cases skipped in this phase (the PostgreSQL storage contract, PostgreSQL M5b
+  lifecycle, and live OCI provider).
+- `npm run test:postgres`: a disposable PostgreSQL 16 cluster passed the storage
+  contract 22/22 and then the full Atomic model lifecycle 7/7, including
+  evidence-bound safe acceptance. The harness stopped PostgreSQL and removed its
+  temporary cluster.
+- `npm run verify:atomic`: passed TypeScript and verified 36 required files, 5
+  workflows, 16 routing cases, 5 prompt templates, and 11 invalid-manifest
+  rejection cases.
+- `npm run smoke:http`: passed with 3 projects, 3 isolated candidates, 3
+  approvals, artifact counts 5/4/4, and one exact-preview memory promotion in
+  disposable smoke state.
+- `npm run smoke:mcp`: passed with 7 test-allowlisted authenticated tools,
+  runtime status, governed memory preview/promotion, portfolio calls, and
+  idempotent run replay.
+
+The general suite is intentionally serialized because several fake-OCI tests use
+tight process deadlines; every previously observed parallel-load timeout passed
+both individually and in the final serialized run. Live model settings and
+credentials were stripped throughout. `npm run smoke:atomic-model` was not run,
+so no provider/model, model-quality, token/cost, or human-review claim is made.
 
 ## Reproduction commands
 

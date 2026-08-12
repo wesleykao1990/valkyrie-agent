@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig, loadProjectSeed } from "./config.ts";
 import { createControlPlaneStore } from "./store-factory.ts";
@@ -15,8 +15,18 @@ import {
   ATOMIC_FIXTURE_RUNNER_PROVENANCE_LABELS,
   ATOMIC_FIXTURE_RUNTIME_VERSION,
   AtomicFixturePilotCoordinator,
+  copyReviewedAtomicPackage,
 } from "./atomic-fixture-pilot.ts";
 import { setupAtomicFixtureRepository } from "../../../scripts/setup-atomic-fixture.ts";
+import { AtomicModelPilotCoordinator } from "./atomic-model-pilot-coordinator.ts";
+import { AtomicModelPilotLifecycleCoordinator } from "./atomic-model-pilot-lifecycle.ts";
+import { buildScopedInferencePolicy, createConfiguredInferenceUpstream } from "./atomic-model-pilot-configured.ts";
+import {
+  ScopedInferenceGateway,
+  createScopedInferenceGatewayServer,
+  listenScopedInferenceGatewayUnix,
+} from "./scoped-inference-gateway.ts";
+import { DockerCliBridgeEngine, ScopedInferenceBridge } from "./scoped-inference-bridge.ts";
 
 // Local databases, context packs, contracts, and native output are sensitive.
 // New POSIX files/directories created by the server must be owner-only.
@@ -47,6 +57,11 @@ const brain = new LocalProjectBrain(config.projectBrainDir);
 const workspaces = new WorkspaceManager(store, join(config.dataDir, "workspaces"));
 const adapters = createRuntimeAdapters(store, workspaces, config);
 let atomicFixturePilot: AtomicFixturePilotCoordinator | undefined;
+let atomicModelPilot: AtomicModelPilotLifecycleCoordinator | undefined;
+let closeInferenceGateway: (() => Promise<void>) | undefined;
+let fixtureRepositoryCommit: string | undefined;
+let writerRootForPilots: string | undefined;
+let artifactRootForPilots: string | undefined;
 if (config.atomicFixturePilot.enabled) {
   const pilotRoot = config.atomicFixturePilot.root;
   const writerRoot = join(pilotRoot, "writer-workspaces");
@@ -57,6 +72,9 @@ if (config.atomicFixturePilot.enabled) {
     mkdirSync(path, { recursive: true, mode: 0o700 });
   }
   const fixtureRepository = setupAtomicFixtureRepository(config.atomicFixturePilot.repositoryPath!);
+  fixtureRepositoryCommit = fixtureRepository.commit;
+  writerRootForPilots = writerRoot;
+  artifactRootForPilots = artifactRoot;
   const writerWorkspaces = new WriterWorkspaceManager({
     store,
     root: writerRoot,
@@ -108,10 +126,123 @@ if (config.atomicFixturePilot.enabled) {
     maxCostUsd: config.atomicFixturePilot.maxCostUsd,
   });
 }
-const service = new ControlPlaneService(store, brain, workspaces, adapters, { atomicFixturePilot });
+
+if (config.atomicFixtureModelPilot.enabled) {
+  if (!fixtureRepositoryCommit || !writerRootForPilots || !artifactRootForPilots) {
+    throw new Error("Atomic model pilot requires the initialized fixed fixture writer boundary");
+  }
+  const pilotRoot = config.atomicFixturePilot.root;
+  const contextRoot = join(pilotRoot, "model-run-contexts");
+  const providerStateRoot = join(pilotRoot, "model-oci-state");
+  const gatewaySocketRoot = join(pilotRoot, "model-gateway-socket");
+  for (const path of [contextRoot, providerStateRoot, gatewaySocketRoot]) {
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+  }
+  const modelProvider = new OciSandboxProvider({
+    enabled: true,
+    engineCommand: config.atomicFixturePilot.engineCommand!,
+    ...(config.atomicFixturePilot.engineSocket ? { engineSocket: config.atomicFixturePilot.engineSocket } : {}),
+    image: config.atomicFixturePilot.image!,
+    workspaceRoot: writerRootForPilots,
+    contextRoot,
+    artifactRoot: artifactRootForPilots,
+    stateRoot: providerStateRoot,
+    networkPolicy: { mode: "named", name: config.atomicFixtureModelPilot.networkName!, internal: true },
+    resourceBounds: {
+      memoryBytes: 2 * 1024 * 1024 * 1024,
+      cpus: 2,
+      pidsLimit: 256,
+      tmpfsBytes: 128 * 1024 * 1024,
+    },
+    ...(config.atomicFixturePilot.user ? { user: config.atomicFixturePilot.user } : {}),
+    atomicRpc: {
+      reviewedBinaryPath: "/usr/local/bin/atomic",
+      expectedVersion: ATOMIC_FIXTURE_RUNTIME_VERSION,
+      reviewedImageLabels: ATOMIC_FIXTURE_RUNNER_PROVENANCE_LABELS,
+      stagedAgentConfig: true,
+      transportBounds: { sessionMs: 4 * 60_000, maxTransportBytes: 16 * 1024 * 1024 },
+    },
+  });
+  const runner = await modelProvider.preflightAtomicRunner();
+  if (!runner.available || runner.imageDigest !== config.atomicFixtureModelPilot.acceptedImageDigest) {
+    throw new Error(`Atomic model pilot runner preflight failed: ${runner.reason ?? "accepted image mismatch"}`);
+  }
+  const packageProbe = join(contextRoot, "package-preflight");
+  let packageDigest: string;
+  try {
+    packageDigest = copyReviewedAtomicPackage(config.atomicPackageDir, packageProbe).digest;
+  } finally {
+    rmSync(packageProbe, { recursive: true, force: true });
+  }
+  if (packageDigest !== config.atomicFixtureModelPilot.acceptedPackageSha256) {
+    throw new Error("Atomic model pilot package does not match its accepted deployment digest");
+  }
+  const policy = buildScopedInferencePolicy(config.atomicFixtureModelPilot);
+  const upstream = createConfiguredInferenceUpstream(config.atomicFixtureModelPilot);
+  const gateway = new ScopedInferenceGateway(store, upstream, policy);
+  const gatewayServer = createScopedInferenceGatewayServer(gateway);
+  const socketPath = join(gatewaySocketRoot, "inference.sock");
+  closeInferenceGateway = await listenScopedInferenceGatewayUnix(gatewayServer, socketPath);
+  const bridgeUser = config.atomicFixturePilot.user
+    ?? `${typeof process.getuid === "function" ? process.getuid() : 65532}:${typeof process.getgid === "function" ? process.getgid() : 65532}`;
+  const bridge = new ScopedInferenceBridge({
+    engine: new DockerCliBridgeEngine(
+      config.atomicFixturePilot.engineCommand!,
+      [],
+      config.atomicFixturePilot.engineSocket,
+    ),
+    image: config.atomicFixturePilot.image!,
+    networkName: config.atomicFixtureModelPilot.networkName!,
+    socketPath,
+    user: bridgeUser,
+  });
+  const reconciledBridges = await bridge.reconcileStartup();
+  if (reconciledBridges > 0) console.log(`Atomic model startup removed ${reconciledBridges} exact orphan inference bridge(s)`);
+  const writerWorkspaces = new WriterWorkspaceManager({
+    store,
+    root: writerRootForPilots,
+    gitCommand: "/usr/bin/git",
+    leaseTtlMs: 45_000,
+  });
+  const modelBoundary = new WriterSandboxBoundary({
+    store,
+    workspaces: writerWorkspaces,
+    provider: modelProvider,
+    artifactRoot: artifactRootForPilots,
+    ownerId: "atomic_model_fixture_pilot",
+    leaseTtlMs: 45_000,
+    heartbeatIntervalMs: 5_000,
+  });
+  const executor = new AtomicModelPilotCoordinator({
+    store,
+    boundary: modelBoundary,
+    provider: modelProvider,
+    packageDir: config.atomicPackageDir,
+    repositoryPath: config.atomicFixturePilot.repositoryPath!,
+    repositoryCommit: fixtureRepositoryCommit,
+    contextRoot,
+    policy,
+    gatewayBaseUrl: `http://valkyrie-inference:${config.atomicFixtureModelPilot.gatewayPort}/v1`,
+    acceptedPackageSha256: config.atomicFixtureModelPilot.acceptedPackageSha256!,
+    acceptedImageDigest: config.atomicFixtureModelPilot.acceptedImageDigest!,
+    maxCostUsd: config.atomicFixtureModelPilot.maxCostUsd,
+    liveProviderExpected: true,
+    bridge,
+  });
+  atomicModelPilot = new AtomicModelPilotLifecycleCoordinator({
+    store,
+    brain,
+    boundary: modelBoundary,
+    executor,
+    maxCostUsd: config.atomicFixtureModelPilot.maxCostUsd,
+  });
+}
+
+const service = new ControlPlaneService(store, brain, workspaces, adapters, { atomicFixturePilot, atomicModelPilot });
 const [existingTasks, existingRuns] = await Promise.all([store.listTasks(), store.listRuns(1)]);
 if (config.seedDemoData && existingTasks.length === 0 && existingRuns.length === 0) await service.resetDemo(true);
 if (atomicFixturePilot) await atomicFixturePilot.bootstrap();
+if (atomicModelPilot) await atomicModelPilot.bootstrap();
 const atomicFixtureReconciliation = atomicFixturePilot ? await atomicFixturePilot.reconcileStartup() : null;
 if (atomicFixtureReconciliation && (
   atomicFixtureReconciliation.sandbox.instancesExamined > 0
@@ -120,6 +251,16 @@ if (atomicFixtureReconciliation && (
   || atomicFixtureReconciliation.expiredApprovals > 0
 )) {
   console.log(`Atomic fixture startup reconciliation: ${JSON.stringify(atomicFixtureReconciliation)}`);
+}
+const atomicModelReconciliation = atomicModelPilot ? await atomicModelPilot.reconcileStartup() : null;
+if (atomicModelReconciliation && (
+  atomicModelReconciliation.sandbox.instancesExamined > 0
+  || atomicModelReconciliation.queuedScheduled > 0
+  || atomicModelReconciliation.approvalsRecovered > 0
+  || atomicModelReconciliation.expiredApprovals > 0
+  || atomicModelReconciliation.capabilitiesExpired > 0
+)) {
+  console.log(`Atomic model startup reconciliation: ${JSON.stringify(atomicModelReconciliation)}`);
 }
 const reconciliation = await service.reconcileStartup();
 if (Object.values(reconciliation).some((value) => value > 0)) {
@@ -130,6 +271,7 @@ const publicDir = resolve("./apps/control-plane/public");
 const server = createControlPlaneServer(service, store, publicDir, {
   enableDemoReset: config.enableDemoReset,
   authToken: config.authToken,
+  operatorId: config.operatorId,
 });
 const worker = setInterval(() => { void service.tick().catch((error) => console.error("worker tick failed", error)); }, 250);
 
@@ -145,6 +287,8 @@ function shutdown() {
   clearInterval(worker);
   void (async () => {
     await atomicFixturePilot?.shutdown();
+    await atomicModelPilot?.shutdown();
+    await closeInferenceGateway?.();
     await shutdownControlPlane(server, adapters.values(), store);
   })().then(
     () => process.exit(0),

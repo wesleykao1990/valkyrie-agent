@@ -943,6 +943,7 @@ export class OciSandboxProvider {
         "ps", "--no-trunc", "--all",
         "--filter", "label=valkyrie.managed=true",
         "--filter", "label=valkyrie.kind=writer-sandbox",
+        "--filter", `label=valkyrie.policy-sha256=${this.policyHash()}`,
         "--format", "{{.ID}}",
       ],
       this.timeouts.inspectMs,

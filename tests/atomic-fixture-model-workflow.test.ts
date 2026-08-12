@@ -25,7 +25,7 @@ function git(cwd: string, args: string[]): void {
   if (result.status !== 0) throw new Error(result.stderr || result.stdout);
 }
 
-function fixture() {
+function fixture(liveProviderExpected = false) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "valkyrie-model-workflow-")));
   const workspace = join(root, "workspace");
   const context = join(root, "context");
@@ -39,6 +39,7 @@ function fixture() {
     expected_before_sha256: ATOMIC_FIXTURE_EXPECTED_BEFORE_SHA256,
     capability_policy_sha256: "a".repeat(64),
     package_sha256: "b".repeat(64),
+    live_provider_expected: liveProviderExpected,
     contract_sha256: "",
   };
   const contextPack = `${JSON.stringify({ schemaVersion: "1.0.0", entries: [] })}\n`;
@@ -47,13 +48,16 @@ function fixture() {
     request: ATOMIC_FIXTURE_MODEL_REQUEST, rootRuntime: "atomic", workflow: "atomic-fixture-model-pilot",
     finalAction: "stop_before_external_action", crossProcessResume: false,
     atomicPackage: { packageSha256: inputs.package_sha256 },
-    inference: { policySha256: inputs.capability_policy_sha256, credentialInWriter: false, fakeProvider: false },
+    inference: {
+      policySha256: inputs.capability_policy_sha256, credentialInWriter: false, fakeProvider: false,
+      liveProviderExpected: inputs.live_provider_expected, liveProviderVerified: false,
+    },
   }, null, 2)}\n`;
   inputs.contract_sha256 = sha(contract);
   const launch = `${JSON.stringify({
-    schema_version: "1.0.0-model-prelive", run_id: inputs.control_plane_run_id,
+    schema_version: "1.1.0-model", run_id: inputs.control_plane_run_id,
     inference_policy_sha256: inputs.capability_policy_sha256, package_sha256: inputs.package_sha256,
-    crossProcessResume: false,
+    crossProcessResume: false, inference: { live_provider_expected: inputs.live_provider_expected },
   })}\n`;
   writeFileSync(join(context, "context-pack.json"), contextPack);
   writeFileSync(join(context, "run-contract.json"), contract);
@@ -61,7 +65,7 @@ function fixture() {
   return { root, workspace, context, inputs };
 }
 
-test("model workflow core binds policy, runs deterministic gates, and emits pre-live evidence", async () => {
+test("model workflow core binds policy, runs deterministic gates, and emits provider-verification evidence", async () => {
   const item = fixture();
   try {
     assert.equal((await preflightAtomicFixtureModel({ workspacePath: item.workspace, contextRoot: item.context, inputs: item.inputs })).contract_sha256, item.inputs.contract_sha256);
@@ -87,6 +91,23 @@ test("model workflow core binds policy, runs deterministic gates, and emits pre-
     );
     assert.deepEqual(readFileSync(join(item.workspace, ATOMIC_FIXTURE_MODEL_PATHS.runContract)), readFileSync(join(item.context, "run-contract.json")));
     assert.deepEqual(readFileSync(join(item.workspace, ATOMIC_FIXTURE_MODEL_PATHS.launchManifest)), readFileSync(join(item.context, "atomic-model-launch-manifest.json")));
+  } finally { rmSync(item.root, { recursive: true, force: true }); }
+});
+
+test("model workflow carries the trusted live-provider expectation into terminal evidence", async () => {
+  const item = fixture(true);
+  try {
+    await preflightAtomicFixtureModel({ workspacePath: item.workspace, contextRoot: item.context, inputs: item.inputs });
+    writeFileSync(join(item.workspace, "src/normalize-project-slug.js"), ATOMIC_FIXTURE_IMPLEMENTATION);
+    const checks = await runAtomicFixtureModelChecks({ workspacePath: item.workspace, round: "final", nodePath: process.execPath });
+    const verifier = await writeAtomicFixtureModelReview({ workspacePath: item.workspace, round: "final", review: { approved: true, findings: [] } });
+    const output = await emitAtomicFixtureModelEvidence({
+      workspacePath: item.workspace, contextRoot: item.context, inputs: item.inputs,
+      nativeRunId: "11111111-2222-4333-8444-555555555555", checks, verifier, repairCount: 0,
+    });
+    assert.equal(output.live_provider_verified, true);
+    const evidence = JSON.parse(readFileSync(join(item.workspace, ATOMIC_FIXTURE_MODEL_PATHS.evidence), "utf8"));
+    assert.equal(evidence.live_provider_verified, true);
   } finally { rmSync(item.root, { recursive: true, force: true }); }
 });
 
