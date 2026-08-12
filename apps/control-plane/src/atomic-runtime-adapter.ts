@@ -83,6 +83,7 @@ function validateSchemaValue(value: unknown, rule: JsonSchemaRule, schema: JsonS
     if (rule.pattern !== undefined && !new RegExp(rule.pattern, "u").test(value)) errors.push(`${path}: pattern mismatch`);
   }
   if (typeof value === "number" && rule.minimum !== undefined && value < rule.minimum) errors.push(`${path}: below minimum`);
+  if (typeof value === "number" && rule.maximum !== undefined && value > rule.maximum) errors.push(`${path}: above maximum`);
   if (Array.isArray(value) && rule.items) value.forEach((item, index) => errors.push(...validateSchemaValue(item, rule.items, schema, `${path}[${index}]`)));
   if (value !== null && typeof value === "object" && !Array.isArray(value)) {
     const record = value as Record<string, unknown>;
@@ -100,7 +101,7 @@ function validateSchemaValue(value: unknown, rule: JsonSchemaRule, schema: JsonS
 export function validateAtomicLaunchManifest(manifest: unknown, packageDir: string): string[] {
   const schemaPath = join(packageDir, "skills", "atomic-workflow-architect", "assets", "launch-manifest.schema.json");
   const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as JsonSchemaRule;
-  if (schema.$id !== "urn:wesley:atomic:launch-manifest:1.0.0") return ["$: unexpected launch-manifest schema ID"];
+  if (schema.$id !== "urn:wesley:atomic:launch-manifest:1.1.0") return ["$: unexpected launch-manifest schema ID"];
   return validateSchemaValue(manifest, schema, schema);
 }
 
@@ -404,7 +405,11 @@ export class AtomicConnectivityRuntimeAdapter implements RuntimeAdapter {
     const lease = (await this.options.store.listLeases()).find((item) =>
       item.workspaceId === context.workspace!.id && item.runId === context.run.id && item.mode === "writer",
     );
-    if (!lease || Date.parse(lease.expiresAt) <= Date.now()) throw new Error("Atomic requires an unexpired owned writer lease");
+    if (!lease || lease.ownerId !== context.writerLease.ownerId
+        || lease.fencingToken !== context.writerLease.fencingToken
+        || Date.parse(lease.expiresAt) <= Date.now()) {
+      throw new Error("Atomic requires the current unexpired exact writer lease owner and fence");
+    }
     const root = resolve(context.workspacePath);
     const realRoot = realpathSync(root);
     for (const artifact of [context.contextPack, context.runContract]) {
@@ -478,7 +483,7 @@ export class AtomicConnectivityRuntimeAdapter implements RuntimeAdapter {
     const packageJson = JSON.parse(readFileSync(join(this.options.packageDir, "package.json"), "utf8")) as { version?: string };
     if (!existsSync(workflowPath)) throw new Error("Pinned Atomic package does not contain workflows/request-preflight.ts");
     const manifest = {
-      schema_version: "1.0.0",
+      schema_version: "1.1.0",
       run_id: context.run.id,
       project_id: context.run.projectId,
       task_id: context.run.taskId ?? `adhoc:${context.run.id}`,
@@ -502,6 +507,8 @@ export class AtomicConnectivityRuntimeAdapter implements RuntimeAdapter {
         lease_id: `lease:${context.workspace!.id}:${context.run.id}`,
         holder_run_id: context.run.id,
         workspace_id: context.workspace!.id,
+        owner_id: context.writerLease!.ownerId,
+        fencing_token: context.writerLease!.fencingToken,
         mode: "exclusive-writer",
         expires_at: context.writerLease!.expiresAt,
       },

@@ -13,7 +13,10 @@ const required = [
   "README.md",
   "START_HERE.md",
   "extensions/auto-route.ts",
+  "lib/atomic-fixture-pilot-core.d.mts",
+  "lib/atomic-fixture-pilot-core.mjs",
   "skills/atomic-workflow-architect/SKILL.md",
+  "workflows/atomic-fixture-pilot.ts",
   "workflows/idea-to-decision.ts",
   "workflows/project-blueprint.ts",
   "workflows/request-preflight.ts",
@@ -103,11 +106,52 @@ if (!extension.includes('event.source === "extension"') && !extension.includes('
 if (!extension.includes("event.streamingBehavior")) throw new Error("extension must skip steering/follow-up input");
 if (!extension.includes('action === "test"')) throw new Error("extension must expose routing test command");
 
-const workflowFiles = ["idea-to-decision.ts", "project-blueprint.ts", "request-preflight.ts"];
+const workflowFiles = ["atomic-fixture-pilot.ts", "idea-to-decision.ts", "project-blueprint.ts", "request-preflight.ts"];
 for (const name of workflowFiles) {
   const source = await readFile(join(root, "workflows", name), "utf8");
   for (const expected of ['from "@bastani/workflows"', 'from "typebox"', "workflow({", "outputs:"]) {
     if (!source.includes(expected)) throw new Error(`${name} missing ${expected}`);
+  }
+}
+
+const fixtureWorkflow = await readFile(join(root, "workflows/atomic-fixture-pilot.ts"), "utf8");
+if ((fixtureWorkflow.match(/ctx\.tool\(/g) ?? []).length !== 5) {
+  throw new Error("atomic-fixture-pilot must own exactly five durable ctx.tool nodes");
+}
+for (const forbidden of ["ctx.task(", "ctx.stage(", "ctx.parallel(", "ctx.chain(", "ctx.ui."]) {
+  if (fixtureWorkflow.includes(forbidden)) throw new Error(`atomic-fixture-pilot must remain credential-free and tool-only: ${forbidden}`);
+}
+for (const requiredFixtureText of [
+  "control_plane_run_id",
+  "contract_sha256",
+  "expected_before_sha256",
+  "stop_before_external_action",
+  "fresh-deterministic-process",
+  "context_pack_path",
+  "run_contract_path",
+  "launch_manifest_path",
+]) {
+  if (!fixtureWorkflow.includes(requiredFixtureText)) {
+    throw new Error(`atomic-fixture-pilot missing fixed contract text: ${requiredFixtureText}`);
+  }
+}
+const fixtureCore = await readFile(join(root, "lib/atomic-fixture-pilot-core.mjs"), "utf8");
+for (const requiredFixtureCoreText of [
+  '"/usr/local/bin/node", "--test"',
+  '"/usr/bin/git", "diff", "--check"',
+  'final_action: "stop_before_external_action"',
+  "canonical_promotion: false",
+  "external_request_performed: false",
+  "context_copies:",
+  'launch.final_action !== "stop_before_pr"',
+]) {
+  if (!fixtureCore.includes(requiredFixtureCoreText)) {
+    throw new Error(`atomic fixture core missing fixed safety contract: ${requiredFixtureCoreText}`);
+  }
+}
+for (const forbiddenFixtureCoreText of ["fetch(", "https://", "ctx.task(", "ctx.ui."]) {
+  if (fixtureCore.includes(forbiddenFixtureCoreText)) {
+    throw new Error(`atomic fixture core must not use model, HIL, or network execution: ${forbiddenFixtureCoreText}`);
   }
 }
 
@@ -155,6 +199,9 @@ function validateSchemaValue(value, rule, schema, path = "$") {
   if (typeof value === "number" && rule.minimum !== undefined && value < rule.minimum) {
     errors.push(`${path}: below minimum ${rule.minimum}`);
   }
+  if (typeof value === "number" && rule.maximum !== undefined && value > rule.maximum) {
+    errors.push(`${path}: above maximum ${rule.maximum}`);
+  }
   if (Array.isArray(value) && rule.items) {
     value.forEach((item, index) => errors.push(...validateSchemaValue(item, rule.items, schema, `${path}[${index}]`)));
   }
@@ -176,7 +223,7 @@ function validateSchemaValue(value, rule, schema, path = "$") {
 
 const launchSchema = JSON.parse(await readFile(join(root, "skills/atomic-workflow-architect/assets/launch-manifest.schema.json"), "utf8"));
 if (launchSchema.$schema !== "https://json-schema.org/draft/2020-12/schema") throw new Error("launch manifest must use JSON Schema 2020-12");
-if (launchSchema.$id !== "urn:wesley:atomic:launch-manifest:1.0.0") throw new Error("launch manifest schema ID mismatch");
+if (launchSchema.$id !== "urn:wesley:atomic:launch-manifest:1.1.0") throw new Error("launch manifest schema ID mismatch");
 
 const requiredLaunchFields = [
   "run_id", "project_id", "task_id", "context_pack_ref", "budget", "final_action",
@@ -188,6 +235,11 @@ for (const field of requiredLaunchFields) {
 if (!launchSchema.properties?.bounds?.required?.includes("max_turns")) {
   throw new Error("launch manifest schema must require bounds.max_turns");
 }
+for (const field of ["owner_id", "fencing_token"]) {
+  if (!launchSchema.properties?.writer_lease?.required?.includes(field)) {
+    throw new Error(`launch manifest schema must require writer_lease.${field}`);
+  }
+}
 
 const launchManifest = JSON.parse(await readFile(join(root, "skills/atomic-workflow-architect/assets/launch-manifest-template.json"), "utf8"));
 const manifestErrors = validateSchemaValue(launchManifest, launchSchema, launchSchema);
@@ -197,13 +249,23 @@ if (launchManifest.workspace_owner !== "control-plane") throw new Error("launch 
 if (launchManifest.crossProcessResume !== false) throw new Error("launch manifest must default crossProcessResume to false");
 if (launchManifest.writer_lease.holder_run_id !== launchManifest.run_id) throw new Error("writer lease holder must match run ID");
 if (launchManifest.writer_lease.workspace_id !== launchManifest.workspace_id) throw new Error("writer lease workspace must match workspace ID");
+if (!launchManifest.writer_lease.owner_id) throw new Error("writer lease owner ID is required");
+if (!Number.isInteger(launchManifest.writer_lease.fencing_token) || launchManifest.writer_lease.fencing_token < 1) {
+  throw new Error("writer lease fencing token must be a positive integer");
+}
 
 const invalidManifestCases = [
+  ["superseded schema version", (manifest) => { manifest.schema_version = "1.0.0"; }],
   ["missing run ID", (manifest) => { delete manifest.run_id; }],
   ["wrong root runtime", (manifest) => { manifest.root_runtime = "codex"; }],
   ["non-boolean resume capability", (manifest) => { manifest.crossProcessResume = "false"; }],
   ["zero max turns", (manifest) => { manifest.bounds.max_turns = 0; }],
   ["missing writer lease", (manifest) => { delete manifest.writer_lease; }],
+  ["missing writer lease owner", (manifest) => { delete manifest.writer_lease.owner_id; }],
+  ["missing writer lease fence", (manifest) => { delete manifest.writer_lease.fencing_token; }],
+  ["non-integer writer lease fence", (manifest) => { manifest.writer_lease.fencing_token = 1.5; }],
+  ["non-positive writer lease fence", (manifest) => { manifest.writer_lease.fencing_token = 0; }],
+  ["unsafe writer lease fence", (manifest) => { manifest.writer_lease.fencing_token = Number.MAX_SAFE_INTEGER + 1; }],
 ];
 for (const [name, mutate] of invalidManifestCases) {
   const candidate = structuredClone(launchManifest);

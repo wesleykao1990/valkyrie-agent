@@ -6,6 +6,7 @@ import {
   AtomicRpcClient,
   AtomicRpcCommandError,
   AtomicRpcProtocolError,
+  AtomicRpcStopUncertainError,
   AtomicRpcStoppedError,
   AtomicRpcTimeoutError,
   JsonlLfDecoder,
@@ -105,6 +106,16 @@ test("correlated responses remain separate from asynchronous native events", asy
   const event = await eventPromise;
   assert.equal(event.type, "entry_appended");
   assert.equal((event.entry as { content: string }).content, "async:contract prompt");
+});
+
+test("bounded startup records replay when the persistence subscriber attaches after spawn", async (t) => {
+  const client = startFake(t, {}, { FAKE_ATOMIC_STARTUP_EVENT: "1" });
+  assert.equal((await client.getState()).success, true);
+  const records: AtomicRpcNativeEvent[] = [];
+  const unsubscribe = client.subscribeRecords((record) => records.push(record));
+  t.after(unsubscribe);
+  assert.ok(records.some((record) => record.type === "entry_appended"
+    && (record.entry as { content?: string }).content === "startup-before-first-command"));
 });
 
 test("request IDs correlate out-of-order responses", async (t) => {
@@ -237,4 +248,23 @@ test("clean stop rejects pending work and is idempotent", async (t) => {
   await client.stop();
   await rejected;
   await client.stop();
+});
+
+test("stop fails boundedly when inherited stdio prevents the host child close event", async () => {
+  const client = new AtomicRpcClient({
+    command: process.execPath,
+    commandArgs: ["--experimental-strip-types", fakeScript],
+    requestTimeoutMs: 1_000,
+    stopTimeoutMs: 50,
+  });
+  client.start({
+    cwd: process.cwd(),
+    env: { FAKE_ATOMIC_HOLD_STDIO_AFTER_PARENT_MS: "750" },
+  });
+  assert.equal((await client.getState()).success, true);
+  const startedAt = Date.now();
+  await assert.rejects(client.stop(), AtomicRpcStopUncertainError);
+  assert.ok(Date.now() - startedAt < 500, "host transport cleanup uncertainty is reported within the hard bound");
+  await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 800));
+  await client.stop().catch(() => undefined);
 });

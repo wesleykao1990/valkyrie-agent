@@ -1,8 +1,8 @@
-# Continuation prompt — Milestone 5 disposable Atomic pilot
+# Continuation prompt — start from live-verified M5a, then design M5b
 
-Continue the existing public `valkyrie-agent` repository. Do not create a new
-repository, substitute another agent framework, or redesign the accepted
-architecture.
+Continue the existing public `valkyrie-agent` repository and draft PR #1. Do not
+create a new repository, substitute another agent framework, expose a generic
+writer, or redesign the accepted architecture.
 
 ## Read and verify first
 
@@ -20,109 +20,118 @@ Read, in order:
 10. `SECURITY.md`
 11. `docs/VERIFICATION.md`
 12. `docs/SESSION_HANDOFF_v0.3.0.md`
-13. `docs/IMPLEMENTATION_PLAN_M4.md`
-14. `docs/adr/ADR-P004-external-writer-boundary.md`
+13. `docs/IMPLEMENTATION_PLAN_M5.md`
+14. `docs/adr/ADR-P005-atomic-writer-pilot.md`
 
 For Atomic-specific work, then read the package `START_HERE.md`, complete
 `SKILL.md`, `CONTROL_PLANE_INTEGRATION.md`, `CODEX_CLAUDE_HANDOFF.md`,
 `INSTALLATION_AND_OPERATIONS.md`, `ATOMIC_EXPERT_RESEARCH.md`, and
 `VIDEO_MASTERCLASS_FINDINGS.md` in their documented order.
 
-Run `npm run verify` before editing and record the exact baseline. The normal
-suite deliberately strips live OCI variables. Reproduce the explicit live
-Milestone 4 smoke only with the exact local engine, socket, private root, and
-immutable Alpine digest recorded in `docs/VERIFICATION.md`.
+Run `npm run verify` before editing and compare its exact counts with the recorded
+M5a result. Verify the live evidence record and immutable runner digest in
+`docs/VERIFICATION.md`; reproduce the explicit M5a smoke from `README.md` only if
+the local engine/image is available or a boundary change needs new live proof.
+Do not replace the recorded IDs with deterministic-test output, and do not hide
+or relabel an unresolved reproduction failure as a pass.
 
-## Existing verified boundary
+## Existing boundary
 
-Milestones 0–4 are complete for the local non-production posture. Milestone 4
-provides a disabled, live-verified Colima/Docker boundary with private per-run Git
-roots/worktrees, fenced writer leases and heartbeat, checksummed read-only context,
-durable sandbox lifecycle/restart reconciliation, governed artifact export,
-baseline secret scanning, and exact owned cleanup. It is intentionally not
-registered through HTTP, MCP, or any model runtime.
+Milestones 0–4 are complete for the local non-production posture. M5a implements
+one default-off, literal `atomic-fixture-pilot` path:
 
-Atomic `0.9.12` is pinned and its LF-JSONL transport/package discovery are
-contract-tested. The current Atomic live evidence is credential-free discovery,
-not a model workflow. Public RPC does not expose a verified detached-workflow HIL
-answer operation, and Atomic native cross-process durability is still false.
+authenticated MCP → fixed project/task/run → bounded accepted Project Brain pack
+→ private M4 worktree/fenced no-network container → real Atomic 0.9.12 main
+session and native tool-only workflow → reviewed fixture edit → deterministic
+checks → fresh deterministic verifier → frozen/secret-scanned checksummed evidence
+→ Atomic/container/worktree/lease cleanup → evidence/policy/expiry-bound,
+operator-intended approval gate → safe mock receipt → proposed-only memory.
 
-## Mission — Milestone 5
+The recorded live smoke resolved that gate automatically after its assertions; it
+proved the transition, not human presence or independent human judgment.
 
-Implement one end-to-end, medium-risk, non-production Atomic writer pilot against
-a disposable fixture repository with literal deterministic acceptance criteria:
+M5a has no model/provider credential, no model verifier, zero repair rounds, no
+real GitHub/PR/merge/deploy, no canonical promotion, and
+`crossProcessResume=false`. It is integration evidence, not model-quality
+evidence. Direct Codex and Claude Code remain separate read-only roots and never
+orchestrate Atomic's internal workflow.
 
-Hermes-compatible authenticated MCP request
-→ stable task/run ID and fake/current project context
-→ bounded accepted Project Brain pack
-→ existing Milestone 4 worktree/container/fence
-→ Atomic preflight and exact launch manifest
-→ Atomic-owned workflow/model execution
-→ deterministic checks
-→ fresh-context independent verification
-→ bounded repair
-→ control-plane human approval
-→ safe mock final action or separately approved draft PR
-→ checksummed evidence/artifacts
-→ governed memory proposal without automatic promotion.
+## Mission — M5b model-backed pilot boundary
 
-Use a fixture task whose correct result can be proven without LLM judgment. Keep
-the entire pilot behind a disabled-by-default feature flag such as
-`ATOMIC_WRITER_ENABLED=false`. Do not accept arbitrary repository objectives.
+After M5a is fully green and recorded, prepare the smallest reviewed path that can
+run real Atomic model implementation and a fresh independent model verifier under
+the **same disposable fixture contract**. Do not generalize repository, objective,
+command, workflow, image, or final-action selection.
 
-## Required implementation outcomes
+The acceptable inference designs are:
 
-1. Compose the existing `WriterSandboxBoundary` into exactly one Atomic root run.
-   The control plane owns the top-level workspace, container, lease, and artifact
-   boundary; Atomic must not create a duplicate top-level worktree.
-2. Generate and schema-validate the exact Atomic launch manifest with request,
-   project/task/run IDs, context checksum, workspace/lease owner/fence, budget,
-   bounds, final-action boundary, and provenance.
-3. Pin and positively verify the selected Atomic provider/model path. Give the
-   container only the minimum short-lived credential and scoped network egress
-   needed for that provider. Never mount a home directory, Docker socket, general
-   credential store, SSH agent, cloud config, or production secret.
-4. Keep `crossProcessResume=false` unless a separate Atomic DBOS/PostgreSQL
-   kill/restart/resume test positively proves durability at runner startup.
-5. Preserve every raw Atomic record before normalized siblings; retain native main
-   session, workflow, stage, entry-cursor, model/cost/token, and artifact IDs only
-   where the pinned version actually exposes them.
-6. Preserve the literal task contract. Use implementer continuity for bounded
-   repairs, fresh context for independent verification, artifact handoffs instead
-   of full transcripts, and deterministic checks ahead of LLM judgment.
-7. Bound cost, elapsed time, turns, repair rounds, concurrency, child depth,
-   output, artifact size/count, lease lifetime, and process/container termination.
-8. Because detached Atomic HIL answering is not verified over public RPC, keep the
-   first pilot's human gate at the control-plane boundary after terminal workflow
-   evidence. Do not ask an LLM to relay an approval and do not claim native HIL.
-9. Separate implementation acceptance from PR creation. Default to a safe mock
-   final action. A GitHub draft PR requires a new exact approval/policy action;
-   merge/deploy remain out of scope.
-10. Propose concise canonical memory only after evidence. Never auto-promote it.
-11. Add deterministic fake-process tests and one opt-in live Atomic fixture test.
-    Test SQLite and PostgreSQL lifecycle parity, cancellation, restart/orphan
-    behavior, expired/rotated fence, model/API failure, secret finding, failed
-    checks, bounded repair exhaustion, approval denial, artifact replay/tamper,
-    cleanup failure, and feature-flag-off behavior.
-12. Preserve the zero-service SQLite/mock demo and Milestone 3 read-only native
-    pilot. Hermes receives only bounded control-plane tools, never raw process,
-    Git, container, credential, or filesystem controls.
+1. a reviewed local model endpoint reachable without external provider credential;
+   or
+2. an inference proxy outside the writer that holds the provider credential and
+   issues a run-scoped expiring capability while enforcing exact provider,
+   endpoint, model, request, token, cost, elapsed-time, concurrency, and audit
+   policy.
 
-## Stop/approval boundaries
+Plain internet egress, a host `~/.atomic`/`~/.codex`/`~/.claude`, browser/keychain
+state, raw subscription OAuth, Docker socket, long-lived API key, broad cloud
+configuration, or SSH agent inside the writer is not acceptable. Stop for Wesley
+before choosing a provider/credential/egress design that is not already approved.
 
-Stop for Wesley only if the chosen Atomic model path needs a credential/login not
-already available, if scoped egress requires a product decision, or before a real
-GitHub PR/final action. Do not treat a local container as a production
-multi-tenant sandbox; use a reviewed remote micro-VM for confidential/high-risk
-work.
+## Required outcomes
 
-## Engineering method and evidence
+1. Keep the control-plane-owned workspace/container/lease/artifact/approval
+   boundary and one Atomic root/main session. Atomic owns its native graph,
+   implementer stage/checkpoints/repair state; Codex/Claude do not drive it.
+2. Extend the exact launch contract with the reviewed inference capability and
+   immutable provider/model/policy identifiers without exposing the credential.
+3. Preserve the literal task contract and deterministic checks as the primary
+   acceptance gate. The model may not rewrite tests or acceptance criteria.
+4. Use implementer continuity for at most one evidence-backed repair. Run the
+   independent model verifier with fresh context containing only the contract,
+   frozen candidate, fixed acceptance tests, deterministic check evidence, and
+   bounded handoff artifacts.
+5. Preserve every raw Atomic/model record before normalized siblings and retain
+   native session/workflow/stage/cursor/model/cost/token IDs only where Atomic
+   0.9.12 actually exposes them. Do not synthesize unsupported capabilities.
+6. Bound provider/model, cost, tokens, elapsed time, turns, repair rounds,
+   concurrency, child depth, output, artifact count/bytes, lease lifetime, and
+   termination. Budget exhaustion must stop the writer and fail closed.
+7. Keep `crossProcessResume=false` unless a separate real Atomic
+   DBOS/PostgreSQL process-kill/restart/resume contract passes at runner startup.
+8. Retain post-workflow frozen export rebinding, secret scanning, atomic artifact
+   registration, exact cleanup, approval digest/policy/expiry binding, and proposed-
+   only memory. Model output cannot bypass those deterministic gates.
+9. Keep implementation acceptance separate from PR creation. M5b still defaults
+   to the safe mock receipt. A real GitHub draft PR requires a new exact approval/
+   policy action and actually exercised connector; merge/deploy remain out of scope.
+10. Preserve the zero-service SQLite/mock demo, M3 connectivity, M4 provider, and
+    M5a credential-free path. All new model behavior is default off.
 
-Update a short Milestone 5 plan and proposed ADR before composition. Add tests
-before or alongside code, run narrow checks, then `npm run verify`, then the
-explicit live OCI and Atomic fixture smokes. Use a fresh independent review and
-repair only evidence-backed findings. Record migrations, rollback, failure and
-quarantine behavior, setup, security assumptions, and exact pass/skip evidence.
+## Tests and evidence
+
+Add deterministic proxy/local-model doubles for credential non-disclosure,
+destination/model/request scope, expiry/replay, rate/cost/token/timeout enforcement,
+malformed/provider failure, model output tamper, deterministic-check failure,
+one-repair continuity/exhaustion, verifier independence, cancellation, restart,
+secret finding, frozen-export tamper, cleanup/quarantine, approval expiry/denial,
+and no external final action. Run SQLite and PostgreSQL lifecycle parity.
+
+Live evidence must make a real model request through the selected scoped boundary
+and record exact provider/model, Atomic/native IDs, token/cost, checks, repair
+count, verifier, artifacts, approval, cleanup, and proposed-memory state. A fake
+model is contract evidence only. Never call an external integration a pass unless
+it was actually exercised.
+
+Run narrow checks, then `npm run verify`, then the explicit M4/M5a/M5b live smokes.
+Use a fresh reviewer that did not author the implementation. Repair only evidence-
+backed findings and cap review/repair rounds.
+
+## Stop and approval boundaries
+
+Stop for Wesley for the inference/provider credential choice, scoped network
+policy, remote micro-VM decision, or before any real GitHub PR/final action. Do not
+request production secrets, bind the prototype broadly, or silently promote
+memory.
 
 Return the standard ten-part report: milestone completed, architecture preserved,
 files changed, tests/evidence, live integrations actually exercised, limitations,

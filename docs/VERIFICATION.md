@@ -18,15 +18,15 @@ repository passed `npm run verify`:
   optional TypeScript check could not run until the containing repository installed
   TypeScript; that limitation was recorded, not hidden.
 
-## Current automated verification
+## Last recorded repository-wide verification before M5a
 
-The final command passed:
+The pre-M5a command passed:
 
 ```bash
 npm run verify
 ```
 
-It executes strict TypeScript, the general suite, a disposable PostgreSQL phase,
+It executed strict TypeScript, the general suite, a disposable PostgreSQL phase,
 the imported Atomic package verifier/typecheck, HTTP lifecycle smoke, and stdio
 MCP smoke. Current phase evidence:
 
@@ -51,6 +51,43 @@ The first general-suite attempt inside a restricted execution sandbox reached al
 tests but the three loopback-listener cases received host `EPERM`. Rerunning with
 local loopback permission produced the passing result above. This was an
 environment permission failure, not hidden as an application pass.
+
+## Repository-wide verification with M5a
+
+The repository-wide command passed on 12 August 2026:
+
+```bash
+npm run verify
+```
+
+- `npm run typecheck`: passed.
+- `npm test`: 188 tests total; 186 passed, 0 failed, and 2 honest opt-in
+  cases skipped in this general phase (the PostgreSQL contract and live OCI
+  provider).
+- `npm run test:postgres`: disposable PostgreSQL 16.14; 22/22 passed with no
+  skip, followed by a clean server stop.
+- `npm run verify:atomic`: passed TypeScript and verified 31 required files, 4
+  workflows, 16 routing cases, 5 prompt templates, and 11 invalid-manifest
+  rejection cases.
+- `npm run smoke:http`: passed with 3 projects, 3 isolated candidates, 3
+  approvals, artifact counts 5/4/4, and one exact-preview memory promotion in
+  the disposable smoke data.
+- `npm run smoke:mcp`: passed with 7 allowlisted authenticated tools, runtime
+  status, governed memory preview/promotion, portfolio calls, and idempotent run
+  replay.
+
+The live M5a Docker/Atomic proof below is a separate explicit command because it
+requires an installed engine, a local registry, and an immutable runner image.
+
+An independent final audit then replaced the M5a ledger's unjustified
+`humanDecision`/“Human accepted” wording with neutral `approvalDecision` and
+authorized-client evidence. On that exact post-audit tree, strict TypeScript and
+the four affected approve/deny/request-changes/cancel integration cases passed
+4/4. A second repository-wide invocation was requested, but the Codex app's
+approval reviewer rejected process creation because its usage quota had been
+reached; `npm` did not start. This is recorded as an unexecuted final rerun, not
+as either an application pass or failure. The preceding complete run and the
+post-repair focused evidence are both retained above.
 
 ## New contract coverage
 
@@ -159,6 +196,45 @@ and reconciliation.
   policy-drift, unmatched, and late-start/fence-rotation cases fail closed;
   unrelated or ambiguous engine objects are left untouched.
 
+### Milestone 5a Atomic fixture contracts
+
+- A default-off flag and bearer-auth gate are required before the isolated-writer
+  preflight is exposed. Flag-off/unavailable paths cannot allocate a workspace or
+  start a container.
+- Admission accepts only project `atomic-pilot`, task `task_atomic_fixture_m5`,
+  runtime `atomic`, workflow `atomic-fixture-pilot`, the literal reviewed
+  objective, a human final-action policy, and the configured budget cap.
+  Idempotent replay returns one control-plane run and schedules one native workflow.
+- Launch manifest schema `1.1.0` binds stable project/task/run IDs, accepted
+  context and run-contract hashes, workspace path/owner, exact lease owner/fence,
+  immutable image/policy, budget and fixed bounds, final-action boundary,
+  provenance, and `crossProcessResume=false`.
+- The provider, not the adapter, owns the one bounded interactive exec transport.
+  It re-inspects immutable container/run/workspace/owner/fence/policy before
+  opening Atomic LF-JSONL and closes the transport before stop/cleanup.
+- Atomic 0.9.12 discovers and dispatches the package's reviewed tool-only workflow.
+  Raw native records are retained with occurrence indexes and native main-session/
+  workflow IDs alongside normalized running/completed events. No provider/model
+  response is simulated or counted.
+- The native workflow has one turn, zero repair rounds, one concurrency slot,
+  zero child depth, network `none`, fixed command/output/elapsed bounds, and a
+  reviewed implementation hash. Deterministic Node/Git checks and a separate
+  fresh deterministic verifier must both pass.
+- Governed export freezes the exact fence and revalidates all nine exported bytes/
+  checksums against the pre-export native snapshot before atomic artifact
+  persistence. Tampered evidence or non-evidence artifacts fail closed. Secret,
+  persistence, ownership, cleanup, and replay conflicts retain quarantine evidence.
+- Container and Atomic stop, worktree removal, lease release, and evidence-ready
+  metadata precede approval. Migration 006 enforces complete project/workflow/
+  evidence-digest/policy-hash/expiry binding with SQLite/PostgreSQL parity.
+- Approve, deny, request-changes, expiry, cancellation, concurrent resolution,
+  restart reconciliation, and exact replay are bounded. Approval can only record
+  a safe mock receipt; memory remains proposed and no external final action occurs.
+- Narrow `npm run verify:atomic` passed after the M5a package changes: 31 required
+  files, 4 workflows, 16 routing cases, 5 prompt templates, 11 invalid-manifest
+  rejection cases, and package TypeScript. This is not a substitute for the final
+  repository-wide or live runner evidence still marked below.
+
 ## Milestone 4 live provider evidence
 
 ```bash
@@ -198,6 +274,61 @@ so inherited shell state cannot accidentally launch it.
 
 Fake-engine success is contract evidence only. No Atomic, Codex, or Claude Code
 writer/model workflow was enabled or counted as a Milestone 4 live pass.
+
+## Milestone 5a live Atomic fixture evidence
+
+The explicit proof command is run against a separately configured authenticated
+server and immutable local runner digest:
+
+```bash
+CONTROL_PLANE_AUTH_TOKEN_FILE="$PWD/data/auth/control-plane.token" \
+  npm run smoke:atomic-fixture
+```
+
+The smoke uses restricted stdio MCP, replays the exact start idempotently, waits
+for the cleaned evidence gate, verifies nine governed artifact references and
+checksums plus their approval digest, reads four bounded artifact bodies back
+through MCP, resolves only the fixture-specific safe mock approval, and confirms
+the memory proposal remains `proposed`.
+
+Recorded live result: **passed** on 12 August 2026 against Colima/Docker on
+Linux/ARM64. The exact immutable runner was:
+
+```text
+localhost:5000/valkyrie-atomic-runner@sha256:17de54b6354874d2009fd467c4098efb4e43b16323c38bbfb987092b0699e8bb
+```
+
+The image preflight observed Atomic `0.9.12`, Git `2.50.1`, network `none`, and
+reviewed provenance digest
+`6684b2be01ceb338f33af5585622d931993e7ca8361dbdf21d9a5470ed756d19`.
+The authenticated MCP proof produced:
+
+- control-plane run `run_4f48a202-954a-4002-b642-a1f3b8a76a4d`;
+- Atomic main session `019ff209-a1ba-761f-a131-69549d33702c`;
+- native workflow run `e69b6cb2-7183-4206-a6cf-c6198be093e5`;
+- 35 retained raw native records and 41 total run events;
+- nine governed artifacts, four re-opened and checksum-verified through MCP;
+- approval `approval_atomic_da5c1b1898b2a7c14f46fd2642aa3467`, resolved by the
+  opt-in automated test client only after it independently verified the evidence
+  and cleanup;
+- zero model tokens, zero model cost, zero repair rounds, and
+  `modelExecutionAttempted=false`; and
+- cleaned container/sandbox, removed writer workspace, released exact lease, and
+  an empty post-run Docker inventory for `valkyrie.managed=true`.
+
+This was an operator-authorized automated gate exercise, not proof that a human
+person read and judged the artifact content. The safe mock receipt completed the
+disposable run. Memory proposal
+`memory_atomic_da5c1b1898b2a7c14f46fd2642aa3467` intentionally remains
+`proposed`; optional rejection was not requested. No PR, merge, deploy,
+external/product database mutation, credential expansion, model call, or memory
+promotion occurred. The earlier runner attempt that failed because its Git did
+not understand `extensions.relativeWorktrees` remains recorded as a truthful
+failed attempt and is not counted as success.
+
+Even a successful M5a run establishes only credential-free tool-workflow
+composition. It does not establish Atomic provider/model execution, a model-based
+fresh verifier, native HIL, or cross-process DBOS/PostgreSQL durability.
 
 ## Live native pilot evidence
 
@@ -240,7 +371,11 @@ memory and registered the authenticated restricted pilot wrapper.
 hermes -p valkyrieeval mcp test valkyrie_project_os
 ```
 
-passed and discovered the 11 pilot tools. Configuration reads returned both
+passed and discovered the then-current 11 pilot tools. The current M5a wrapper has
+13 tools, adding the narrow `atomic_fixture_approval_resolve` and bounded
+`atomic_fixture_artifact_read` surfaces; these new tools were exercised by the
+standalone authenticated M5a MCP smoke, not by a new Hermes model conversation.
+Configuration reads returned both
 memory flags as `false`; `prompt-size --json` reported zero tools and zero bytes
 for memory/user-profile contributions. With `gpt-5.6-sol` through the
 `openai-codex` provider, Hermes successfully invoked `runtimes_status` and returned
@@ -270,13 +405,15 @@ general memory search can return explicitly advisory results; the ignored Atomic
 install lacks a committed transitive lock; and SIGKILL/descendant cleanup belongs
 to the external container/VM boundary. Milestone 4 now adds bounded container
 cleanup, durable sandbox-instance state, and provider-aware restart reconciliation
-for the tracked local provider. A hard host/VM failure during a real model run and
-descendant behavior under a broader writer workload remain Milestone 5 evidence.
+for the tracked local provider. M5a additionally covers the fixed tool-only Atomic
+composition, frozen export rebinding, evidence-bound/expiring approval, and safe
+mock receipt. A hard host/VM failure during a real model run and descendant
+behavior under a broader writer workload remain future evidence.
 
 ## Live integrations not exercised
 
 - Claude model call (manual dedicated API key still required).
-- Atomic provider/model workflow, HIL answer mapping, steering, pause/resume, or
+- Atomic provider/model workflow, model verifier, HIL answer mapping, steering, pause/resume, or
   durable DBOS/PostgreSQL native resume.
 - Telegram/phone channel or remote Hermes gateway.
 - Any model-backed repository writer, GitHub PR API, merge, deployment, Linear,
@@ -302,6 +439,11 @@ npm run smoke:native
 npm run setup:hermes
 hermes -p valkyrieeval mcp test valkyrie_project_os
 ```
+
+The complete local runner build, immutable-digest server environment, fixture
+setup, and M5a smoke commands are in `README.md` under “Test the Milestone 5a
+Atomic fixture slice.” They intentionally require an explicit local engine and
+are not part of `npm run verify`.
 
 The native and Hermes commands are intentionally outside default `npm run verify`
 because they depend on installed user-owned CLIs/authentication and local ignored

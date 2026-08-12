@@ -1,0 +1,8 @@
+{
+  "name": "valkyrie-atomic-runner-image",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@bastani/atomic": "0.9.12"
+  }
+}

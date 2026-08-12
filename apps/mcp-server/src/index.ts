@@ -1,7 +1,8 @@
-import { loadControlPlaneAuth } from "../../control-plane/src/auth.ts";
+import { loadControlPlaneAuth, validateLoopbackControlPlaneApi } from "../../control-plane/src/auth.ts";
 
-const apiBase = process.env.CONTROL_PLANE_API ?? "http://127.0.0.1:8787";
+const apiBase = validateLoopbackControlPlaneApi(process.env.CONTROL_PLANE_API ?? "http://127.0.0.1:8787");
 const authToken = loadControlPlaneAuth()?.token;
+const safeControlPlaneId = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 
 interface RpcRequest { jsonrpc: "2.0"; id?: string | number | null; method: string; params?: any }
 
@@ -10,14 +11,16 @@ const allTools = [
   tool("project_get_brief", "Get current roadmap, runs, accepted decisions, approvals, and freshness for one project.", { projectId: stringProp("Project ID") }, ["projectId"]),
   tool("runtimes_status", "Inspect configured runtime adapters, verified availability, authentication, and supported capabilities.", {}),
   tool("idea_capture", "Check for duplicates and capture an idea for a project.", { projectId: stringProp("Project ID"), title: stringProp("Idea title") }, ["projectId", "title"]),
-  tool("runs_start", "Start a bounded agent run under control-plane policy.", { projectId: stringProp("Project ID"), objective: stringProp("Objective. Native Codex/Claude connectivity requires exactly: Return exactly MARKER and nothing else. MARKER uses uppercase letters, digits, and underscores."), runtime: enumProp(["atomic", "codex", "claude", "prime", "hermes"]), workflow: { ...enumProp(["runtime-connectivity"]), description: "Required for native Atomic, Codex, or Claude connectivity probes in this minimum pilot" }, maxCostUsd: numberProp("Maximum cost in USD"), idempotencyKey: stringProp("Optional idempotency key for safe run-create retries") }, ["projectId", "objective"]),
+  tool("runs_start", "Start a bounded agent run under control-plane policy.", { projectId: stringProp("Project ID"), taskId: stringProp("Task ID. The Atomic fixture pilot requires task_atomic_fixture_m5."), objective: stringProp("Objective. Native Codex/Claude connectivity requires exactly: Return exactly MARKER and nothing else. The Atomic fixture pilot requires its exact published fixture objective."), runtime: enumProp(["atomic", "codex", "claude", "prime", "hermes"]), workflow: { ...enumProp(["runtime-connectivity", "atomic-fixture-pilot"]), description: "Select the explicit connectivity probe or isolated Atomic fixture pilot" }, maxCostUsd: numberProp("Maximum cost in USD"), idempotencyKey: stringProp("Optional idempotency key for safe run-create retries") }, ["projectId", "objective"]),
   tool("runs_list", "List recent runs.", {}),
   tool("run_get", "Get one run with events, evidence, approvals, and artifacts.", { runId: stringProp("Run ID") }, ["runId"]),
+  tool("atomic_fixture_artifact_read", "Read one bounded, checksum-verified UTF-8 artifact that is bound to the pending disposable Atomic fixture approval.", { runId: controlPlaneIdProp("Atomic fixture run ID"), artifactId: controlPlaneIdProp("Artifact ID from run_get") }, ["runId", "artifactId"]),
   tool("run_steer", "Send a bounded steering instruction when the runtime supports it.", { runId: stringProp("Run ID"), message: stringProp("Steering instruction") }, ["runId", "message"]),
   tool("run_compare", "Start isolated comparison candidates for the same objective.", { projectId: stringProp("Project ID"), objective: stringProp("Objective"), runtimes: runtimeArrayProp(), perRunMaxCostUsd: numberProp("Maximum cost per candidate in USD") }, ["projectId", "objective"]),
   tool("run_cancel", "Cancel a non-terminal run.", { runId: stringProp("Run ID") }, ["runId"]),
   tool("approvals_list", "List all approvals, including pending actions that need Wesley.", {}),
   tool("approval_resolve", "Resolve an explicit approval request.", { approvalId: stringProp("Approval ID"), decision: enumProp(["approve", "deny", "request_changes"]) }, ["approvalId", "decision"]),
+  tool("atomic_fixture_approval_resolve", "Resolve only the evidence-bound final acceptance gate for the disposable Atomic fixture pilot; this never creates a PR, merges, deploys, or promotes memory.", { approvalId: stringProp("Atomic fixture approval ID"), decision: enumProp(["approve", "deny", "request_changes"]) }, ["approvalId", "decision"]),
   tool("memory_search", "Search project-scoped accepted and advisory knowledge in read-only mode; results label authority and status.", { projectId: stringProp("Project ID"), query: stringProp("Search query") }, ["projectId", "query"]),
   tool("memory_propose", "Propose a project learning without promoting it.", { projectId: stringProp("Project ID"), claim: stringProp("Proposed durable claim"), runId: stringProp("Optional run ID"), evidence: arrayProp("Evidence strings") }, ["projectId", "claim"]),
   tool("memory_preview", "Return the exact target and content for human review without writing canonical memory.", { proposalId: stringProp("Proposal ID") }, ["proposalId"]),
@@ -45,6 +48,15 @@ function tool(name: string, description: string, properties: Record<string, unkn
   return { name, description, inputSchema: { type: "object", properties, required, additionalProperties: false } };
 }
 function stringProp(description: string) { return { type: "string", description }; }
+function controlPlaneIdProp(description: string) {
+  return {
+    type: "string",
+    description,
+    minLength: 1,
+    maxLength: 128,
+    pattern: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+  };
+}
 function numberProp(description: string) { return { type: "number", description }; }
 function enumProp(values: string[]) { return { type: "string", enum: values }; }
 function arrayProp(description: string) { return { type: "array", items: { type: "string" }, description }; }
@@ -93,11 +105,16 @@ async function callTool(name: string, args: any): Promise<unknown> {
     case "runs_start": return api("/api/runs", { method: "POST", body: args });
     case "runs_list": return api("/api/runs");
     case "run_get": return api(`/api/runs/${encodeURIComponent(args.runId)}`);
+    case "atomic_fixture_artifact_read": {
+      const { runId, artifactId } = requireArtifactReadArguments(args);
+      return api(`/api/atomic-fixture/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}`);
+    }
     case "run_steer": return api(`/api/runs/${encodeURIComponent(args.runId)}/steer`, { method: "POST", body: { message: args.message } });
     case "run_compare": return api("/api/runs/compare", { method: "POST", body: args });
     case "run_cancel": return api(`/api/runs/${encodeURIComponent(args.runId)}/cancel`, { method: "POST" });
     case "approvals_list": return api("/api/approvals");
     case "approval_resolve": return api(`/api/approvals/${encodeURIComponent(args.approvalId)}/resolve`, { method: "POST", body: { decision: args.decision } });
+    case "atomic_fixture_approval_resolve": return api(`/api/atomic-fixture/approvals/${encodeURIComponent(args.approvalId)}/resolve`, { method: "POST", body: { decision: args.decision } });
     case "memory_search": return api(`/api/memory/search?projectId=${encodeURIComponent(args.projectId)}&q=${encodeURIComponent(args.query)}`);
     case "memory_propose": return api("/api/memory/proposals", { method: "POST", body: args });
     case "memory_preview": return api(`/api/memory/proposals/${encodeURIComponent(args.proposalId)}/preview`);
@@ -105,6 +122,28 @@ async function callTool(name: string, args: any): Promise<unknown> {
     case "memory_reject": return api(`/api/memory/proposals/${encodeURIComponent(args.proposalId)}/resolve`, { method: "POST", body: { decision: "reject" } });
     default: throw new Error(`Unknown tool ${name}`);
   }
+}
+
+function requireArtifactReadArguments(value: unknown): { runId: string; artifactId: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("atomic_fixture_artifact_read arguments must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  if (JSON.stringify(keys) !== JSON.stringify(["artifactId", "runId"])) {
+    throw new Error("atomic_fixture_artifact_read accepts exactly runId and artifactId");
+  }
+  return {
+    runId: requireControlPlaneId(record.runId, "runId"),
+    artifactId: requireControlPlaneId(record.artifactId, "artifactId"),
+  };
+}
+
+function requireControlPlaneId(value: unknown, field: string): string {
+  if (typeof value !== "string" || !safeControlPlaneId.test(value)) {
+    throw new Error(`${field} must be a safe control-plane ID of at most 128 characters`);
+  }
+  return value;
 }
 
 function respond(id: RpcRequest["id"], result?: unknown, error?: { code: number; message: string; data?: unknown }) {

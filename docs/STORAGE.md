@@ -106,6 +106,8 @@ partial transactions accidentally:
 - run, optional workspace, and writer lease creation;
 - event append plus matching outbox record;
 - conditional approval resolution, optional run patch/event, and outbox record;
+- authoritative expiry of a still-pending evidence-bound approval plus terminal
+  run patch/event/outbox, using the store-observed time;
 - workspace/lease acquisition, rotation, renewal, quarantine, and exact-fence
   release;
 - task/memory mutations plus outbox records;
@@ -150,6 +152,8 @@ Startup inspects:
 - active leases left on terminal runs;
 - expired active writer leases and durable quarantined leases;
 - nonterminal durable sandbox instances plus exact provider engine inventory;
+- M5a cleaned evidence-ready runs and their pending, expired, or stranded
+  evidence-bound approvals;
 - pending outbox rows.
 
 An unconfirmed queued run is failed. Legacy/demo leases whose owner is the run may
@@ -163,7 +167,12 @@ for operator reconciliation rather than claiming resumability. PostgreSQL
 durability does not prove native runtime durability. Migration 005 lets the
 internal writer boundary reconcile tested DB-only, engine-only, active, policy-
 drift, and fence-rotation sandbox cases by exact ownership. Ambiguous or unmatched
-provider objects remain untouched and quarantined for review.
+provider objects remain untouched and quarantined for review. The M5a coordinator
+may recover an already-cleaned evidence snapshot into its still-valid approval
+gate, but it never claims an active Atomic session survived; active native work
+keeps `crossProcessResume=false` and fails/cleans or quarantines conservatively.
+Pending M5a approvals are also expired during normal worker ticks, not only at
+startup.
 
 ## Migration failure and rollback
 
@@ -190,7 +199,21 @@ binary (or the independent SQLite data set); it is not a code-only downgrade.
 
 Migration `005_sandbox_instances.sql` adds durable provider lifecycle and
 ownership records used for restart reconciliation. It is forward-only too, so a
-rollback from the current schema requires a verified pre-v5 backup.
+binary rollback from schema v5 requires a verified pre-v5 backup; schema v6 adds
+the further requirement below.
+
+Migration `006_pilot_approval_bindings.sql` adds the M5a final-action binding to
+the existing approval row: `project_id`, `workflow`, lowercase SHA-256
+`evidence_digest`, lowercase SHA-256 `policy_hash`, and `expires_at`. The five
+fields must be either all present or all null so legacy approvals remain valid but
+cannot be mistaken for a fixture gate. An index on project/workflow/state/expiry
+supports a future bounded expiry query; the current fixture-only maintenance loop
+still scans pending approvals in process and is not a production-scale dispatcher.
+Approval resolution/expiry verifies the
+complete expected binding and updates approval, run, event, and outbox in one
+transaction. The migration is checksummed and forward-only; rollback from schema
+v6 requires a verified pre-v6 backup or a separate compatible SQLite data set. An
+older binary must reject the v6 ledger rather than silently ignoring the binding.
 
 Fencing protects database lease mutations. It cannot revoke a stale process's
 raw filesystem access. The owning sandbox must still be stopped and its effective
@@ -250,6 +273,14 @@ opt-in `npm run smoke:sandbox` path accepts only an explicit absolute engine CLI
 an already-present immutable image digest, and an optional local `unix:///`
 socket plus a reviewed numeric non-root UID:GID override when host identity cannot
 be derived; it never reuses an inherited remote daemon setting.
+
+Normal verification likewise strips `ATOMIC_FIXTURE_PILOT_*`. The separate
+`npm run smoke:atomic-fixture` command expects an already-running authenticated
+server configured with an absolute disposable repository/engine/root, optional
+local Unix socket/numeric user, and immutable runner repository digest. Its
+database writes are ordinary control-plane lifecycle/evidence/proposal state; its
+approved final effect is still only a safe mock receipt, never a GitHub or
+canonical-memory write.
 
 The full repository verifier runs both suites:
 

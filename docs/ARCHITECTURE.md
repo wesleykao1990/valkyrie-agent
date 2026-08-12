@@ -71,8 +71,15 @@ adapter, or alter routing. An explicitly configured pilot adapter can start pinn
 Atomic 0.9.12 for credential-free offline RPC/package discovery. The control plane
 continues to own stable run IDs, policy, budgets, approvals, context/workspace
 references, normalized events, and artifacts; Atomic's main session owns native
-session/workflow state. Model workflow, HIL mapping, and cross-process durability
-remain unverified and disabled.
+session/workflow state.
+
+M5a adds exactly one independently tested package workflow,
+`atomic-fixture-pilot`, for a reviewed disposable repository. Its real Atomic main
+session runs inside the external writer container, and its native graph uses only
+credential-free `ctx.tool` stages: literal-contract preflight, reviewed fixture
+edit, deterministic checks, fresh deterministic verification, and artifact
+emission. This proves the integration boundary, not model behavior. Provider/model
+workflow, native HIL, and cross-process durability remain unverified and disabled.
 
 ## Native connectivity boundary
 
@@ -84,14 +91,14 @@ before normalized projections. Context packs and run contracts are bounded,
 checksummed workspace artifacts. Every pilot final action is `analysis_only` and
 `crossProcessResume=false`.
 
-This boundary is not a writer sandbox. Milestone 4 now provides the separate,
-disabled contract below, but it must pass a real-engine smoke on the deployment
-host before any native adapter may edit a repository.
+This connectivity boundary is not a writer sandbox. Milestone 4 provides the
+separate contract below. Only the literal M5a fixture coordinator may compose it
+with Atomic, behind a separate default-off gate and successful deployment-host
+preflight; the general native adapters remain read-only.
 
 ## Verified external writer boundary (disabled by default)
 
-The internal Milestone 4 fixture path is deliberately not registered as an HTTP,
-MCP, or runtime adapter capability. It composes these separate authorities:
+The Milestone 4 boundary composes these separate authorities:
 
 1. `WriterWorkspaceManager` snapshots one exact clean base commit into a private
    shallow bare Git store, creates one relative worktree, and never mounts the
@@ -119,22 +126,51 @@ MCP, or runtime adapter capability. It composes these separate authorities:
    exact lease release. Ambiguous ownership or cleanup leaves durable quarantine
    evidence instead of automatic reuse.
 
-The provider remains disabled by default and unregistered as a runtime/API/MCP
-capability. In addition to deterministic fake-engine tests, local Colima/Docker
-passed the opt-in kernel/network policy smoke with an immutable ARM64 Alpine
-fixture. Migration 005 records the sandbox lifecycle and provider-aware restart
-reconciliation cleans only exact immutable IDs/labels, quarantines drift or
-uncertainty, and leaves unmatched managed objects untouched. Model writer
-runtimes remain unavailable until the separate Milestone 5 composition.
+The provider remains disabled by default and is never exposed as a raw
+runtime/API/MCP capability. In addition to deterministic fake-engine tests, local
+Colima/Docker passed the opt-in kernel/network policy smoke with an immutable
+ARM64 Alpine fixture. Migration 005 records the sandbox lifecycle and
+provider-aware restart reconciliation cleans only exact immutable IDs/labels,
+quarantines drift or uncertainty, and leaves unmatched managed objects untouched.
+
+## M5a Atomic fixture composition (default off)
+
+`AtomicFixturePilotCoordinator` is a narrow control-plane composition, not a new
+workflow engine. Authenticated MCP can submit only the exact `atomic-pilot` /
+`task_atomic_fixture_m5` / `atomic-fixture-pilot` contract. Callers cannot choose
+the repository, command, image, socket, credential, artifact paths, or workflow
+source.
+
+The control plane creates the bounded accepted Project Brain pack, run contract,
+launch manifest, private worktree, lease owner/fence, and no-network container.
+The provider opens one bounded LF-JSONL transport to Atomic 0.9.12 inside that
+container. Atomic owns one native main session and workflow run. Raw native
+records and stable native IDs are retained alongside normalized events.
+
+After the workflow reaches terminal success, the boundary stops Atomic and its
+container, freezes the exact fence, verifies the exported bytes still match the
+native evidence snapshot, scans and atomically registers nine checksummed
+artifacts, removes the worktree, and releases the lease. Only then may the run
+enter `awaiting_approval`. Migration 006 binds that approval to project, workflow,
+artifact digest, sandbox policy hash, and expiry. Approval can record only a safe
+mock acceptance receipt. Its evidence-derived memory remains `proposed`; promotion
+is a separate preview-bound action absent from the fixture tool allow-list.
+
+The slice has network `none`, zero model tokens/cost, no provider credential, no
+model verifier, and `crossProcessResume=false`. It creates no real PR, merge,
+deployment, destructive database action, secret expansion, or canonical-memory
+write. A complete model-backed M5 depends on a reviewed local-model endpoint or a
+scoped inference proxy that keeps provider credentials outside the writer.
 
 ## Prototype substitution
 
 The production architecture uses PostgreSQL and a read-only OpenViking trial. The
 downloadable prototype defaults to SQLite and local Markdown retrieval so it can
 run without external credentials. PostgreSQL now exists behind the store contract;
-OpenViking and writer runtimes remain disabled continuation work. The writer
-boundary is contract-tested and locally live-verified behind proposed ADR-P004,
-but is not composed into a model adapter. Read-only native connectivity adapters exist only
+OpenViking and general writer runtimes remain disabled continuation work. The
+writer boundary is contract-tested and locally live-verified behind proposed
+ADR-P004; the only runtime composition is the fixed credential-free M5a fixture
+behind proposed ADR-P005. Read-only native connectivity adapters exist only
 behind explicit feature flags and the proposed ADR-P003 boundary.
 
 

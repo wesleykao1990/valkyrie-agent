@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { linkSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ArtifactSecretDetectedError,
   exportGovernedArtifacts,
+  readGovernedArtifactExport,
   scanArtifactSecrets,
 } from "../apps/control-plane/src/governed-artifact-export.ts";
 
@@ -15,6 +17,16 @@ function fixture() {
   const artifactRoot = join(root, "artifacts");
   mkdirSync(join(workspace, "reports"), { recursive: true });
   return { root, workspace, artifactRoot };
+}
+
+function assertPathOpaqueReadFailure(callback: () => unknown, hostRoot: string): void {
+  assert.throws(callback, (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /approval-bound review contract/i);
+    assert.equal(error.message.includes(hostRoot), false);
+    assert.equal(error.cause, undefined);
+    return true;
+  });
 }
 
 test("governed artifact export copies only reviewed manifest files with private modes", () => {
@@ -112,6 +124,80 @@ test("artifact export replays exact files but never overwrites conflicting run c
       { relativePath: "reports/checks.txt", kind: "checks", mediaType: "text/plain" },
     ], { workspacePath: item.workspace, artifactRoot: item.artifactRoot, runId: "run_existing" }), /do not match/);
     assert.equal(readFileSync(join(item.artifactRoot, "run_existing", "evidence.txt"), "utf8"), "old\n");
+  } finally {
+    rmSync(item.root, { recursive: true, force: true });
+  }
+});
+
+test("governed artifact read is exact, bounded, UTF-8-fatal, no-follow, and path-opaque", () => {
+  const item = fixture();
+  try {
+    const reviewedBody = Buffer.from("\uFEFFchecks: passed ✓\n", "utf8");
+    writeFileSync(join(item.workspace, "reports", "review.txt"), reviewedBody);
+    const [exported] = exportGovernedArtifacts([{
+      relativePath: "reports/review.txt",
+      kind: "deterministic-checks",
+      mediaType: "text/plain",
+    }], { workspacePath: item.workspace, artifactRoot: item.artifactRoot, runId: "run_review" });
+    const expected = {
+      relativePath: exported.sourceRelativePath,
+      kind: exported.kind,
+      mediaType: exported.mediaType,
+      checksum: exported.checksum,
+      sizeBytes: exported.sizeBytes,
+    };
+
+    const read = readGovernedArtifactExport(expected, {
+      artifactRoot: item.artifactRoot,
+      runId: "run_review",
+    });
+    assert.equal(read.content, "\uFEFFchecks: passed ✓\n");
+    assert.equal(createHash("sha256").update(Buffer.from(read.content, "utf8")).digest("hex"), exported.checksum);
+    assert.deepEqual(Object.keys(read).sort(), [
+      "checksum", "content", "kind", "mediaType", "relativePath", "sizeBytes",
+    ]);
+    assert.equal(JSON.stringify(read).includes(item.root), false);
+    assertPathOpaqueReadFailure(() => readGovernedArtifactExport(expected, {
+      artifactRoot: item.artifactRoot,
+      runId: "run_review",
+      maxReadBytes: reviewedBody.byteLength - 1,
+    }), item.root);
+
+    const tamperedBody = Buffer.from("\uFEFFchecks: failed ✓\n", "utf8");
+    assert.equal(tamperedBody.byteLength, reviewedBody.byteLength);
+    writeFileSync(exported.path, tamperedBody);
+    assertPathOpaqueReadFailure(() => readGovernedArtifactExport(expected, {
+      artifactRoot: item.artifactRoot,
+      runId: "run_review",
+    }), item.root);
+
+    if (process.platform !== "win32") {
+      const outside = join(item.root, "outside-review.txt");
+      writeFileSync(outside, reviewedBody);
+      rmSync(exported.path);
+      symlinkSync(outside, exported.path);
+      assertPathOpaqueReadFailure(() => readGovernedArtifactExport(expected, {
+        artifactRoot: item.artifactRoot,
+        runId: "run_review",
+      }), item.root);
+    }
+
+    writeFileSync(join(item.workspace, "reports", "invalid-utf8.txt"), Buffer.from([0xc3, 0x28]));
+    const [invalid] = exportGovernedArtifacts([{
+      relativePath: "reports/invalid-utf8.txt",
+      kind: "deterministic-checks",
+      mediaType: "text/plain",
+    }], { workspacePath: item.workspace, artifactRoot: item.artifactRoot, runId: "run_invalid_utf8" });
+    assertPathOpaqueReadFailure(() => readGovernedArtifactExport({
+      relativePath: invalid.sourceRelativePath,
+      kind: invalid.kind,
+      mediaType: invalid.mediaType,
+      checksum: invalid.checksum,
+      sizeBytes: invalid.sizeBytes,
+    }, {
+      artifactRoot: item.artifactRoot,
+      runId: "run_invalid_utf8",
+    }), item.root);
   } finally {
     rmSync(item.root, { recursive: true, force: true });
   }

@@ -58,12 +58,12 @@ function gitRun(repository: string, args: string[]): string {
   return result.stdout.trim();
 }
 
-function runRecord(id: string): Run {
+function runRecord(id: string, workflow = "sandbox-fixture"): Run {
   return {
     id,
     projectId: "fixture",
-    rootRuntime: "codex",
-    workflow: "sandbox-fixture",
+    rootRuntime: workflow === "atomic-fixture-pilot" ? "atomic" : "codex",
+    workflow,
     status: "queued",
     stage: null,
     stageIndex: 0,
@@ -74,12 +74,12 @@ function runRecord(id: string): Run {
     nextActionAt: null,
     startedAt: null,
     completedAt: null,
-    metadata: { sandboxFixture: true },
+    metadata: workflow === "sandbox-fixture" ? { sandboxFixture: true } : { atomicFixturePilot: true },
     createdAt: "2026-08-11T00:00:00.000Z",
   };
 }
 
-async function fixture(runId: string) {
+async function fixture(runId: string, workflow = "sandbox-fixture") {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "valkyrie-writer-boundary-")));
   let nowMs = Date.parse("2026-08-11T00:00:00.000Z");
   const now = () => new Date(nowMs);
@@ -107,7 +107,7 @@ async function fixture(runId: string) {
     createdAt: "2026-08-11T00:00:00.000Z",
   };
   await store.seedProjects([{ ...project }]);
-  const run = runRecord(runId);
+  const run = runRecord(runId, workflow);
   await store.createRun(run);
   const writerRoot = join(root, "writers");
   const workspaces = new WriterWorkspaceManager({
@@ -298,6 +298,218 @@ test("writer boundary orders stop, scan, atomic artifact persistence, container 
     assert.equal((await item.store.getRun(item.run.id))?.status, "completed");
     assert.equal((await item.store.getSandboxInstance(item.run.id))?.state, "cleaned");
     assert.equal(await item.store.getWorkspaceLease(result.workspaceId), null);
+    assert.deepEqual(readdirSync(item.writerRoot).sort(), [".git-home"]);
+  } finally {
+    await item.store.close();
+    rmSync(item.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted workload prepares lease-bound context and leaves cleaned evidence ready for approval", async () => {
+  const item = await fixture("run_atomic_workload_evidence", "atomic-fixture-pilot");
+  const events: string[] = [];
+  const provider = new FixtureProvider(events, "unused\n");
+  const originalContract = provider.contract.bind(provider);
+  provider.contract = () => {
+    events.push("contract");
+    return originalContract();
+  };
+  const originalBatch = item.store.createArtifactBatch.bind(item.store);
+  item.store.createArtifactBatch = async (artifacts) => {
+    events.push("persist_artifacts");
+    return originalBatch(artifacts);
+  };
+  const originalQuarantine = item.store.quarantineWorkspaceLease.bind(item.store);
+  item.store.quarantineWorkspaceLease = async (input) => {
+    events.push("freeze_cleanup");
+    return originalQuarantine(input);
+  };
+  const originalRemove = item.workspaces.removeFilesystem.bind(item.workspaces);
+  item.workspaces.removeFilesystem = async (prepared, leaseFence) => {
+    events.push("workspace_cleanup");
+    return originalRemove(prepared, leaseFence);
+  };
+  const originalRelease = item.store.releaseWorkspaceLease.bind(item.store);
+  item.store.releaseWorkspaceLease = async (leaseFence) => {
+    events.push("release");
+    return originalRelease(leaseFence);
+  };
+  try {
+    const result = await boundary(item, provider, events).runWorkload({
+      allowedWorkflow: "atomic-fixture-pilot",
+      run: item.run,
+      project: item.project,
+      repositoryPath: item.source,
+      contextPath: item.context,
+      artifacts: [{ relativePath: "evidence.txt", kind: "atomic-pilot-evidence", mediaType: "text/plain" }],
+      completion: "evidence_ready",
+      prepareContext: async (binding) => {
+        events.push("prepare_context");
+        assert.equal(binding.workflow, "atomic-fixture-pilot");
+        assert.equal(binding.projectId, item.project.id);
+        assert.equal(binding.sandboxContract.policyHash, "b".repeat(64));
+        const persisted = await item.store.getRun(item.run.id);
+        assert.equal(persisted?.workspaceId, binding.workspaceId);
+        const lease = await item.store.getWorkspaceLease(binding.workspaceId);
+        assert.equal(lease?.state, "active");
+        assert.equal(lease?.ownerId, binding.leaseOwnerId);
+        assert.equal(lease?.fencingToken, binding.fencingToken);
+        assert.equal(await item.store.getSandboxInstance(item.run.id), null);
+        writeFileSync(join(item.context, "launch-manifest.json"), JSON.stringify({
+          runId: binding.runId,
+          workspaceId: binding.workspaceId,
+          fencingToken: binding.fencingToken,
+          policyHash: binding.sandboxContract.policyHash,
+        }), "utf8");
+      },
+      execute: async (handle, binding) => {
+        events.push("trusted_execute");
+        assert.equal(handle.runId, binding.runId);
+        assert.equal(handle.workspaceId, binding.workspaceId);
+        assert.equal(handle.fencingToken, binding.fencingToken);
+        assert.match(readFileSync(join(item.context, "launch-manifest.json"), "utf8"), /policyHash/);
+        writeFileSync(join(handle.workspacePath, "worktree", "evidence.txt"), "atomic evidence\n", "utf8");
+        return { exitCode: 0, stdout: "atomic complete\n", stderr: "", stdoutBytes: 16, stderrBytes: 0 };
+      },
+      validateExports: (exports) => {
+        events.push("validate_exports");
+        assert.deepEqual(exports, [{
+          relativePath: "evidence.txt",
+          kind: "atomic-pilot-evidence",
+          mediaType: "text/plain",
+          checksum: digest("atomic evidence\n"),
+          sizeBytes: 16,
+        }]);
+      },
+    });
+    assert.deepEqual(events, [
+      "preflight", "contract", "prepare_context", "start", "trusted_execute", "stop",
+      "freeze_cleanup", "validate_exports", "persist_artifacts", "cleanup", "workspace_cleanup", "release",
+    ]);
+    assert.equal(result.completion, "evidence_ready");
+    assert.equal(result.execution.exitCode, 0);
+    assert.equal(readFileSync(result.exports[0].path, "utf8"), "atomic evidence\n");
+    const run = await item.store.getRun(item.run.id);
+    assert.equal(run?.status, "running");
+    assert.equal(run?.stage, "evidence_ready");
+    assert.equal(run?.completedAt, null);
+    assert.equal(run?.metadata.sandboxEvidenceReady, true);
+    assert.equal(run?.metadata.writerWorkloadCompleted, false);
+    assert.equal(run?.metadata.writerLeaseReleased, true);
+    assert.equal((await item.store.getSandboxInstance(item.run.id))?.state, "cleaned");
+    assert.equal(await item.store.getWorkspaceLease(result.workspaceId), null);
+    assert.deepEqual(readdirSync(item.writerRoot).sort(), [".git-home"]);
+  } finally {
+    await item.store.close();
+    rmSync(item.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted workload rejects a caller workflow outside its exact allowlist before preflight", async () => {
+  const item = await fixture("run_atomic_workload_allowlist", "atomic-fixture-pilot");
+  const events: string[] = [];
+  try {
+    await assert.rejects(boundary(item, new FixtureProvider(events, ""), events).runWorkload({
+      allowedWorkflow: "different-reviewed-workflow",
+      run: item.run,
+      project: item.project,
+      repositoryPath: item.source,
+      contextPath: item.context,
+      artifacts: [],
+      completion: "evidence_ready",
+      prepareContext: async () => undefined,
+      execute: async () => ({ exitCode: 0, stdout: "", stderr: "", stdoutBytes: 0, stderrBytes: 0 }),
+    }), /outside the exact workload allowlist/);
+    assert.deepEqual(events, []);
+    assert.equal((await item.store.getRun(item.run.id))?.workspaceId, null);
+    assert.equal((await item.store.listLeases()).length, 0);
+  } finally {
+    await item.store.close();
+    rmSync(item.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted workload quarantines context tamper before export", async () => {
+  const item = await fixture("run_atomic_workload_context_tamper", "atomic-fixture-pilot");
+  const events: string[] = [];
+  const provider = new FixtureProvider(events, "unused\n");
+  try {
+    await assert.rejects(boundary(item, provider, events).runWorkload({
+      allowedWorkflow: "atomic-fixture-pilot",
+      run: item.run,
+      project: item.project,
+      repositoryPath: item.source,
+      contextPath: item.context,
+      artifacts: [{ relativePath: "evidence.txt", kind: "atomic-pilot-evidence", mediaType: "text/plain" }],
+      completion: "evidence_ready",
+      prepareContext: async () => undefined,
+      execute: async (handle) => {
+        events.push("trusted_execute");
+        writeFileSync(join(handle.workspacePath, "worktree", "evidence.txt"), "must not export\n", "utf8");
+        writeFileSync(join(item.context, "run-contract.json"), "{\"tampered\":true}\n", "utf8");
+        return { exitCode: 0, stdout: "", stderr: "", stdoutBytes: 0, stderrBytes: 0 };
+      },
+    }), (error: unknown) => error instanceof WriterSandboxQuarantinedError
+      && error.reason === "context_integrity_changed");
+    assert.deepEqual(events, ["preflight", "start", "trusted_execute", "stop", "cleanup"]);
+    const run = await item.store.getRun(item.run.id);
+    assert.equal(run?.status, "failed");
+    assert.equal(run?.stage, "workspace_quarantined");
+    assert.equal(run?.metadata.sandboxQuarantineReason, "context_integrity_changed");
+    assert.equal((await item.store.getWorkspaceLease(String(run?.workspaceId)))?.state, "quarantined");
+    assert.equal((await item.store.listArtifacts(item.run.id)).length, 0);
+  } finally {
+    await item.store.close();
+    rmSync(item.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted workload executor failure stops and cleans before workspace release", async () => {
+  const item = await fixture("run_atomic_workload_executor_failure", "atomic-fixture-pilot");
+  const events: string[] = [];
+  const provider = new FixtureProvider(events, "unused\n");
+  const originalQuarantine = item.store.quarantineWorkspaceLease.bind(item.store);
+  item.store.quarantineWorkspaceLease = async (input) => {
+    events.push("freeze_cleanup");
+    return originalQuarantine(input);
+  };
+  const originalRemove = item.workspaces.removeFilesystem.bind(item.workspaces);
+  item.workspaces.removeFilesystem = async (prepared, leaseFence) => {
+    events.push("workspace_cleanup");
+    return originalRemove(prepared, leaseFence);
+  };
+  const originalRelease = item.store.releaseWorkspaceLease.bind(item.store);
+  item.store.releaseWorkspaceLease = async (leaseFence) => {
+    events.push("release");
+    return originalRelease(leaseFence);
+  };
+  try {
+    await assert.rejects(boundary(item, provider, events).runWorkload({
+      allowedWorkflow: "atomic-fixture-pilot",
+      run: item.run,
+      project: item.project,
+      repositoryPath: item.source,
+      contextPath: item.context,
+      artifacts: [{ relativePath: "evidence.txt", kind: "atomic-pilot-evidence", mediaType: "text/plain" }],
+      completion: "evidence_ready",
+      prepareContext: async () => undefined,
+      execute: async () => {
+        events.push("trusted_execute");
+        throw new Error("injected trusted executor failure");
+      },
+    }), /injected trusted executor failure/);
+    assert.deepEqual(events, [
+      "preflight", "start", "trusted_execute", "stop", "cleanup",
+      "freeze_cleanup", "workspace_cleanup", "release",
+    ]);
+    const run = await item.store.getRun(item.run.id);
+    assert.equal(run?.status, "failed");
+    assert.equal(run?.stage, "writer_workload_failed");
+    assert.equal(run?.metadata.containerCleanupProven, true);
+    assert.equal(run?.metadata.writerWorkspaceRemoved, true);
+    assert.equal((await item.store.getSandboxInstance(item.run.id))?.state, "quarantined");
+    assert.equal(await item.store.getWorkspaceLease(String(run?.workspaceId)), null);
+    assert.equal((await item.store.listArtifacts(item.run.id)).length, 0);
     assert.deepEqual(readdirSync(item.writerRoot).sort(), [".git-home"]);
   } finally {
     await item.store.close();
@@ -642,8 +854,10 @@ test("restart reconciliation removes the exact orphan and durably quarantines it
     artifactRoot,
     stateRoot,
     timeoutBounds: {
-      preflightMs: 1_000, startMs: 1_000, inspectMs: 1_000, readinessMs: 1_000,
-      runMs: 1_000, stopMs: 1_000, killMs: 1_000, cleanupMs: 1_000,
+      // This restart test launches several real Node subprocesses. Keep the
+      // fake engine bounded while allowing cold startup on a loaded CI host.
+      preflightMs: 5_000, startMs: 5_000, inspectMs: 5_000, readinessMs: 5_000,
+      runMs: 5_000, stopMs: 5_000, killMs: 5_000, cleanupMs: 5_000,
       terminationGraceMs: 25, readinessPollMs: 25,
     },
   };

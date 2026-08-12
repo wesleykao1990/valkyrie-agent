@@ -2,6 +2,7 @@ import type { Approval, Artifact, MemoryProposal, Project, Run, RunEvent, Task }
 import { nowIso } from "./ids.ts";
 import { assertUniqueMigrationVersions, loadMigrationFiles } from "./migrations.ts";
 import {
+  assertRunPatchApplied,
   artifactsEqual,
   canonicalJson,
   decodeJson,
@@ -12,6 +13,11 @@ import {
   observeStoreClock,
   StorageConflictError,
   validateArtifactBatchInput,
+  validateApprovalRequestBinding,
+  validateApprovalResolutionBinding,
+  validateApprovalExpiry,
+  validateApprovalExpiryRunPatch,
+  validateQueuedRunClaim,
   validateSandboxInstanceCreate,
   validateSandboxInstanceTransition,
   validateWorkspaceLeaseFence,
@@ -21,6 +27,7 @@ import {
   validateWriterLeaseWindow,
   type ApprovalResolutionInput,
   type ApprovalResolutionResult,
+  type ApprovalExpiryInput,
   type ApprovalRequestInput,
   type ApprovalRequestResult,
   type ArtifactBatchResult,
@@ -82,10 +89,12 @@ export class PostgresStore implements ControlPlaneStore {
   private initialMigrationResults: MigrationResult[] = [];
   private readonly pool: PoolLike;
   private readonly clock: StoreClock;
+  private readonly useDatabaseClock: boolean;
 
-  private constructor(pool: PoolLike, clock: StoreClock) {
+  private constructor(pool: PoolLike, clock: StoreClock, useDatabaseClock: boolean) {
     this.pool = pool;
     this.clock = clock;
+    this.useDatabaseClock = useDatabaseClock;
   }
 
   static async connect(options: PostgresStoreOptions): Promise<PostgresStore> {
@@ -100,7 +109,7 @@ export class PostgresStore implements ControlPlaneStore {
       application_name: options.applicationName ?? "wesley-agent-control-plane",
       ssl: options.ssl,
     }) as unknown as PoolLike;
-    const store = new PostgresStore(pool, options.now ?? (() => new Date()));
+    const store = new PostgresStore(pool, options.now ?? (() => new Date()), options.now === undefined);
     try {
       if (options.autoMigrate) store.initialMigrationResults = await store.applyMigrations();
       else await store.assertMigrationsCurrent();
@@ -211,6 +220,14 @@ export class PostgresStore implements ControlPlaneStore {
     }
   }
 
+  private async observeApprovalClock(client: Queryable): Promise<string> {
+    if (!this.useDatabaseClock) return observeStoreClock(this.clock);
+    const value = (await client.query("SELECT clock_timestamp() AS observed_at")).rows[0]?.observed_at;
+    const parsed = value instanceof Date ? value : new Date(String(value ?? ""));
+    if (!Number.isFinite(parsed.getTime())) throw new StorageConflictError("PostgreSQL approval clock is invalid");
+    return parsed.toISOString();
+  }
+
   async resetOperationalData(): Promise<void> {
     await this.transaction(async (client) => {
       await client.query(`TRUNCATE TABLE
@@ -294,6 +311,21 @@ export class PostgresStore implements ControlPlaneStore {
         await client.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))", [input.idempotency.scope, input.idempotency.key]);
         const replay = await this.replayRunBundle(client, input.idempotency);
         if (replay) return replay;
+      }
+      if (input.admission) {
+        if (input.admission.workflow !== effectiveRun.workflow || input.admission.maxNonterminal !== 1) {
+          throw new StorageConflictError("Run admission must bind the exact workflow with maxNonterminal=1");
+        }
+        await client.query("SELECT pg_advisory_xact_lock(hashtext('run.workflow.admission'),hashtext($1))", [
+          input.admission.workflow,
+        ]);
+        const active = await client.query(`SELECT COUNT(*)::integer AS count FROM runs
+          WHERE workflow=$1 AND status IN ('queued','running','paused','awaiting_approval')`, [
+          input.admission.workflow,
+        ]);
+        if (Number(active.rows[0]?.count ?? 0) >= input.admission.maxNonterminal) {
+          throw new StorageConflictError(`Run admission limit reached for workflow ${input.admission.workflow}`);
+        }
       }
       await this.insertRun(client, effectiveRun);
       let persistedLease: WorkspaceLease | undefined;
@@ -393,6 +425,17 @@ export class PostgresStore implements ControlPlaneStore {
     UPDATE runs r SET worker_claimed_by=$3,worker_claim_expires_at=$4
     FROM candidates c WHERE r.id=c.id RETURNING r.*`, [now, limit, workerId, claimUntil]));
     return result.rows.map(this.mapRun);
+  }
+
+  async claimQueuedRunForStart(runId: string, workerId: string, claimUntil: string): Promise<Run | null> {
+    const observedAt = observeStoreClock(this.clock);
+    validateQueuedRunClaim(workerId, claimUntil, observedAt);
+    const result = await this.pool.query(`UPDATE runs
+      SET worker_claimed_by=$1,worker_claim_expires_at=$2
+      WHERE id=$3 AND status='queued'
+        AND (worker_claim_expires_at IS NULL OR worker_claim_expires_at<=$4)
+      RETURNING *`, [workerId, claimUntil, runId, observedAt]);
+    return result.rows[0] ? this.mapRun(result.rows[0]) : null;
   }
 
   async releaseRunClaim(runId: string, workerId: string): Promise<void> {
@@ -804,6 +847,8 @@ export class PostgresStore implements ControlPlaneStore {
           const run = await this.getRunRow(client, approval.runId);
           const eventRow = (await client.query("SELECT * FROM run_events WHERE id=$1", [input.event.id])).rows[0];
           if (!run || !eventRow) throw new StorageConflictError("Approval request replay is missing its run or event");
+          const observedAt = await this.observeApprovalClock(client);
+          validateApprovalRequestBinding(input.approval, run, observedAt);
           const event = this.mapEvent(eventRow);
           this.assertEventCompatible(event, input.event);
           return { approval, run, event, replayed: true };
@@ -818,6 +863,8 @@ export class PostgresStore implements ControlPlaneStore {
         if (!run || run.status !== "awaiting_approval" || !eventRow) {
           throw new StorageConflictError("Existing approval request is not in a replayable pending state");
         }
+        const observedAt = await this.observeApprovalClock(client);
+        validateApprovalRequestBinding(input.approval, run, observedAt);
         const event = this.mapEvent(eventRow);
         this.assertEventCompatible(event, input.event);
         if (input.idempotency) {
@@ -831,6 +878,8 @@ export class PostgresStore implements ControlPlaneStore {
       const runResult = await client.query("SELECT * FROM runs WHERE id=$1 FOR UPDATE", [input.approval.runId]);
       const run = runResult.rows[0] ? this.mapRun(runResult.rows[0]) : null;
       if (!run) throw new StorageConflictError("Approval run not found");
+      const observedAt = await this.observeApprovalClock(client);
+      validateApprovalRequestBinding(input.approval, run, observedAt);
       if (["completed", "failed", "cancelled"].includes(run.status)) {
         throw new StorageConflictError("A terminal run cannot request approval");
       }
@@ -855,7 +904,12 @@ export class PostgresStore implements ControlPlaneStore {
     const stateCompatible = allowResolved ? true : stored.state === "pending";
     if (!stateCompatible || stored.id !== requested.id || stored.runId !== requested.runId ||
         stored.action !== requested.action || stored.exactEffect !== requested.exactEffect ||
-        stored.requestedAt !== requested.requestedAt || canonicalJson(stored.evidence) !== canonicalJson(requested.evidence)) {
+        stored.requestedAt !== requested.requestedAt || canonicalJson(stored.evidence) !== canonicalJson(requested.evidence) ||
+        (stored.projectId ?? null) !== (requested.projectId ?? null) ||
+        (stored.workflow ?? null) !== (requested.workflow ?? null) ||
+        (stored.evidenceDigest ?? null) !== (requested.evidenceDigest ?? null) ||
+        (stored.policyHash ?? null) !== (requested.policyHash ?? null) ||
+        (stored.expiresAt ?? null) !== (requested.expiresAt ?? null)) {
       throw new StorageConflictError(`Approval ${requested.id} was already used with different request content`);
     }
   }
@@ -869,11 +923,14 @@ export class PostgresStore implements ControlPlaneStore {
 
   private async insertApproval(client: Queryable, approval: Approval): Promise<void> {
     await client.query(`INSERT INTO approvals
-      (id,run_id,action,exact_effect,state,evidence_json,requested_at,resolved_at,resolved_by,decision)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, [
+      (id,run_id,action,exact_effect,state,evidence_json,requested_at,resolved_at,resolved_by,decision,
+       project_id,workflow,evidence_digest,policy_hash,expires_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, [
       approval.id, approval.runId, approval.action, approval.exactEffect, approval.state,
       JSON.stringify(approval.evidence), approval.requestedAt, approval.resolvedAt ?? null,
-      approval.resolvedBy ?? null, approval.decision ?? null,
+      approval.resolvedBy ?? null, approval.decision ?? null, approval.projectId ?? null,
+      approval.workflow ?? null, approval.evidenceDigest ?? null, approval.policyHash ?? null,
+      approval.expiresAt ?? null,
     ]);
   }
 
@@ -907,6 +964,8 @@ export class PostgresStore implements ControlPlaneStore {
           }
           const approval = await this.getApprovalRow(client, input.approvalId);
           if (!approval) throw new StorageConflictError("Idempotency record refers to a missing approval");
+          const observedAt = await this.observeApprovalClock(client);
+          validateApprovalResolutionBinding(approval, input.expectedBinding, observedAt);
           if (input.event && input.event.runId !== approval.runId) {
             throw new StorageConflictError("Approval resolution event must belong to the approval run");
           }
@@ -918,6 +977,8 @@ export class PostgresStore implements ControlPlaneStore {
 
       const current = await this.getApprovalRow(client, input.approvalId, true);
       if (!current) throw new StorageConflictError("Approval not found");
+      const observedAt = await this.observeApprovalClock(client);
+      validateApprovalResolutionBinding(current, input.expectedBinding, observedAt);
       if (input.event && input.event.runId !== current.runId) {
         throw new StorageConflictError("Approval resolution event must belong to the approval run");
       }
@@ -928,11 +989,18 @@ export class PostgresStore implements ControlPlaneStore {
         }
         replayed = true;
       } else {
-        const result = await client.query(`UPDATE approvals
-          SET state=$1,decision=$2,resolved_by=$3,resolved_at=$4 WHERE id=$5 AND state='pending'`, [
-          input.state, input.decision, input.resolvedBy, input.resolvedAt ?? nowIso(), input.approvalId,
-        ]);
-        if (result.rowCount !== 1) throw new StorageConflictError("Approval resolution lost a concurrent race");
+        const result = this.useDatabaseClock
+          ? await client.query(`UPDATE approvals
+            SET state=$1,decision=$2,resolved_by=$3,resolved_at=$4
+            WHERE id=$5 AND state='pending' AND (expires_at IS NULL OR expires_at>clock_timestamp())`, [
+            input.state, input.decision, input.resolvedBy, input.resolvedAt ?? observedAt, input.approvalId,
+          ])
+          : await client.query(`UPDATE approvals
+            SET state=$1,decision=$2,resolved_by=$3,resolved_at=$4
+            WHERE id=$5 AND state='pending' AND (expires_at IS NULL OR expires_at>$6)`, [
+            input.state, input.decision, input.resolvedBy, input.resolvedAt ?? observedAt, input.approvalId, observedAt,
+          ]);
+        if (result.rowCount !== 1) throw new StorageConflictError("Approval has expired or resolution lost a concurrent race");
       }
 
       if (!replayed && input.runPatch) await this.updateRunRow(client, current.runId, input.runPatch);
@@ -952,6 +1020,91 @@ export class PostgresStore implements ControlPlaneStore {
       const approval = (await this.getApprovalRow(client, input.approvalId))!;
       const run = (await this.getRunRow(client, current.runId))!;
       return { approval, run, event: storedEvent, replayed };
+    });
+  }
+
+  async expireApprovalTransaction(input: ApprovalExpiryInput): Promise<ApprovalResolutionResult> {
+    validateApprovalExpiryRunPatch(input.runPatch);
+    return this.transaction(async (client) => {
+      const replayResult = async (approval: Approval, run: Run): Promise<ApprovalResolutionResult> => {
+        if (approval.state !== "denied" || approval.decision !== "expired" || approval.resolvedBy !== "control-plane") {
+          throw new StorageConflictError("Approval was resolved by a different decision");
+        }
+        if (input.event.runId !== approval.runId) {
+          throw new StorageConflictError("Approval expiry event must belong to the approval run");
+        }
+        assertRunPatchApplied(run, input.runPatch);
+        const eventRow = (await client.query("SELECT * FROM run_events WHERE id=$1", [input.event.id])).rows[0];
+        if (!eventRow) throw new StorageConflictError("Expired approval replay is missing its event");
+        const event = this.mapEvent(eventRow);
+        this.assertEventCompatible(event, input.event);
+        return { approval, run, event, replayed: true };
+      };
+
+      if (input.idempotency) {
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))", [input.idempotency.scope, input.idempotency.key]);
+        const record = await this.getIdempotencyRow(client, input.idempotency.scope, input.idempotency.key);
+        if (record) {
+          if (record.requestHash !== input.idempotency.requestHash) throw new IdempotencyConflictError();
+          if (record.resourceType !== "approval" || record.resourceId !== input.approvalId) {
+            throw new IdempotencyConflictError("Idempotency key refers to another approval or resource type");
+          }
+          const approval = await this.getApprovalRow(client, input.approvalId);
+          if (!approval) throw new StorageConflictError("Idempotency record refers to a missing approval");
+          const observedAt = await this.observeApprovalClock(client);
+          validateApprovalExpiry(approval, observedAt);
+          const run = await this.getRunRow(client, approval.runId);
+          if (!run) throw new StorageConflictError("Approval refers to a missing run");
+          return replayResult(approval, run);
+        }
+      }
+
+      const current = await this.getApprovalRow(client, input.approvalId, true);
+      if (!current) throw new StorageConflictError("Approval not found");
+      const observedAt = await this.observeApprovalClock(client);
+      validateApprovalExpiry(current, observedAt);
+      if (input.event.runId !== current.runId) {
+        throw new StorageConflictError("Approval expiry event must belong to the approval run");
+      }
+
+      if (current.state !== "pending") {
+        const run = await this.getRunRow(client, current.runId);
+        if (!run) throw new StorageConflictError("Approval refers to a missing run");
+        const result = await replayResult(current, run);
+        if (input.idempotency) {
+          await this.insertIdempotency(client, input.idempotency, "approval", input.approvalId, {
+            approvalId: input.approvalId, runId: current.runId,
+          });
+        }
+        return result;
+      }
+
+      const updated = this.useDatabaseClock
+        ? await client.query(`UPDATE approvals
+          SET state='denied',decision='expired',resolved_by='control-plane',resolved_at=$1
+          WHERE id=$2 AND state='pending' AND expires_at<=clock_timestamp()`, [observedAt, input.approvalId])
+        : await client.query(`UPDATE approvals
+          SET state='denied',decision='expired',resolved_by='control-plane',resolved_at=$1
+          WHERE id=$2 AND state='pending' AND expires_at<=$3`, [observedAt, input.approvalId, observedAt]);
+      if (updated.rowCount !== 1) throw new StorageConflictError("Approval expiry lost a concurrent race");
+      if (!await this.updateRunRow(client, current.runId, input.runPatch)) {
+        throw new StorageConflictError("Approval expiry could not apply its terminal run patch");
+      }
+      const event = await this.insertEvent(client, input.event);
+      await this.insertOutbox(client, "approval.resolved", input.approvalId, {
+        approvalId: input.approvalId, runId: current.runId, state: "denied", decision: "expired",
+      }, "expired");
+      if (input.idempotency) {
+        await this.insertIdempotency(client, input.idempotency, "approval", input.approvalId, {
+          approvalId: input.approvalId, runId: current.runId,
+        });
+      }
+      return {
+        approval: (await this.getApprovalRow(client, input.approvalId))!,
+        run: (await this.getRunRow(client, current.runId))!,
+        event,
+        replayed: false,
+      };
     });
   }
 
@@ -1192,6 +1345,9 @@ export class PostgresStore implements ControlPlaneStore {
     id: row.id, runId: row.run_id, action: row.action, exactEffect: row.exact_effect, state: row.state,
     evidence: decodeJson(row.evidence_json, []), requestedAt: isoString(row.requested_at),
     resolvedAt: nullableIsoString(row.resolved_at), resolvedBy: row.resolved_by, decision: row.decision,
+    projectId: row.project_id ?? null, workflow: row.workflow ?? null,
+    evidenceDigest: row.evidence_digest ?? null, policyHash: row.policy_hash ?? null,
+    expiresAt: nullableIsoString(row.expires_at),
   });
 
   private mapArtifact = (row: any): Artifact => ({

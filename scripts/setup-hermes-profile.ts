@@ -1,12 +1,13 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { validateLoopbackControlPlaneApi } from "../apps/control-plane/src/auth.ts";
 
 const profile = process.env.VALKYRIE_HERMES_PROFILE ?? "valkyrieeval";
 const serverName = "valkyrie_project_os";
 const tokenPath = resolve(process.env.CONTROL_PLANE_AUTH_TOKEN_FILE ?? "data/auth/control-plane.token");
 const mcpCommand = resolve("bin/project-os-pilot-mcp");
-const api = process.env.CONTROL_PLANE_API ?? "http://127.0.0.1:8787";
+const api = validateLoopbackControlPlaneApi(process.env.CONTROL_PLANE_API ?? "http://127.0.0.1:8787");
 const profileMarker = resolve("data/runtime/hermes", `${profile}.empty-profile-v1`);
 
 if (!/^[a-z0-9]+$/.test(profile)) throw new Error("VALKYRIE_HERMES_PROFILE must be lowercase alphanumeric");

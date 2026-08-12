@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 interface FakeMount {
@@ -38,8 +39,25 @@ interface FakeState {
     failKill?: boolean;
     failRemove?: boolean;
     malformedInspect?: boolean;
+    missingImageDigest?: boolean;
+    wrongImageDigest?: boolean;
+    missingImageLabels?: boolean;
+    wrongImageLabels?: boolean;
+    missingAtomicVersion?: boolean;
+    wrongAtomicVersion?: boolean;
+    hangAtomicVersion?: boolean;
+    retainAtomicVersionPipe?: boolean;
+    createNameCollision?: boolean;
+    hangAfterProbeCreate?: boolean;
   };
 }
+
+const REVIEWED_IMAGE_LABELS = Object.freeze({
+  "io.valkyrie.atomic.version": "0.9.12",
+  "io.valkyrie.git.version": "2.50.1",
+  "io.valkyrie.git.source": "https://www.kernel.org/pub/software/scm/git/git-2.50.1.tar.xz",
+  "io.valkyrie.git.source.sha256": "7e3e6c36decbd8f1eedd14d42db6674be03671c2204864befa2a41756c5c8fc4",
+});
 
 function emptyState(): FakeState {
   return { calls: [], containers: {} };
@@ -64,6 +82,9 @@ switch (command) {
   case "version":
     process.stdout.write("27.4.1\n");
     break;
+  case "image":
+    inspectImage(argv.slice(1));
+    break;
   case "create":
     createContainer(argv.slice(1));
     break;
@@ -77,7 +98,7 @@ switch (command) {
     listContainers(argv.slice(1));
     break;
   case "exec":
-    execute(argv.slice(2));
+    execute(argv.slice(1));
     break;
   case "stop":
     if (state.behavior?.failStop) process.exit(71);
@@ -179,11 +200,13 @@ function createContainer(args: string[]): void {
   }
   if (
     !name || !network || !workingDir || !image || !ipcMode || restart !== "no" || !memory || !nanoCpus || !pidsLimit || !user
-    || !tmpfs || !capDrop || securityOpt.length !== 2 || !readOnly || !init || mounts.length !== 2
+    || !tmpfs || !capDrop || securityOpt.length !== 2 || !readOnly || !init
   ) process.exit(64);
+  const runnerProbe = labels["valkyrie.kind"] === "atomic-runner-preflight";
+  if (mounts.length !== (runnerProbe ? 0 : 2)) process.exit(64);
   const id = createHash("sha256").update(name).digest("hex");
   if (state.containers[id]) process.exit(65);
-  state.containers[id] = {
+  const container: FakeContainer = {
     Id: id,
     Config: { Image: image, Labels: labels, WorkingDir: workingDir, User: user },
     HostConfig: {
@@ -204,7 +227,19 @@ function createContainer(args: string[]): void {
     NetworkSettings: { Networks: { [network]: {} } },
     Mounts: mounts,
   };
+  if (state.behavior?.createNameCollision && runnerProbe) {
+    container.Config.Labels = { "unrelated.owner": "true" };
+    state.containers[id] = container;
+    persist();
+    process.exit(65);
+  }
+  state.containers[id] = container;
   persist();
+  if (state.behavior?.hangAfterProbeCreate && runnerProbe) {
+    process.on("SIGTERM", () => undefined);
+    setInterval(() => undefined, 1_000);
+    return;
+  }
   process.stdout.write(`${id}\n`);
 }
 
@@ -237,15 +272,97 @@ function inspectContainer(id: string | undefined): void {
   process.stdout.write(`${JSON.stringify([state.containers[id]])}\n`);
 }
 
+function inspectImage(args: string[]): void {
+  if (args[0] !== "inspect" || args[1] !== "--format" || !args[2] || !args[3] || args.length !== 4) {
+    process.exit(64);
+  }
+  const image = args[3];
+  const repoDigests = state.behavior?.missingImageDigest
+    ? []
+    : state.behavior?.wrongImageDigest
+      ? [`fixture.invalid/wrong-runner@sha256:${"f".repeat(64)}`]
+      : [image];
+  const labels = state.behavior?.missingImageLabels
+    ? null
+    : {
+      ...REVIEWED_IMAGE_LABELS,
+      ...(state.behavior?.wrongImageLabels ? { "io.valkyrie.atomic.version": "9.9.9" } : {}),
+    };
+  process.stdout.write(`${JSON.stringify({ repoDigests, labels })}\n`);
+}
+
 function listContainers(args: string[]): void {
-  const expected = ["--all", "--filter", "label=valkyrie.managed=true", "--format", "{{.ID}}"];
-  if (JSON.stringify(args) !== JSON.stringify(expected)) process.exit(64);
+  let index = 0;
+  const noTrunc = args[index] === "--no-trunc";
+  if (noTrunc) index += 1;
+  if (args[index++] !== "--all") process.exit(64);
+  const filters: Array<[string, string]> = [];
+  while (args[index] === "--filter") {
+    index += 1;
+    const value = args[index++];
+    if (!value?.startsWith("label=") || !value.includes("=")) process.exit(64);
+    const label = value.slice("label=".length);
+    const separator = label.indexOf("=");
+    filters.push([label.slice(0, separator), label.slice(separator + 1)]);
+  }
+  if (args[index++] !== "--format" || args[index++] !== "{{.ID}}" || index !== args.length) process.exit(64);
   for (const container of Object.values(state.containers)) {
-    if (container.Config.Labels["valkyrie.managed"] === "true") process.stdout.write(`${container.Id}\n`);
+    if (filters.every(([name, value]) => container.Config.Labels[name] === value)) {
+      process.stdout.write(`${noTrunc ? container.Id : container.Id.slice(0, 12)}\n`);
+    }
   }
 }
 
-function execute(commandArgs: string[]): void {
+function execute(args: string[]): void {
+  let index = 0;
+  let interactive = false;
+  let workingDirectory: string | undefined;
+  const containerEnvironment: Record<string, string> = {};
+  while (args[index]?.startsWith("-")) {
+    const option = args[index++];
+    if (option === "-i") {
+      interactive = true;
+      continue;
+    }
+    if (option === "--workdir") {
+      workingDirectory = args[index++];
+      if (!workingDirectory) process.exit(64);
+      continue;
+    }
+    if (option === "--env") {
+      const entry = args[index++];
+      const separator = entry?.indexOf("=") ?? -1;
+      if (!entry || separator < 1) process.exit(64);
+      containerEnvironment[entry.slice(0, separator)] = entry.slice(separator + 1);
+      continue;
+    }
+    process.exit(64);
+  }
+  const containerId = args[index++];
+  if (!containerId || !state.containers[containerId]?.State.Running) process.exit(44);
+  const commandArgs = args.slice(index);
+  if (commandArgs[0]?.endsWith("/atomic") && commandArgs[1] === "--version") {
+    if (state.behavior?.retainAtomicVersionPipe) {
+      spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), 3000)"], {
+        stdio: ["ignore", process.stdout, process.stderr],
+      });
+      process.on("SIGTERM", () => undefined);
+      setInterval(() => undefined, 1_000);
+      return;
+    }
+    if (state.behavior?.hangAtomicVersion) {
+      process.on("SIGTERM", () => undefined);
+      setInterval(() => undefined, 1_000);
+      return;
+    }
+    if (state.behavior?.missingAtomicVersion) return;
+    process.stdout.write(`${state.behavior?.wrongAtomicVersion ? "9.9.9" : "0.9.12"}\n`);
+    return;
+  }
+  if (interactive && commandArgs[0]?.endsWith("/atomic") && commandArgs[1] === "--mode" && commandArgs[2] === "rpc") {
+    runAtomicRpc(commandArgs, workingDirectory, containerEnvironment);
+    return;
+  }
   if (commandArgs[0] === "emit-bytes") {
     const count = Number(commandArgs[1]);
     process.stdout.write("x".repeat(Number.isFinite(count) ? count : 0));
@@ -261,4 +378,72 @@ function execute(commandArgs: string[]): void {
     process.exit(Number(commandArgs[1] ?? 1));
   }
   process.stdout.write("ok\n");
+}
+
+function runAtomicRpc(
+  commandArgs: string[],
+  workingDirectory: string | undefined,
+  containerEnvironment: Record<string, string>,
+): void {
+  if (workingDirectory !== "/workspace/worktree") process.exit(64);
+  const requiredEnvironment = {
+    HOME: "/workspace/.atomic-home",
+    XDG_CONFIG_HOME: "/workspace/.atomic-home/config",
+    XDG_DATA_HOME: "/workspace/.atomic-home/data",
+    XDG_CACHE_HOME: "/workspace/.atomic-home/cache",
+    TMPDIR: "/tmp",
+    TMP: "/tmp",
+    TEMP: "/tmp",
+  };
+  if (JSON.stringify(containerEnvironment) !== JSON.stringify(requiredEnvironment)) process.exit(64);
+  const sessionIndex = commandArgs.indexOf("--session-dir");
+  const nameIndex = commandArgs.indexOf("--name");
+  const extensionIndex = commandArgs.indexOf("-e");
+  if (
+    sessionIndex < 0 || commandArgs[sessionIndex + 1] !== "/workspace/.atomic-sessions"
+    || nameIndex < 0 || !commandArgs[nameIndex + 1]
+    || extensionIndex < 0 || commandArgs[extensionIndex + 1] !== "/run-context/atomic-package"
+    || !commandArgs.includes("--approve")
+    || commandArgs.includes("--no-approve")
+  ) process.exit(64);
+
+  process.stdin.setEncoding("utf8");
+  let buffer = "";
+  process.stdin.on("data", (chunk: string) => {
+    buffer += chunk;
+    while (true) {
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) break;
+      const line = buffer.slice(0, newline).replace(/\r$/, "");
+      buffer = buffer.slice(newline + 1);
+      if (!line) continue;
+      let request: Record<string, unknown>;
+      try {
+        request = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        process.exit(65);
+        return;
+      }
+      const id = request.id;
+      const type = request.type;
+      if (typeof id !== "string" || typeof type !== "string") process.exit(65);
+      if (type === "prompt" && request.message === "__fake:transport-overflow__") {
+        process.stdout.write("x".repeat(32 * 1024));
+        continue;
+      }
+      if (type === "prompt") {
+        process.stdout.write(`${JSON.stringify({
+          type: "entry_appended",
+          entry: { id: "oci-native-entry", content: `async:${String(request.message ?? "")}` },
+        })}\n`);
+      }
+      const data = type === "get_state"
+        ? { sessionId: `oci-${commandArgs[nameIndex + 1]}`, isStreaming: false }
+        : type === "prompt"
+          ? { echoed: request.message }
+          : {};
+      process.stdout.write(`${JSON.stringify({ type: "response", id, command: type, success: true, data })}\n`);
+    }
+  });
+  process.stdin.resume();
 }

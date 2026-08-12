@@ -136,6 +136,11 @@ export interface RunBundleInput {
   workspace?: WorkspaceRecord;
   lease?: WriterLeaseRequest;
   idempotency?: IdempotencyInput;
+  /** Transactional, cross-process admission for one workflow's nonterminal runs. */
+  admission?: {
+    workflow: string;
+    maxNonterminal: number;
+  };
 }
 
 export interface RunBundleResult {
@@ -168,14 +173,34 @@ export interface ArtifactBatchResult {
   replayed: boolean;
 }
 
+export interface ApprovalBinding {
+  action: string;
+  exactEffect: string;
+  projectId: string;
+  workflow: string;
+  evidenceDigest: string;
+  policyHash: string;
+  expiresAt: string;
+}
+
 export interface ApprovalResolutionInput {
   approvalId: string;
   state: string;
   decision: string;
   resolvedBy: string;
   resolvedAt?: string;
+  /** Exact evidence/policy binding the caller intends to authorize. */
+  expectedBinding?: ApprovalBinding;
   runPatch?: MutableRunPatch;
   event?: Omit<RunEvent, "seq">;
+  idempotency?: IdempotencyInput;
+}
+
+export interface ApprovalExpiryInput {
+  approvalId: string;
+  /** Expiry must leave the owning run in a terminal state. */
+  runPatch: MutableRunPatch & { status: "completed" | "failed" | "cancelled" };
+  event: Omit<RunEvent, "seq">;
   idempotency?: IdempotencyInput;
 }
 
@@ -244,6 +269,8 @@ export interface ControlPlaneStore {
   listRuns(limit?: number): Promise<Run[]>;
   listRunnableRuns(now: string): Promise<Run[]>;
   claimRunnableRuns(now: string, claimUntil: string, workerId: string, limit?: number): Promise<Run[]>;
+  /** Claims one still-queued run without changing its lifecycle state. */
+  claimQueuedRunForStart(runId: string, workerId: string, claimUntil: string): Promise<Run | null>;
   releaseRunClaim(runId: string, workerId: string): Promise<void>;
 
   appendEvent(event: Omit<RunEvent, "seq">): Promise<RunEvent>;
@@ -274,6 +301,8 @@ export interface ControlPlaneStore {
   listApprovals(state?: string): Promise<Approval[]>;
   resolveApproval(id: string, state: string, decision: string, resolvedBy: string): Promise<void>;
   resolveApprovalTransaction(input: ApprovalResolutionInput): Promise<ApprovalResolutionResult>;
+  /** Closes an expired, evidence-bound pending approval without human authority. */
+  expireApprovalTransaction(input: ApprovalExpiryInput): Promise<ApprovalResolutionResult>;
 
   createArtifact(artifact: Artifact): Promise<void>;
   /** Persists one run's bounded artifact set and all matching outbox records atomically. */
@@ -327,6 +356,146 @@ function timestampMillis(value: string, field: string): number {
     throw new StorageConflictError(`${field} must be a canonical UTC ISO timestamp`);
   }
   return parsed;
+}
+
+function nullableApprovalBindingValue(value: string | null | undefined): string | null {
+  return value ?? null;
+}
+
+/**
+ * Returns a complete pilot binding, null for a legacy approval, and rejects
+ * partial/corrupt bindings. Keeping this check in the shared contract makes
+ * SQLite and PostgreSQL fail closed in the same way.
+ */
+export function approvalBindingOf(approval: Approval): ApprovalBinding | null {
+  const values = {
+    projectId: nullableApprovalBindingValue(approval.projectId),
+    workflow: nullableApprovalBindingValue(approval.workflow),
+    evidenceDigest: nullableApprovalBindingValue(approval.evidenceDigest),
+    policyHash: nullableApprovalBindingValue(approval.policyHash),
+    expiresAt: nullableApprovalBindingValue(approval.expiresAt),
+  };
+  const present = Object.values(values).filter((value) => value !== null).length;
+  if (present === 0) return null;
+  if (present !== 5) throw new StorageConflictError("Pilot approval binding must be complete or entirely null");
+  const binding: ApprovalBinding = {
+    action: approval.action,
+    exactEffect: approval.exactEffect,
+    projectId: values.projectId!,
+    workflow: values.workflow!,
+    evidenceDigest: values.evidenceDigest!,
+    policyHash: values.policyHash!,
+    expiresAt: values.expiresAt!,
+  };
+  if (!binding.projectId || binding.projectId !== binding.projectId.trim() || binding.projectId.length > 256) {
+    throw new StorageConflictError("Pilot approval project ID must be 1-256 non-whitespace-edge characters");
+  }
+  if (!binding.action || binding.action !== binding.action.trim() || binding.action.length > 256) {
+    throw new StorageConflictError("Pilot approval action must be 1-256 non-whitespace-edge characters");
+  }
+  if (!binding.exactEffect || binding.exactEffect !== binding.exactEffect.trim() || binding.exactEffect.length > 2_048) {
+    throw new StorageConflictError("Pilot approval exact effect must be 1-2048 non-whitespace-edge characters");
+  }
+  if (!binding.workflow || binding.workflow !== binding.workflow.trim() || binding.workflow.length > 256) {
+    throw new StorageConflictError("Pilot approval workflow must be 1-256 non-whitespace-edge characters");
+  }
+  if (!sha256Hex.test(binding.evidenceDigest)) {
+    throw new StorageConflictError("Pilot approval evidence digest must be a SHA-256 digest");
+  }
+  if (!sha256Hex.test(binding.policyHash)) {
+    throw new StorageConflictError("Pilot approval policy hash must be a SHA-256 digest");
+  }
+  timestampMillis(binding.expiresAt, "Pilot approval expiresAt");
+  return binding;
+}
+
+function bindingsEqual(left: ApprovalBinding, right: ApprovalBinding): boolean {
+  return left.action === right.action
+    && left.exactEffect === right.exactEffect
+    && left.projectId === right.projectId
+    && left.workflow === right.workflow
+    && left.evidenceDigest === right.evidenceDigest
+    && left.policyHash === right.policyHash
+    && left.expiresAt === right.expiresAt;
+}
+
+export function validateApprovalRequestBinding(approval: Approval, run: Run, observedAt: string): void {
+  const binding = approvalBindingOf(approval);
+  if (!binding) return;
+  if (binding.projectId !== run.projectId) {
+    throw new StorageConflictError("Pilot approval project binding does not match its owning run");
+  }
+  if (binding.workflow !== run.workflow) {
+    throw new StorageConflictError("Pilot approval workflow binding does not match its owning run");
+  }
+  if (timestampMillis(binding.expiresAt, "Pilot approval expiresAt") <= timestampMillis(observedAt, "Observed storage time")) {
+    throw new StorageConflictError("Pilot approval must expire in the future");
+  }
+}
+
+export function validateApprovalResolutionBinding(
+  approval: Approval,
+  expectedBinding: ApprovalBinding | undefined,
+  observedAt: string,
+): void {
+  const stored = approvalBindingOf(approval);
+  if (stored && !expectedBinding) {
+    throw new StorageConflictError("A bound pilot approval requires its exact expected action, effect, evidence, and policy binding");
+  }
+  if (expectedBinding) {
+    const expected = approvalBindingOf({
+      id: approval.id,
+      runId: approval.runId,
+      state: approval.state,
+      evidence: approval.evidence,
+      requestedAt: approval.requestedAt,
+      ...expectedBinding,
+    });
+    if (!stored || !expected || !bindingsEqual(stored, expected)) {
+      throw new StorageConflictError("Pilot approval binding does not match the expected evidence and policy");
+    }
+  }
+  // The deadline governs acquisition of new approval authority. Once the
+  // decision is durably recorded, an exact replay must remain idempotent even
+  // if transport recovery happens after the deadline.
+  if (stored && approval.state === "pending"
+      && timestampMillis(stored.expiresAt, "Pilot approval expiresAt") <= timestampMillis(observedAt, "Observed storage time")) {
+    throw new StorageConflictError("Pilot approval has expired");
+  }
+}
+
+export function validateApprovalExpiry(approval: Approval, observedAt: string): ApprovalBinding {
+  const binding = approvalBindingOf(approval);
+  if (!binding) throw new StorageConflictError("Only a complete bound pilot approval can expire automatically");
+  if (timestampMillis(binding.expiresAt, "Pilot approval expiresAt") > timestampMillis(observedAt, "Observed storage time")) {
+    throw new StorageConflictError("Pilot approval has not expired");
+  }
+  return binding;
+}
+
+export function validateApprovalExpiryRunPatch(patch: MutableRunPatch): void {
+  if (!patch.status || !["completed", "failed", "cancelled"].includes(patch.status)) {
+    throw new StorageConflictError("Approval expiry requires a terminal run patch");
+  }
+}
+
+export function assertRunPatchApplied(run: Run, patch: MutableRunPatch): void {
+  for (const [key, requested] of Object.entries(patch)) {
+    const stored = run[key as keyof Run];
+    const matches = key === "metadata"
+      ? canonicalJson(stored ?? {}) === canonicalJson(requested ?? {})
+      : (stored ?? null) === (requested ?? null);
+    if (!matches) throw new StorageConflictError("Expired approval replay does not match the requested terminal run patch");
+  }
+}
+
+export function validateQueuedRunClaim(workerId: string, claimUntil: string, observedAt: string): void {
+  if (!workerId || workerId !== workerId.trim() || workerId.length > 256 || /[\u0000-\u001f\u007f]/.test(workerId)) {
+    throw new StorageConflictError("Run claim worker ID must be 1-256 safe characters");
+  }
+  if (timestampMillis(claimUntil, "Run claimUntil") <= timestampMillis(observedAt, "Observed storage time")) {
+    throw new StorageConflictError("Run claim expiry must be after observed storage time");
+  }
 }
 
 export function validateWriterLeaseRequest(input: WriterLeaseRequest): void {

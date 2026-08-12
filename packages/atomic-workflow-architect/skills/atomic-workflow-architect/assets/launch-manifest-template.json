@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "run_id": "run_example",
   "project_id": "project_example",
   "task_id": "task_example",
@@ -23,6 +23,8 @@
     "lease_id": "lease_example",
     "holder_run_id": "run_example",
     "workspace_id": "workspace_example",
+    "owner_id": "writer_owner_example",
+    "fencing_token": 1,
     "mode": "exclusive-writer",
     "expires_at": "2099-01-01T00:00:00.000Z"
   },

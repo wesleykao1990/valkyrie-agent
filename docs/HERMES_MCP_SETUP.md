@@ -59,7 +59,7 @@ This should initialize the stdio server and discover the restricted pilot tools.
 It proves MCP connectivity and bearer authentication without spending model
 tokens.
 
-The wrapper exposes these 11 tools:
+The wrapper exposes these 13 tools:
 
 - `projects_list`
 - `project_get_brief`
@@ -67,14 +67,21 @@ The wrapper exposes these 11 tools:
 - `runs_start`
 - `runs_list`
 - `run_get`
+- `atomic_fixture_artifact_read`
 - `run_cancel`
+- `atomic_fixture_approval_resolve`
 - `memory_search`
 - `memory_propose`
 - `memory_preview`
 - `memory_reject`
 
-It intentionally excludes idea creation, comparisons, runtime steering, approval
-resolution, demo reset, and `memory_promote`. Setting
+It intentionally excludes idea creation, comparisons, runtime steering, general
+approval resolution, demo reset, and `memory_promote`. The narrow
+`atomic_fixture_approval_resolve` tool can resolve only the evidence-bound,
+cleaned disposable Atomic fixture gate; it cannot approve another action.
+`atomic_fixture_artifact_read` returns at most 256 KiB of UTF-8 evidence whose
+bytes still match the pending gate's recorded checksum; it never returns a host
+path, including in an error. Setting
 `CONTROL_PLANE_MCP_TOOL_ALLOWLIST` replaces this default with another validated
 subset; an unknown tool name fails MCP startup.
 

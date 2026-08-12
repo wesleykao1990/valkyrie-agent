@@ -13,12 +13,28 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { AtomicRpcClient } from "./atomic-rpc-client.ts";
 
 const CONTAINER_ID = /^[a-f0-9]{64}$/;
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 const NETWORK_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const SHA256_IMAGE = /^[A-Za-z0-9][A-Za-z0-9./:_-]*@sha256:[a-f0-9]{64}$/;
 const CONTROL_CHAR = /[\u0000-\u001f\u007f]/;
+const ATOMIC_RPC_WORKDIR = "/workspace/worktree";
+const ATOMIC_RPC_EXTENSION = "/run-context/atomic-package";
+const ATOMIC_RPC_SESSION_DIR = "/workspace/.atomic-sessions";
+const ATOMIC_RPC_ENV = Object.freeze({
+  HOME: "/workspace/.atomic-home",
+  XDG_CONFIG_HOME: "/workspace/.atomic-home/config",
+  XDG_DATA_HOME: "/workspace/.atomic-home/data",
+  XDG_CACHE_HOME: "/workspace/.atomic-home/cache",
+  TMPDIR: "/tmp",
+  TMP: "/tmp",
+  TEMP: "/tmp",
+});
+const RUNNER_IMAGE_INSPECT_FORMAT = '{"repoDigests":{{json .RepoDigests}},"labels":{{json .Config.Labels}}}';
+const RUNNER_PREFLIGHT_CACHE_MS = 5_000;
+let providerInstanceSequence = 0;
 
 export type OciNetworkPolicy =
   | { mode: "none" }
@@ -44,6 +60,26 @@ export interface OciTimeoutBounds {
   readinessPollMs: number;
 }
 
+export interface OciAtomicRpcTransportBounds {
+  requestTimeoutMs: number;
+  stopTimeoutMs: number;
+  maxLineBytes: number;
+  maxFrameBytes: number;
+  maxTransportBytes: number;
+  maxPendingRequests: number;
+  sessionMs: number;
+}
+
+export interface OciAtomicRpcOptions {
+  /** Absolute Atomic CLI path reviewed as part of the immutable runner image. */
+  reviewedBinaryPath: string;
+  /** Exact version which the reviewed binary must report inside this image. */
+  expectedVersion: string;
+  /** Build/provenance labels reviewed in source and required on the resolved image. */
+  reviewedImageLabels: Readonly<Record<string, string>>;
+  transportBounds?: Partial<OciAtomicRpcTransportBounds>;
+}
+
 export interface OciSandboxProviderOptions {
   /** The provider performs no spawn or filesystem mutation unless enabled. */
   enabled?: boolean;
@@ -66,6 +102,8 @@ export interface OciSandboxProviderOptions {
   maxRunOutputBytes?: number;
   user?: string;
   idleCommand?: string[];
+  /** Omitted for the Milestone 4 command-only boundary. */
+  atomicRpc?: OciAtomicRpcOptions;
 }
 
 export interface OciSandboxStartInput {
@@ -125,6 +163,37 @@ export interface OciPreflightResult {
   reason?: "disabled" | "engine-unavailable";
 }
 
+export type OciAtomicRunnerPreflightReason =
+  | "disabled"
+  | "engine-unavailable"
+  | "atomic-rpc-not-configured"
+  | "image-unavailable"
+  | "image-digest-missing"
+  | "image-digest-mismatch"
+  | "image-provenance-missing"
+  | "image-provenance-mismatch"
+  | "atomic-probe-unavailable"
+  | "atomic-probe-cleanup-failed"
+  | "atomic-version-unavailable"
+  | "atomic-version-missing"
+  | "atomic-version-mismatch";
+
+/**
+ * M5-only evidence that the exact configured runner, not merely the Docker
+ * client, is ready. No caller-supplied argv or environment enters this probe.
+ */
+export interface OciAtomicRunnerPreflightResult {
+  enabled: boolean;
+  available: boolean;
+  provider: OciPreflightResult;
+  imageRef: string;
+  imageDigest?: string;
+  atomicVersion?: string;
+  provenanceLabels?: Readonly<Record<string, string>>;
+  provenanceDigest?: string;
+  reason?: OciAtomicRunnerPreflightReason;
+}
+
 export interface OciSandboxContract {
   provider: "docker-compatible";
   imageRef: string;
@@ -161,7 +230,7 @@ export interface OciReconciliationResult {
  */
 export interface OciCommandTranscriptEntry {
   sequence: number;
-  operation: "preflight" | "inventory" | "create" | "start" | "inspect" | "execute" | "stop" | "kill" | "cleanup";
+  operation: "preflight" | "runner-image-inspect" | "runner-probe-inventory" | "runner-probe-create" | "runner-probe-start" | "runner-probe-inspect" | "runner-version" | "runner-probe-stop" | "runner-probe-kill" | "runner-probe-cleanup" | "inventory" | "create" | "start" | "inspect" | "execute" | "stop" | "kill" | "cleanup";
   command: string;
   args: string[];
   exitCode: number | null;
@@ -173,6 +242,19 @@ export interface OciCommandTranscriptEntry {
 }
 
 interface CommandResult extends OciRunResult {}
+
+interface DockerImagePreflightInspect {
+  repoDigests?: unknown;
+  labels?: unknown;
+}
+
+interface AtomicRunnerProbe {
+  id: string;
+  name: string;
+  ownerDigest: string;
+  createdAtMs: number;
+  expiresAtMs: number;
+}
 
 interface DockerInspect {
   Id?: unknown;
@@ -215,6 +297,11 @@ interface OwnershipInspection {
   ready: boolean;
 }
 
+interface ActiveAtomicRpc {
+  client: AtomicRpcClient;
+  sessionTimer: NodeJS.Timeout;
+}
+
 class OciEngineCommandError extends Error {
   readonly code: "SPAWN_FAILED" | "EXIT_NONZERO" | "TIMEOUT" | "OUTPUT_LIMIT";
   readonly exitCode: number | null;
@@ -251,6 +338,16 @@ const DEFAULT_TIMEOUTS: OciTimeoutBounds = {
   readinessPollMs: 100,
 };
 
+const DEFAULT_ATOMIC_RPC_TRANSPORT: OciAtomicRpcTransportBounds = {
+  requestTimeoutMs: 30_000,
+  stopTimeoutMs: 5_000,
+  maxLineBytes: 1024 * 1024,
+  maxFrameBytes: 1024 * 1024,
+  maxTransportBytes: 16 * 1024 * 1024,
+  maxPendingRequests: 16,
+  sessionMs: 10 * 60 * 1000,
+};
+
 function sha(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -269,6 +366,19 @@ function assertFiniteNumber(name: string, value: number, minimum: number, maximu
 
 function assertArg(value: string, label: string): void {
   if (value.length === 0 || CONTROL_CHAR.test(value)) throw new Error(`${label} contains an invalid argument`);
+}
+
+function assertAbsoluteContainerPath(value: string, label: string): void {
+  if (!value.startsWith("/") || value.includes("\\") || CONTROL_CHAR.test(value)) {
+    throw new Error(`${label} must be an absolute POSIX container path`);
+  }
+  const parts = value.split("/").slice(1);
+  if (parts.length === 0 || parts.some((part) => !part || part === "." || part === "..")) {
+    throw new Error(`${label} must be a normalized absolute POSIX container path`);
+  }
+  if (parts.at(-1) !== "atomic") {
+    throw new Error(`${label} must name the reviewed Atomic executable`);
+  }
 }
 
 function isContained(root: string, candidate: string): boolean {
@@ -393,6 +503,16 @@ function normalizeVersion(value: string): string {
   return version;
 }
 
+function imageDigestOf(imageRef: string): string {
+  const separator = imageRef.lastIndexOf("@sha256:");
+  return `sha256:${imageRef.slice(separator + "@sha256:".length)}`;
+}
+
+function provenanceDigest(labels: Readonly<Record<string, string>>): string {
+  const entries = Object.entries(labels).sort(([left], [right]) => left.localeCompare(right));
+  return sha(JSON.stringify(Object.fromEntries(entries)));
+}
+
 /**
  * Docker-compatible OCI boundary for one disposable writer container per run.
  *
@@ -409,12 +529,23 @@ export class OciSandboxProvider {
   private readonly maxRunOutputBytes: number;
   private readonly user: string;
   private readonly idleCommand: string[];
+  private readonly atomicRpc: {
+    reviewedBinaryPath: string;
+    expectedVersion: string;
+    reviewedImageLabels: Readonly<Record<string, string>>;
+    transport: OciAtomicRpcTransportBounds;
+  } | undefined;
   private readonly transcriptEntries: OciCommandTranscriptEntry[] = [];
   private readonly active = new Map<string, OciSandboxHandle>();
   private readonly lifecycleTails = new Map<string, Promise<void>>();
   private readonly executionTails = new Map<string, Promise<void>>();
   private readonly quarantineReasons = new Map<string, OciCleanupReason>();
+  private readonly atomicRpcSessions = new Map<string, ActiveAtomicRpc>();
+  private readonly runnerProbeOwnerDigest: string;
+  private runnerPreflightInFlight: Promise<OciAtomicRunnerPreflightResult> | undefined;
+  private runnerPreflightCache: { expiresAtMs: number; result: OciAtomicRunnerPreflightResult } | undefined;
   private sequence = 0;
+  private runnerProbeSequence = 0;
 
   constructor(options: OciSandboxProviderOptions) {
     this.options = options;
@@ -426,6 +557,15 @@ export class OciSandboxProvider {
     this.maxRunOutputBytes = options.maxRunOutputBytes ?? 1024 * 1024;
     this.user = options.user ?? this.defaultLocalUser();
     this.idleCommand = options.idleCommand ?? ["sleep", "infinity"];
+    this.atomicRpc = options.atomicRpc
+      ? {
+        reviewedBinaryPath: options.atomicRpc.reviewedBinaryPath,
+        expectedVersion: options.atomicRpc.expectedVersion,
+        reviewedImageLabels: Object.freeze({ ...options.atomicRpc.reviewedImageLabels }),
+        transport: { ...DEFAULT_ATOMIC_RPC_TRANSPORT, ...options.atomicRpc.transportBounds },
+      }
+      : undefined;
+    this.runnerProbeOwnerDigest = sha(`${process.pid}\0${Date.now()}\0${++providerInstanceSequence}\0${options.image}`);
     this.validateOptions();
   }
 
@@ -459,6 +599,328 @@ export class OciSandboxProvider {
     }
   }
 
+  async preflightAtomicRunner(): Promise<OciAtomicRunnerPreflightResult> {
+    const cached = this.runnerPreflightCache;
+    if (cached && Date.now() < cached.expiresAtMs) return cached.result;
+    if (this.runnerPreflightInFlight) return this.runnerPreflightInFlight;
+    const operation = this.preflightAtomicRunnerOnce().then((result) => {
+      if (result.available) {
+        this.runnerPreflightCache = { expiresAtMs: Date.now() + RUNNER_PREFLIGHT_CACHE_MS, result };
+      }
+      return result;
+    }).finally(() => {
+      if (this.runnerPreflightInFlight === operation) this.runnerPreflightInFlight = undefined;
+    });
+    this.runnerPreflightInFlight = operation;
+    return operation;
+  }
+
+  private async preflightAtomicRunnerOnce(): Promise<OciAtomicRunnerPreflightResult> {
+    const provider = await this.preflight();
+    const base = { enabled: this.enabled, available: false, provider, imageRef: this.options.image } as const;
+    if (!provider.enabled) return { ...base, reason: "disabled" };
+    if (!provider.available) return { ...base, reason: "engine-unavailable" };
+    if (!this.atomicRpc) return { ...base, reason: "atomic-rpc-not-configured" };
+    if (!await this.cleanupStaleRunnerProbes()) {
+      return { ...base, reason: "atomic-probe-cleanup-failed" };
+    }
+
+    let inspected: DockerImagePreflightInspect;
+    try {
+      const result = await this.invoke(
+        "runner-image-inspect",
+        ["image", "inspect", "--format", RUNNER_IMAGE_INSPECT_FORMAT, this.options.image],
+        this.timeouts.inspectMs,
+        this.maxEngineOutputBytes,
+      );
+      const parsed = JSON.parse(result.stdout) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return { ...base, reason: "image-unavailable" };
+      }
+      inspected = parsed as DockerImagePreflightInspect;
+    } catch {
+      return { ...base, reason: "image-unavailable" };
+    }
+
+    if (!Array.isArray(inspected.repoDigests) || inspected.repoDigests.length === 0) {
+      return { ...base, reason: "image-digest-missing" };
+    }
+    if (inspected.repoDigests.some((value) => typeof value !== "string")
+      || !inspected.repoDigests.includes(this.options.image)) {
+      return { ...base, reason: "image-digest-mismatch" };
+    }
+    if (!inspected.labels || typeof inspected.labels !== "object" || Array.isArray(inspected.labels)) {
+      return { ...base, reason: "image-provenance-missing" };
+    }
+    const labels = inspected.labels as Record<string, unknown>;
+    const observedLabels: Record<string, string> = {};
+    for (const [name, expected] of Object.entries(this.atomicRpc.reviewedImageLabels)) {
+      const observed = labels[name];
+      if (observed === undefined) return { ...base, reason: "image-provenance-missing" };
+      if (observed !== expected) return { ...base, reason: "image-provenance-mismatch" };
+      observedLabels[name] = expected;
+    }
+
+    const probe = this.newRunnerProbe();
+    let createdContainerId: string | undefined;
+    let createAttempted = false;
+    let stage: "create" | "start" | "inspect" | "version" = "create";
+    let result: CommandResult | undefined;
+    let probeFailure: OciAtomicRunnerPreflightReason | undefined;
+    let cleanupProven = false;
+    try {
+      createAttempted = true;
+      const created = await this.invoke(
+        "runner-probe-create",
+        this.runnerProbeCreateArgs(probe),
+        this.timeouts.startMs,
+        this.maxEngineOutputBytes,
+      );
+      const containerId = created.stdout.trim();
+      if (!CONTAINER_ID.test(containerId)) throw new Error("Atomic runner probe returned an invalid container ID");
+      createdContainerId = containerId;
+      stage = "start";
+      await this.invoke(
+        "runner-probe-start",
+        ["start", containerId],
+        this.timeouts.startMs,
+        this.maxEngineOutputBytes,
+      );
+      stage = "inspect";
+      const effective = await this.inspectRaw(containerId, "runner-probe-inspect");
+      this.assertRunnerProbePolicy(effective, containerId, probe);
+      stage = "version";
+      result = await this.invoke(
+        "runner-version",
+        [
+          "exec",
+          "--workdir", "/tmp",
+          "--env", "HOME=/tmp/atomic-home",
+          "--env", "ATOMIC_OFFLINE=1",
+          containerId,
+          this.atomicRpc.reviewedBinaryPath,
+          "--version",
+        ],
+        this.timeouts.startMs,
+        this.maxEngineOutputBytes,
+      );
+    } catch {
+      probeFailure = stage === "version" ? "atomic-version-unavailable" : "atomic-probe-unavailable";
+    } finally {
+      cleanupProven = !createAttempted || await this.cleanupRunnerProbe(probe, createdContainerId);
+    }
+    if (!cleanupProven) return { ...base, reason: "atomic-probe-cleanup-failed" };
+    if (probeFailure || !result) return { ...base, reason: probeFailure ?? "atomic-version-unavailable" };
+    if (!result.stdout.trim()) return { ...base, reason: "atomic-version-missing" };
+    const atomicVersion = normalizeVersion(result.stdout);
+    if (atomicVersion !== this.atomicRpc.expectedVersion) {
+      return { ...base, atomicVersion, reason: "atomic-version-mismatch" };
+    }
+    const frozenLabels = Object.freeze({ ...observedLabels });
+    return {
+      enabled: true,
+      available: true,
+      provider,
+      imageRef: this.options.image,
+      imageDigest: imageDigestOf(this.options.image),
+      atomicVersion,
+      provenanceLabels: frozenLabels,
+      provenanceDigest: provenanceDigest(frozenLabels),
+    };
+  }
+
+  private newRunnerProbe(): AtomicRunnerProbe {
+    const createdAtMs = Date.now();
+    const expiresAtMs = createdAtMs + this.runnerProbeTtlMs();
+    const id = sha(`${this.runnerProbeOwnerDigest}\0${createdAtMs}\0${++this.runnerProbeSequence}\0${this.options.image}`).slice(0, 32);
+    return {
+      id,
+      name: `valkyrie-atomic-preflight-${id.slice(0, 24)}`,
+      ownerDigest: this.runnerProbeOwnerDigest,
+      createdAtMs,
+      expiresAtMs,
+    };
+  }
+
+  private runnerProbeTtlMs(): number {
+    return this.timeouts.startMs * 2
+      + this.timeouts.inspectMs * 3
+      + this.timeouts.stopMs
+      + this.timeouts.killMs
+      + this.timeouts.cleanupMs
+      + this.timeouts.terminationGraceMs * 4
+      + 5_000;
+  }
+
+  private runnerProbeLabels(probe: AtomicRunnerProbe): Record<string, string> {
+    return {
+      "valkyrie.managed": "true",
+      "valkyrie.kind": "atomic-runner-preflight",
+      "valkyrie.policy-sha256": this.policyHash(),
+      "valkyrie.image-ref-sha256": sha(this.options.image),
+      "valkyrie.probe-id": probe.id,
+      "valkyrie.probe-owner-sha256": probe.ownerDigest,
+      "valkyrie.probe-created-at-ms": String(probe.createdAtMs),
+      "valkyrie.probe-expires-at-ms": String(probe.expiresAtMs),
+    };
+  }
+
+  private runnerProbeCreateArgs(probe: AtomicRunnerProbe): string[] {
+    const labels = this.runnerProbeLabels(probe);
+    return [
+      "create",
+      "--name", probe.name,
+      "--hostname", "valkyrie-preflight",
+      ...Object.entries(labels).flatMap(([name, value]) => ["--label", `${name}=${value}`]),
+      "--pull", "never",
+      "--network", "none",
+      "--ipc", "none",
+      "--restart", "no",
+      "--memory", String(this.resources.memoryBytes),
+      "--cpus", String(this.resources.cpus),
+      "--pids-limit", String(this.resources.pidsLimit),
+      "--read-only",
+      "--init",
+      "--cap-drop", "ALL",
+      "--security-opt", "no-new-privileges:true",
+      "--security-opt", "seccomp=builtin",
+      "--user", this.user,
+      "--tmpfs", `/tmp:rw,nosuid,nodev,noexec,size=${this.resources.tmpfsBytes}`,
+      "--workdir", "/tmp",
+      "--entrypoint", this.idleCommand[0],
+      this.options.image,
+      ...this.idleCommand.slice(1),
+    ];
+  }
+
+  private async runnerProbeInventory(probeId?: string): Promise<string[]> {
+    const filters = [
+      "--filter", "label=valkyrie.managed=true",
+      "--filter", "label=valkyrie.kind=atomic-runner-preflight",
+      ...(probeId ? ["--filter", `label=valkyrie.probe-id=${probeId}`] : []),
+    ];
+    const result = await this.invoke(
+      "runner-probe-inventory",
+      ["ps", "--no-trunc", "--all", ...filters, "--format", "{{.ID}}"],
+      this.timeouts.inspectMs,
+      this.maxEngineOutputBytes,
+    );
+    const ids = result.stdout.split("\n").filter(Boolean);
+    if (ids.length > 128 || new Set(ids).size !== ids.length || ids.some((id) => !CONTAINER_ID.test(id))) {
+      throw new Error("Atomic runner probe inventory is malformed or exceeds its bound");
+    }
+    return ids;
+  }
+
+  private async cleanupStaleRunnerProbes(): Promise<boolean> {
+    try {
+      const ids = await this.runnerProbeInventory();
+      for (const containerId of ids) {
+        const item = await this.inspectRaw(containerId, "runner-probe-inspect");
+        const labels = item.Config?.Labels;
+        const probeId = labels?.["valkyrie.probe-id"];
+        const ownerDigest = labels?.["valkyrie.probe-owner-sha256"];
+        const createdAtMs = Number(labels?.["valkyrie.probe-created-at-ms"]);
+        const expiresAtMs = Number(labels?.["valkyrie.probe-expires-at-ms"]);
+        if (typeof probeId !== "string" || !/^[a-f0-9]{32}$/.test(probeId)
+            || typeof ownerDigest !== "string" || !CONTAINER_ID.test(ownerDigest)
+            || !Number.isSafeInteger(createdAtMs) || !Number.isSafeInteger(expiresAtMs)
+            || expiresAtMs - createdAtMs !== this.runnerProbeTtlMs()) return false;
+        const probe: AtomicRunnerProbe = { id: probeId, name: "", ownerDigest, createdAtMs, expiresAtMs };
+        this.assertRunnerProbePolicy(item, containerId, probe, false);
+        if (Date.now() <= expiresAtMs) continue;
+        if (!await this.cleanupRunnerProbe(probe, containerId)) return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async cleanupRunnerProbe(probe: AtomicRunnerProbe, expectedContainerId?: string): Promise<boolean> {
+    let ids: string[];
+    try {
+      ids = await this.runnerProbeInventory(probe.id);
+    } catch {
+      return false;
+    }
+    if (ids.length === 0) return true;
+    if (ids.length !== 1 || (expectedContainerId && ids[0] !== expectedContainerId)) return false;
+    const target = ids[0];
+    try {
+      const item = await this.inspectRaw(target, "runner-probe-inspect");
+      this.assertRunnerProbePolicy(item, target, probe, false);
+    } catch {
+      return false;
+    }
+    try {
+      await this.invoke(
+        "runner-probe-stop",
+        ["stop", "--time", String(Math.max(1, Math.ceil(this.timeouts.stopMs / 1_000))), target],
+        this.timeouts.stopMs,
+        this.maxEngineOutputBytes,
+      );
+    } catch {
+      try {
+        await this.invoke("runner-probe-kill", ["kill", target], this.timeouts.killMs, this.maxEngineOutputBytes);
+      } catch {
+        // The exact-label inventory below is the cleanup authority.
+      }
+    }
+    try {
+      await this.invoke(
+        "runner-probe-cleanup",
+        ["rm", "--force", "--volumes", target],
+        this.timeouts.cleanupMs,
+        this.maxEngineOutputBytes,
+      );
+    } catch {
+      // A failed remove can still mean create never materialized; inventory proves absence.
+    }
+    try {
+      return (await this.runnerProbeInventory(probe.id)).length === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  private assertRunnerProbePolicy(
+    item: DockerInspect,
+    containerId: string,
+    probe: AtomicRunnerProbe,
+    requireRunning = true,
+  ): void {
+    const labels = item.Config?.Labels;
+    const expectedLabels = this.runnerProbeLabels(probe);
+    if (item.Id !== containerId || item.Config?.Image !== this.options.image || !labels
+        || Object.entries(expectedLabels).some(([name, value]) => labels[name] !== value)
+        || item.Config?.WorkingDir !== "/tmp" || item.Config?.User !== this.user) {
+      throw new Error("Atomic runner probe ownership or image policy changed");
+    }
+    const effectiveNetworks = item.NetworkSettings?.Networks;
+    const capDrop = item.HostConfig?.CapDrop;
+    const securityOpt = item.HostConfig?.SecurityOpt;
+    const tmpfs = item.HostConfig?.Tmpfs;
+    const expectedTmpfs = `rw,nosuid,nodev,noexec,size=${this.resources.tmpfsBytes}`;
+    if (item.HostConfig?.NetworkMode !== "none" || !effectiveNetworks
+        || Object.keys(effectiveNetworks).length !== 1 || !("none" in effectiveNetworks)
+        || item.HostConfig?.IpcMode !== "none" || item.HostConfig?.Privileged !== false
+        || item.HostConfig?.RestartPolicy?.Name !== "no" || item.HostConfig?.RestartPolicy?.MaximumRetryCount !== 0
+        || item.HostConfig?.ReadonlyRootfs !== true || item.HostConfig?.Memory !== this.resources.memoryBytes
+        || item.HostConfig?.NanoCpus !== Math.round(this.resources.cpus * 1_000_000_000)
+        || item.HostConfig?.PidsLimit !== this.resources.pidsLimit
+        || !Array.isArray(capDrop) || capDrop.length !== 1 || capDrop[0] !== "ALL"
+        || !Array.isArray(securityOpt) || securityOpt.length !== 2
+        || !securityOpt.includes("no-new-privileges:true") || !securityOpt.includes("seccomp=builtin")
+        || !tmpfs || Object.keys(tmpfs as Record<string, unknown>).length !== 1
+        || (tmpfs as Record<string, unknown>)["/tmp"] !== expectedTmpfs
+        || item.HostConfig?.Init !== true
+        || (item.Mounts ?? []).filter((mount) => mount.Type !== "tmpfs").length !== 0
+        || (requireRunning && item.State?.Running !== true)) {
+      throw new Error("Atomic runner probe effective offline policy changed");
+    }
+  }
+
   async reconcileOrphans(expectations: readonly OciReconciliationExpectation[]): Promise<OciReconciliationResult[]> {
     this.assertEnabled();
     const preflight = await this.preflight();
@@ -471,7 +933,12 @@ export class OciSandboxProvider {
     }
     const inventory = await this.invoke(
       "inventory",
-      ["ps", "--all", "--filter", "label=valkyrie.managed=true", "--format", "{{.ID}}"],
+      [
+        "ps", "--no-trunc", "--all",
+        "--filter", "label=valkyrie.managed=true",
+        "--filter", "label=valkyrie.kind=writer-sandbox",
+        "--format", "{{.ID}}",
+      ],
       this.timeouts.inspectMs,
       this.maxEngineOutputBytes,
     );
@@ -689,6 +1156,9 @@ export class OciSandboxProvider {
       await this.withLifecycleLock(handle.runId, async () => {
         this.assertOwnedHandle(handle);
         if (handle.status !== "running") throw new Error("OCI sandbox is not running");
+        if (this.atomicRpcSessions.has(handle.runId)) {
+          throw new Error("OCI sandbox has an open Atomic RPC stream");
+        }
         const ownership = await this.safeInspectOwnership(handle);
         if (ownership === "inspect-failed") {
           this.quarantine(handle, "INSPECT_FAILED");
@@ -718,6 +1188,88 @@ export class OciSandboxProvider {
     });
   }
 
+  /**
+   * Open the one reviewed Atomic JSONL RPC stream for this writer container.
+   *
+   * The caller cannot supply command arguments, environment values, paths, or
+   * approval flags. The immutable-image binary is configured once on the
+   * provider; all other in-container values are fixed by this boundary.
+   * Closing the returned host transport does not prove that the container-side
+   * process ended. Call `stop` (and then `cleanup`) on the provider in all paths.
+   */
+  async openAtomicRpc(handle: OciSandboxHandle): Promise<AtomicRpcClient> {
+    return this.withExecutionLock(handle.runId, () => this.withLifecycleLock(handle.runId, async () => {
+      this.assertOwnedHandle(handle);
+      if (!this.atomicRpc) throw new Error("Atomic RPC is not configured for this OCI provider");
+      if (handle.status !== "running") throw new Error("OCI sandbox is not running");
+      if (handle.workingDirectoryRelativePath !== "worktree") {
+        throw new Error("Atomic RPC requires the fixed /workspace/worktree working directory");
+      }
+      if (this.atomicRpcSessions.has(handle.runId)) {
+        throw new Error("An Atomic RPC stream is already open for this OCI sandbox");
+      }
+      this.assertAtomicExtensionDirectory(handle);
+      const ownership = await this.safeInspectOwnership(handle);
+      if (ownership === "inspect-failed") {
+        this.quarantine(handle, "INSPECT_FAILED");
+        throw new Error("OCI sandbox inspection failed before Atomic RPC start");
+      }
+      if (ownership === "ownership-mismatch") {
+        this.quarantine(handle, "OWNERSHIP_MISMATCH");
+        throw new Error("OCI sandbox ownership changed before Atomic RPC start");
+      }
+      if (!ownership.ready) throw new Error("OCI sandbox is not ready for Atomic RPC start");
+
+      const containerEnvironmentArgs = Object.entries(ATOMIC_RPC_ENV).flatMap(([name, value]) => [
+        "--env", `${name}=${value}`,
+      ]);
+      const client = new AtomicRpcClient({
+        command: this.options.engineCommand,
+        commandArgs: [
+          ...(this.options.enginePrefixArgs ?? []),
+          "exec", "-i",
+          "--workdir", ATOMIC_RPC_WORKDIR,
+          ...containerEnvironmentArgs,
+          handle.containerId,
+          this.atomicRpc.reviewedBinaryPath,
+        ],
+        requestTimeoutMs: this.atomicRpc.transport.requestTimeoutMs,
+        stopTimeoutMs: this.atomicRpc.transport.stopTimeoutMs,
+        maxLineBytes: this.atomicRpc.transport.maxLineBytes,
+        maxFrameBytes: this.atomicRpc.transport.maxFrameBytes,
+        maxTransportBytes: this.atomicRpc.transport.maxTransportBytes,
+        maxPendingRequests: this.atomicRpc.transport.maxPendingRequests,
+        singleUse: true,
+        allowVersionProbe: false,
+      });
+      const sessionTimer = setTimeout(() => {
+        void this.stop(handle).catch(() => undefined);
+      }, this.atomicRpc.transport.sessionMs);
+      sessionTimer.unref();
+      this.atomicRpcSessions.set(handle.runId, { client, sessionTimer });
+      try {
+        client.start({
+          cwd: resolve(this.options.stateRoot),
+          sessionDir: ATOMIC_RPC_SESSION_DIR,
+          name: handle.runId,
+          extensions: [ATOMIC_RPC_EXTENSION],
+          approve: true,
+          inheritBaseRuntimeEnvironment: false,
+          env: {
+            LANG: "C",
+            LC_ALL: "C",
+            ...(this.options.engineSocket ? { DOCKER_HOST: this.options.engineSocket } : {}),
+          },
+        });
+        return client;
+      } catch (error) {
+        clearTimeout(sessionTimer);
+        this.atomicRpcSessions.delete(handle.runId);
+        throw error;
+      }
+    }));
+  }
+
   async stop(handle: OciSandboxHandle): Promise<OciCleanupResult | { status: "stopped" }> {
     return this.withLifecycleLock(handle.runId, () => {
       if (handle.status === "quarantined") return this.existingQuarantine(handle);
@@ -727,6 +1279,7 @@ export class OciSandboxProvider {
 
   private async stopUnlocked(handle: OciSandboxHandle): Promise<OciCleanupResult | { status: "stopped" }> {
     this.assertOwnedHandle(handle);
+    await this.closeAtomicRpcTransport(handle.runId);
     const ownership = await this.safeInspectOwnership(handle);
     if (ownership === "inspect-failed") return this.quarantine(handle, "INSPECT_FAILED");
     if (ownership === "ownership-mismatch") return this.quarantine(handle, "OWNERSHIP_MISMATCH");
@@ -766,6 +1319,7 @@ export class OciSandboxProvider {
 
   private async cleanupUnlocked(handle: OciSandboxHandle): Promise<OciCleanupResult> {
     this.assertOwnedHandle(handle);
+    await this.closeAtomicRpcTransport(handle.runId);
     const ownership = await this.safeInspectOwnership(handle);
     if (ownership === "inspect-failed") return this.quarantine(handle, "INSPECT_FAILED");
     if (ownership === "ownership-mismatch") return this.quarantine(handle, "OWNERSHIP_MISMATCH");
@@ -849,6 +1403,41 @@ export class OciSandboxProvider {
     }
     if (this.idleCommand.length === 0) throw new Error("idleCommand cannot be empty");
     for (const [index, value] of this.idleCommand.entries()) assertArg(value, `idleCommand[${index}]`);
+    if (this.atomicRpc) {
+      assertAbsoluteContainerPath(this.atomicRpc.reviewedBinaryPath, "atomicRpc.reviewedBinaryPath");
+      if (!this.atomicRpc.expectedVersion || this.atomicRpc.expectedVersion.length > 128
+          || CONTROL_CHAR.test(this.atomicRpc.expectedVersion)
+          || this.atomicRpc.expectedVersion.trim() !== this.atomicRpc.expectedVersion) {
+        throw new Error("atomicRpc.expectedVersion must be an exact printable version");
+      }
+      const reviewedLabels = Object.entries(this.atomicRpc.reviewedImageLabels);
+      if (reviewedLabels.length === 0 || reviewedLabels.length > 32) {
+        throw new Error("atomicRpc.reviewedImageLabels must contain 1-32 reviewed labels");
+      }
+      for (const [name, value] of reviewedLabels) {
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(name)) {
+          throw new Error("atomicRpc.reviewedImageLabels contains an invalid label name");
+        }
+        if (!value || value.length > 1_024 || CONTROL_CHAR.test(value)) {
+          throw new Error("atomicRpc.reviewedImageLabels contains an invalid label value");
+        }
+      }
+      if (this.atomicRpc.reviewedImageLabels["io.valkyrie.atomic.version"] !== this.atomicRpc.expectedVersion) {
+        throw new Error("atomicRpc reviewed Atomic version label must match expectedVersion");
+      }
+      const transport = this.atomicRpc.transport;
+      assertFiniteInteger("atomicRpc.requestTimeoutMs", transport.requestTimeoutMs, 25, 10 * 60 * 1000);
+      assertFiniteInteger("atomicRpc.stopTimeoutMs", transport.stopTimeoutMs, 25, 60 * 1000);
+      assertFiniteInteger("atomicRpc.maxLineBytes", transport.maxLineBytes, 1024, 16 * 1024 * 1024);
+      assertFiniteInteger("atomicRpc.maxFrameBytes", transport.maxFrameBytes, 1024, 16 * 1024 * 1024);
+      assertFiniteInteger("atomicRpc.maxTransportBytes", transport.maxTransportBytes, 4096, 256 * 1024 * 1024);
+      assertFiniteInteger("atomicRpc.maxPendingRequests", transport.maxPendingRequests, 1, 128);
+      assertFiniteInteger("atomicRpc.sessionMs", transport.sessionMs, 25, 10 * 60 * 1000);
+      if (transport.maxLineBytes > transport.maxTransportBytes
+          || transport.maxFrameBytes > transport.maxTransportBytes) {
+        throw new Error("Atomic RPC transport budget must cover one line and one frame");
+      }
+    }
   }
 
   private assertEnabled(): void {
@@ -882,6 +1471,7 @@ export class OciSandboxProvider {
       "--name", containerName,
       "--hostname", "valkyrie-sandbox",
       "--label", "valkyrie.managed=true",
+      "--label", "valkyrie.kind=writer-sandbox",
       "--label", `valkyrie.run-id=${runId}`,
       "--label", `valkyrie.workspace-id=${workspaceId}`,
       "--label", `valkyrie.lease-owner-sha256=${sha(leaseOwnerId)}`,
@@ -941,6 +1531,7 @@ export class OciSandboxProvider {
       || item.Config?.Image !== this.options.image
       || !labels
       || labels["valkyrie.managed"] !== "true"
+      || labels["valkyrie.kind"] !== "writer-sandbox"
       || labels["valkyrie.run-id"] !== handle.runId
       || labels["valkyrie.workspace-id"] !== handle.workspaceId
       || labels["valkyrie.lease-owner-sha256"] !== sha(handle.leaseOwnerId)
@@ -1014,9 +1605,12 @@ export class OciSandboxProvider {
     return { running, ready: running && (health === undefined || health === "healthy") };
   }
 
-  private async inspectRaw(containerId: string): Promise<DockerInspect> {
+  private async inspectRaw(
+    containerId: string,
+    operation: "inspect" | "runner-probe-inspect" = "inspect",
+  ): Promise<DockerInspect> {
     const result = await this.invoke(
-      "inspect",
+      operation,
       ["inspect", "--type", "container", containerId],
       this.timeouts.inspectMs,
       this.maxEngineOutputBytes,
@@ -1031,6 +1625,31 @@ export class OciSandboxProvider {
       throw new Error("OCI inspect must return exactly one container");
     }
     return parsed[0] as DockerInspect;
+  }
+
+  private assertAtomicExtensionDirectory(handle: OciSandboxHandle): void {
+    const extension = join(handle.contextPath, "atomic-package");
+    assertNoSymlinkComponents(handle.contextPath, extension);
+    const item = lstatSync(extension);
+    if (!item.isDirectory() || item.isSymbolicLink()) {
+      throw new Error("Atomic RPC extension must be a regular non-symlink staged directory");
+    }
+    if (!isContained(handle.contextPath, realpathSync(extension))) {
+      throw new Error("Atomic RPC extension escaped the staged context directory");
+    }
+  }
+
+  private async closeAtomicRpcTransport(runId: string): Promise<void> {
+    const session = this.atomicRpcSessions.get(runId);
+    if (!session) return;
+    clearTimeout(session.sessionTimer);
+    try {
+      await session.client.stop();
+    } catch {
+      // The OCI container stop below remains mandatory even if its host CLI failed.
+    } finally {
+      this.atomicRpcSessions.delete(runId);
+    }
   }
 
   private validateReconciliationExpectation(expected: OciReconciliationExpectation): void {
@@ -1059,6 +1678,7 @@ export class OciSandboxProvider {
     return typeof item.Id === "string"
       && !!labels
       && labels["valkyrie.managed"] === "true"
+      && labels["valkyrie.kind"] === "writer-sandbox"
       && labels["valkyrie.run-id"] === expected.runId
       && labels["valkyrie.workspace-id"] === expected.workspaceId
       && labels["valkyrie.lease-owner-sha256"] === sha(expected.leaseOwnerId)
@@ -1301,11 +1921,30 @@ export class OciSandboxProvider {
   private policyHash(): string {
     return sha(JSON.stringify({
       schemaVersion: 1,
+      containerKind: "writer-sandbox",
       imageRef: this.options.image,
       user: this.user,
       network: this.network,
       resources: this.resources,
       idleCommand: this.idleCommand,
+      ...(this.atomicRpc
+        ? {
+          atomicRpc: {
+            reviewedBinaryPath: this.atomicRpc.reviewedBinaryPath,
+            expectedVersion: this.atomicRpc.expectedVersion,
+            reviewedImageLabels: Object.fromEntries(
+              Object.entries(this.atomicRpc.reviewedImageLabels).sort(([left], [right]) => left.localeCompare(right)),
+            ),
+            transport: this.atomicRpc.transport,
+            workdir: ATOMIC_RPC_WORKDIR,
+            extension: ATOMIC_RPC_EXTENSION,
+            sessionDir: ATOMIC_RPC_SESSION_DIR,
+            environment: ATOMIC_RPC_ENV,
+            approve: true,
+            runnerProbeTtlMs: this.runnerProbeTtlMs(),
+          },
+        }
+        : {}),
       rootReadonly: true,
       ipc: "none",
       init: true,
@@ -1393,10 +2032,20 @@ export class OciSandboxProvider {
       let timedOut = false;
       let outputLimitExceeded = false;
       let killTimer: NodeJS.Timeout | undefined;
+      let forceSettleTimer: NodeJS.Timeout | undefined;
 
       const terminate = (): void => {
         child.kill("SIGTERM");
-        killTimer = setTimeout(() => child.kill("SIGKILL"), this.timeouts.terminationGraceMs);
+        killTimer = setTimeout(() => {
+          child.kill("SIGKILL");
+          forceSettleTimer = setTimeout(() => {
+            child.stdout.destroy();
+            child.stderr.destroy();
+            child.unref();
+            finish(null);
+          }, this.timeouts.terminationGraceMs);
+          forceSettleTimer.unref();
+        }, this.timeouts.terminationGraceMs);
         killTimer.unref();
       };
       const onData = (target: Buffer[], chunkValue: Buffer | string, isStdout: boolean): void => {
@@ -1429,6 +2078,7 @@ export class OciSandboxProvider {
         settled = true;
         clearTimeout(timeout);
         if (killTimer) clearTimeout(killTimer);
+        if (forceSettleTimer) clearTimeout(forceSettleTimer);
         const transcript: OciCommandTranscriptEntry = {
           sequence: ++this.sequence,
           operation,

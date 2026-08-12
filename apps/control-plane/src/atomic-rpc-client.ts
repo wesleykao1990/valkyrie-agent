@@ -9,7 +9,11 @@ const BASE_RUNTIME_ENV = [
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_STOP_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_LINE_BYTES = 64 * 1024 * 1024;
+const DEFAULT_MAX_FRAME_BYTES = 64 * 1024 * 1024;
+const DEFAULT_MAX_TRANSPORT_BYTES = 256 * 1024 * 1024;
 const DEFAULT_MAX_PENDING_REQUESTS = 128;
+const MAX_EARLY_RECORDS = 1_024;
+const MAX_EARLY_RECORD_BYTES = 4 * 1024 * 1024;
 
 export function selectRuntimeEnvironment(
   source: NodeJS.ProcessEnv = process.env,
@@ -138,6 +142,12 @@ export interface AtomicRpcStartOptions {
   extraArgs?: string[];
   /** Ignore ATOMIC_RUNTIME_ENV_ALLOWLIST from the parent for a credential-free discovery process. */
   inheritConfiguredEnvAllowlist?: boolean;
+  /**
+   * Do not inherit even the normal base runtime environment. This is intended
+   * for a fixed wrapper process such as a local OCI CLI, where every required
+   * non-secret variable is supplied explicitly through `env`.
+   */
+  inheritBaseRuntimeEnvironment?: boolean;
 }
 
 export interface AtomicRpcClientOptions {
@@ -147,7 +157,15 @@ export interface AtomicRpcClientOptions {
   requestTimeoutMs?: number;
   stopTimeoutMs?: number;
   maxLineBytes?: number;
+  /** Maximum bytes in one outbound LF-JSONL frame. */
+  maxFrameBytes?: number;
+  /** Cumulative inbound and outbound transport budget for one process. */
+  maxTransportBytes?: number;
   maxPendingRequests?: number;
+  /** Reject every later start attempt after the first, including after exit. */
+  singleUse?: boolean;
+  /** Disable the separate subprocess version probe on a provider-owned client. */
+  allowVersionProbe?: boolean;
 }
 
 export interface AtomicVersionProbeOptions {
@@ -246,6 +264,7 @@ export class AtomicRpcTimeoutError extends AtomicRpcError {
 
 export class AtomicRpcProcessError extends AtomicRpcError {}
 export class AtomicRpcStoppedError extends AtomicRpcError {}
+export class AtomicRpcStopUncertainError extends AtomicRpcProcessError {}
 
 function positiveInteger(value: number | undefined, fallback: number, name: string): number {
   const resolved = value ?? fallback;
@@ -354,7 +373,11 @@ export class AtomicRpcClient extends EventEmitter<AtomicRpcClientEventMap> {
   private readonly requestTimeoutMs: number;
   private readonly stopTimeoutMs: number;
   private readonly maxLineBytes: number;
+  private readonly maxFrameBytes: number;
+  private readonly maxTransportBytes: number;
   private readonly maxPendingRequests: number;
+  private readonly singleUse: boolean;
+  private readonly allowVersionProbe: boolean;
   private child: ChildProcessWithoutNullStreams | null = null;
   private decoder: JsonlLfDecoder | null = null;
   private sequence = 0;
@@ -363,9 +386,15 @@ export class AtomicRpcClient extends EventEmitter<AtomicRpcClientEventMap> {
   private terminalError: Error | undefined;
   private stopping = false;
   private closePromise: Promise<AtomicRpcExitInfo> | null = null;
+  private stopPromise: Promise<void> | null = null;
   private resolveClose: ((value: AtomicRpcExitInfo) => void) | null = null;
   private gracefulStopTimer: NodeJS.Timeout | undefined;
   private forceStopTimer: NodeJS.Timeout | undefined;
+  private transportBytes = 0;
+  private startedOnce = false;
+  private earlyRecords: Array<AtomicRpcResponse | AtomicRpcNativeEvent> = [];
+  private earlyRecordBytes = 0;
+  private earlyRecordsDrained = false;
 
   constructor(commandOrOptions: string | AtomicRpcClientOptions = process.env.ATOMIC_COMMAND ?? "atomic") {
     super();
@@ -377,15 +406,28 @@ export class AtomicRpcClient extends EventEmitter<AtomicRpcClientEventMap> {
     this.requestTimeoutMs = positiveInteger(options.requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS, "requestTimeoutMs");
     this.stopTimeoutMs = positiveInteger(options.stopTimeoutMs, DEFAULT_STOP_TIMEOUT_MS, "stopTimeoutMs");
     this.maxLineBytes = positiveInteger(options.maxLineBytes, DEFAULT_MAX_LINE_BYTES, "maxLineBytes");
+    this.maxFrameBytes = positiveInteger(options.maxFrameBytes, DEFAULT_MAX_FRAME_BYTES, "maxFrameBytes");
+    this.maxTransportBytes = positiveInteger(
+      options.maxTransportBytes,
+      DEFAULT_MAX_TRANSPORT_BYTES,
+      "maxTransportBytes",
+    );
+    if (this.maxLineBytes > this.maxTransportBytes || this.maxFrameBytes > this.maxTransportBytes) {
+      throw new TypeError("maxTransportBytes must be at least maxLineBytes and maxFrameBytes");
+    }
     this.maxPendingRequests = positiveInteger(
       options.maxPendingRequests,
       DEFAULT_MAX_PENDING_REQUESTS,
       "maxPendingRequests",
     );
+    this.singleUse = options.singleUse ?? false;
+    this.allowVersionProbe = options.allowVersionProbe ?? true;
   }
 
   start(options: AtomicRpcStartOptions): void {
     if (this.child) throw new Error("Atomic RPC process already started");
+    if (this.singleUse && this.startedOnce) throw new Error("Atomic RPC client is single-use and cannot be restarted");
+    this.startedOnce = true;
     const args = [...this.commandArgs, "--mode", "rpc"];
     if (options.provider) args.push("--provider", options.provider);
     if (options.model) args.push("--model", options.model);
@@ -396,13 +438,16 @@ export class AtomicRpcClient extends EventEmitter<AtomicRpcClientEventMap> {
     else if (options.approve === false) args.push("--no-approve");
     args.push(...(options.extraArgs ?? []));
 
+    const sourceEnvironment = options.inheritBaseRuntimeEnvironment === false
+      ? { ATOMIC_RUNTIME_ENV_ALLOWLIST: "" }
+      : options.inheritConfiguredEnvAllowlist === false
+        ? { ...process.env, ATOMIC_RUNTIME_ENV_ALLOWLIST: "" }
+        : process.env;
     const child = spawn(this.command, args, {
       cwd: options.cwd,
       stdio: ["pipe", "pipe", "pipe"],
       env: selectRuntimeEnvironment(
-        options.inheritConfiguredEnvAllowlist === false
-          ? { ...process.env, ATOMIC_RUNTIME_ENV_ALLOWLIST: "" }
-          : process.env,
+        sourceEnvironment,
         options.allowedEnvNames,
         options.env,
       ),
@@ -412,14 +457,23 @@ export class AtomicRpcClient extends EventEmitter<AtomicRpcClientEventMap> {
     this.decoder = new JsonlLfDecoder({ maxLineBytes: this.maxLineBytes });
     this.terminalError = undefined;
     this.stopping = false;
+    this.transportBytes = 0;
     this.writeChain = Promise.resolve();
+    this.earlyRecords = [];
+    this.earlyRecordBytes = 0;
+    this.earlyRecordsDrained = false;
     this.closePromise = new Promise((resolve) => {
       this.resolveClose = resolve;
     });
+    this.stopPromise = null;
 
     child.stdout.on("data", (chunk: Buffer) => this.consumeStdout(child, chunk));
     child.stdout.on("error", (value) => this.handleTransportError(child, "stdout", value));
-    child.stderr.on("data", (chunk: Buffer) => this.emit("stderr", chunk.toString("utf8")));
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (this.reserveTransportBytes(child, "stderr", chunk.byteLength)) {
+        this.emit("stderr", chunk.toString("utf8"));
+      }
+    });
     child.stderr.on("error", (value) => this.handleTransportError(child, "stderr", value));
     child.stdin.on("error", (value) => this.handleTransportError(child, "stdin", value));
     child.once("spawn", () => this.emit("spawn", { pid: child.pid, command: this.command, args: [...args] }));
@@ -521,6 +575,7 @@ export class AtomicRpcClient extends EventEmitter<AtomicRpcClientEventMap> {
 
   /** Probe the separately versioned CLI boundary; Atomic RPC has no version command. */
   async probeVersion(options: AtomicVersionProbeOptions = {}): Promise<AtomicVersionProbeResult> {
+    if (!this.allowVersionProbe) throw new AtomicRpcError("Atomic version probe is disabled for this client");
     return probeAtomicVersion(this.command, {
       ...options,
       commandArgs: this.commandArgs,
@@ -535,6 +590,7 @@ export class AtomicRpcClient extends EventEmitter<AtomicRpcClientEventMap> {
   async stop(): Promise<void> {
     const child = this.child;
     if (!child) return;
+    if (this.stopPromise) return this.stopPromise;
     const closePromise = this.closePromise;
     if (!this.stopping) {
       this.stopping = true;
@@ -550,11 +606,60 @@ export class AtomicRpcClient extends EventEmitter<AtomicRpcClientEventMap> {
       }, this.stopTimeoutMs);
       this.forceStopTimer.unref?.();
     }
-    await closePromise;
+    if (!closePromise) throw new AtomicRpcStopUncertainError("Atomic RPC close state is unavailable");
+    const finalWaitMs = this.stopTimeoutMs + Math.min(1_000, Math.max(25, Math.floor(this.stopTimeoutMs / 2)));
+    this.stopPromise = new Promise<void>((resolveStop, rejectStop) => {
+      const finalTimer = setTimeout(() => {
+        if (this.child === child) {
+          child.kill("SIGKILL");
+          child.stdin.destroy();
+          child.stdout.destroy();
+          child.stderr.destroy();
+          child.unref();
+        }
+        rejectStop(new AtomicRpcStopUncertainError(
+          `Atomic RPC host transport did not close within ${finalWaitMs}ms after bounded termination`,
+        ));
+      }, finalWaitMs);
+      finalTimer.unref?.();
+      closePromise.then(() => {
+        clearTimeout(finalTimer);
+        resolveStop();
+      });
+    });
+    return this.stopPromise;
+  }
+
+  /**
+   * Attaches the authoritative raw-record consumer and synchronously replays
+   * the bounded startup journal. This closes the start-before-listener race for
+   * provider-owned subprocesses without retaining a full-session transcript.
+   */
+  subscribeRecords(listener: (record: AtomicRpcResponse | AtomicRpcNativeEvent) => void): () => void {
+    this.on("record", listener);
+    if (!this.earlyRecordsDrained) {
+      this.earlyRecordsDrained = true;
+      const pending = this.earlyRecords;
+      this.earlyRecords = [];
+      this.earlyRecordBytes = 0;
+      for (const record of pending) listener(record);
+    }
+    return () => this.off("record", listener);
   }
 
   private enqueueFrame(child: ChildProcessWithoutNullStreams, value: object, id?: string): Promise<void> {
     const frame = `${JSON.stringify(value)}\n`;
+    const frameBytes = Buffer.byteLength(frame);
+    if (frameBytes > this.maxFrameBytes) {
+      return Promise.reject(new AtomicRpcProtocolError(
+        "line_too_large",
+        `Atomic RPC outbound frame exceeded ${this.maxFrameBytes} bytes`,
+        frameBytes,
+      ));
+    }
+    if (!this.reserveTransportBytes(child, "stdin", frameBytes)) {
+      return Promise.reject(this.terminalError ?? new AtomicRpcProcessError("Atomic RPC transport budget exceeded"));
+    }
     const write = () => {
       if (id !== undefined && !this.pending.has(id)) {
         throw new AtomicRpcError(`Atomic RPC request ${id} settled before its queued frame was written`);
@@ -621,6 +726,7 @@ export class AtomicRpcClient extends EventEmitter<AtomicRpcClientEventMap> {
 
   private consumeStdout(child: ChildProcessWithoutNullStreams, chunk: Buffer): void {
     if (this.child !== child || !this.decoder) return;
+    if (!this.reserveTransportBytes(child, "stdout", chunk.byteLength)) return;
     let lines: string[];
     try {
       lines = this.decoder.push(chunk);
@@ -638,6 +744,31 @@ export class AtomicRpcClient extends EventEmitter<AtomicRpcClientEventMap> {
       return;
     }
     for (const line of lines) this.handleLine(child, line);
+  }
+
+  private reserveTransportBytes(
+    child: ChildProcessWithoutNullStreams,
+    stream: "stdin" | "stdout" | "stderr",
+    bytes: number,
+  ): boolean {
+    if (this.child !== child) return false;
+    if (this.terminalError) return false;
+    if (bytes <= this.maxTransportBytes - this.transportBytes) {
+      this.transportBytes += bytes;
+      return true;
+    }
+    const error = new AtomicRpcProcessError(
+      `Atomic RPC cumulative transport exceeded ${this.maxTransportBytes} bytes`,
+    );
+    this.terminalError ??= error;
+    this.rejectAll(error);
+    this.emit("transport_error", { stream, error });
+    if (!child.killed) child.kill("SIGTERM");
+    this.forceStopTimer ??= setTimeout(() => {
+      if (this.child === child) child.kill("SIGKILL");
+    }, this.stopTimeoutMs);
+    this.forceStopTimer.unref?.();
+    return false;
   }
 
   private handleLine(child: ChildProcessWithoutNullStreams, line: string): void {
@@ -669,7 +800,23 @@ export class AtomicRpcClient extends EventEmitter<AtomicRpcClientEventMap> {
       return;
     }
 
-    this.emit("record", record as AtomicRpcResponse | AtomicRpcNativeEvent);
+    const typedRecord = record as AtomicRpcResponse | AtomicRpcNativeEvent;
+    if (!this.earlyRecordsDrained && this.listenerCount("record") === 0) {
+      const recordBytes = Buffer.byteLength(line);
+      if (this.earlyRecords.length >= MAX_EARLY_RECORDS
+          || this.earlyRecordBytes + recordBytes > MAX_EARLY_RECORD_BYTES) {
+        const error = new AtomicRpcProtocolError(
+          "line_too_large",
+          "Atomic RPC startup record journal exceeded its bound before persistence attached",
+          this.earlyRecordBytes + recordBytes,
+        );
+        this.failProtocol(child, { kind: "line_too_large", error, lineBytes: recordBytes });
+        return;
+      }
+      this.earlyRecords.push(typedRecord);
+      this.earlyRecordBytes += recordBytes;
+    }
+    this.emit("record", typedRecord);
 
     if (record.type === "response") {
       this.handleResponse(record, line);

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:wesley:atomic:launch-manifest:1.0.0",
+  "$id": "urn:wesley:atomic:launch-manifest:1.1.0",
   "title": "Wesley Atomic launch manifest",
   "description": "Stable control-plane handoff to one Atomic root runtime. Presence of a valid manifest does not itself authorize or start execution.",
   "type": "object",
@@ -34,7 +34,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "1.0.0"
+      "const": "1.1.0"
     },
     "run_id": {
       "$ref": "#/$defs/stableId"
@@ -135,6 +135,8 @@
         "lease_id",
         "holder_run_id",
         "workspace_id",
+        "owner_id",
+        "fencing_token",
         "mode",
         "expires_at"
       ],
@@ -147,6 +149,14 @@
         },
         "workspace_id": {
           "$ref": "#/$defs/stableId"
+        },
+        "owner_id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "fencing_token": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
         },
         "mode": {
           "const": "exclusive-writer"

@@ -43,6 +43,21 @@ export interface GovernedArtifactExport {
   sizeBytes: number;
 }
 
+export interface GovernedArtifactVerificationEntry {
+  relativePath: string;
+  kind: string;
+  mediaType: string;
+  checksum: string;
+  sizeBytes: number;
+}
+
+export interface GovernedArtifactReadResult extends GovernedArtifactVerificationEntry {
+  content: string;
+}
+
+const GOVERNED_ARTIFACT_READ_FAILURE =
+  "Governed artifact is unavailable or no longer matches its approval-bound review contract";
+
 export interface SecretFinding {
   ruleId: string;
   fingerprint: string;
@@ -173,6 +188,17 @@ function ensurePrivateDirectory(path: string): void {
   }
 }
 
+function assertPrivateDirectory(path: string, label: string): string {
+  const stat = lstatSync(path);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error(`${label} must be a regular non-symlink directory`);
+  }
+  if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) {
+    throw new Error(`${label} must not grant group or other permissions`);
+  }
+  return realpathSync(path);
+}
+
 function listRegularFiles(root: string, cursor = root): string[] {
   const result: string[] = [];
   for (const entry of readdirSync(cursor, { withFileTypes: true })) {
@@ -283,4 +309,155 @@ export function exportGovernedArtifacts(
     else for (const path of writtenPaths) rmSync(path, { force: true });
     throw error;
   }
+}
+
+/**
+ * Re-opens an already-exported manifest at its control-plane-owned location.
+ * This is the final-action/restart integrity check: database checksums alone do
+ * not prove that the governed bytes still exist or remain unchanged.
+ */
+export function verifyGovernedArtifactExports(
+  manifest: readonly GovernedArtifactVerificationEntry[],
+  options: Pick<GovernedArtifactExportOptions, "artifactRoot" | "runId" | "maxFiles" | "maxFileBytes" | "maxTotalBytes">,
+): GovernedArtifactVerificationEntry[] {
+  if (!SAFE_RUN_ID.test(options.runId)) throw new Error("Artifact verification run ID is invalid");
+  const maxFiles = ensurePositiveBound("maxFiles", options.maxFiles ?? 32, 1_000);
+  const maxFileBytes = ensurePositiveBound("maxFileBytes", options.maxFileBytes ?? 10 * 1024 * 1024, 1024 * 1024 * 1024);
+  const maxTotalBytes = ensurePositiveBound("maxTotalBytes", options.maxTotalBytes ?? 25 * 1024 * 1024, 4 * 1024 * 1024 * 1024);
+  if (manifest.length === 0 || manifest.length > maxFiles) {
+    throw new Error(`Artifact verification manifest must contain between 1 and ${maxFiles} entries`);
+  }
+
+  const artifactRoot = resolve(options.artifactRoot);
+  const realArtifactRoot = assertPrivateDirectory(artifactRoot, "Artifact verification root");
+  const runDirectory = resolve(realArtifactRoot, options.runId);
+  assertContained(realArtifactRoot, runDirectory, "Artifact verification run directory");
+  const realRunDirectory = assertPrivateDirectory(runDirectory, "Artifact verification run directory");
+  assertContained(realArtifactRoot, realRunDirectory, "Artifact verification run realpath");
+
+  const expectedPaths: string[] = [];
+  const seen = new Set<string>();
+  for (const item of manifest) {
+    const relativePath = validateRelativePath(item.relativePath);
+    assertSafeLabel(item.kind, "Artifact kind");
+    assertSafeLabel(item.mediaType, "Artifact media type");
+    if (!/^[a-f0-9]{64}$/.test(item.checksum)) throw new Error("Artifact verification checksum is invalid");
+    if (!Number.isSafeInteger(item.sizeBytes) || item.sizeBytes < 0 || item.sizeBytes > maxFileBytes) {
+      throw new Error("Artifact verification size is invalid");
+    }
+    if (seen.has(relativePath)) throw new Error("Artifact verification paths must be unique");
+    seen.add(relativePath);
+    expectedPaths.push(relativePath);
+  }
+  expectedPaths.sort();
+  if (canonicalPathList(listRegularFiles(realRunDirectory)) !== canonicalPathList(expectedPaths)) {
+    throw new Error("Governed artifact export contents no longer match the reviewed manifest");
+  }
+
+  let totalBytes = 0;
+  const verified: GovernedArtifactVerificationEntry[] = [];
+  const findings: SecretFinding[] = [];
+  for (const item of manifest) {
+    const relativePath = validateRelativePath(item.relativePath);
+    assertNoSymlinkComponents(realRunDirectory, relativePath);
+    const candidate = resolve(realRunDirectory, ...relativePath.split("/"));
+    assertContained(realRunDirectory, candidate, "Artifact verification path");
+    const realCandidate = realpathSync(candidate);
+    assertContained(realRunDirectory, realCandidate, "Artifact verification realpath");
+    const body = readRegularFile(realCandidate, maxFileBytes);
+    totalBytes += body.byteLength;
+    if (totalBytes > maxTotalBytes) throw new Error("Artifact verification manifest exceeds the configured total byte limit");
+    const checksum = sha(body);
+    if (checksum !== item.checksum || body.byteLength !== item.sizeBytes) {
+      throw new Error("Governed artifact bytes no longer match their reviewed checksum and size");
+    }
+    findings.push(...scanArtifactSecrets(body));
+    verified.push({
+      relativePath,
+      kind: item.kind,
+      mediaType: item.mediaType,
+      checksum,
+      sizeBytes: body.byteLength,
+    });
+  }
+  if (findings.length > 0) {
+    const unique = new Map(findings.map((finding) => [`${finding.ruleId}:${finding.fingerprint}`, finding]));
+    throw new ArtifactSecretDetectedError([...unique.values()]);
+  }
+  return verified.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+}
+
+/**
+ * Reads one already-governed textual artifact for an authenticated human-review
+ * surface. The bytes are reopened with O_NOFOLLOW and rebound to the recorded
+ * checksum immediately before they are returned; host paths are never exposed.
+ */
+export function readGovernedArtifactExport(
+  expected: Readonly<GovernedArtifactVerificationEntry>,
+  options: Pick<GovernedArtifactExportOptions, "artifactRoot" | "runId"> & { maxReadBytes?: number },
+): GovernedArtifactReadResult {
+  try {
+    return readGovernedArtifactExportUnchecked(expected, options);
+  } catch {
+    // fs errors include the path they were given. This primitive backs an HTTP/
+    // MCP human-review surface, so neither its message nor its cause may retain
+    // a control-plane host path (or secret-scan detail) for an outer layer to
+    // serialize accidentally.
+    throw new Error(GOVERNED_ARTIFACT_READ_FAILURE);
+  }
+}
+
+function readGovernedArtifactExportUnchecked(
+  expected: Readonly<GovernedArtifactVerificationEntry>,
+  options: Pick<GovernedArtifactExportOptions, "artifactRoot" | "runId"> & { maxReadBytes?: number },
+): GovernedArtifactReadResult {
+  if (!SAFE_RUN_ID.test(options.runId)) throw new Error("Artifact read run ID is invalid");
+  const maxReadBytes = ensurePositiveBound("maxReadBytes", options.maxReadBytes ?? 256 * 1024, 1024 * 1024);
+  const relativePath = validateRelativePath(expected.relativePath);
+  assertSafeLabel(expected.kind, "Artifact kind");
+  if (!["application/json", "text/x-diff", "text/plain"].includes(expected.mediaType)) {
+    throw new Error("Artifact media type is not allowed on the human-review surface");
+  }
+  if (!/^[a-f0-9]{64}$/.test(expected.checksum)) throw new Error("Artifact read checksum is invalid");
+  if (!Number.isSafeInteger(expected.sizeBytes) || expected.sizeBytes < 1 || expected.sizeBytes > maxReadBytes) {
+    throw new Error("Artifact exceeds the bounded human-review size");
+  }
+
+  const artifactRoot = resolve(options.artifactRoot);
+  const realArtifactRoot = assertPrivateDirectory(artifactRoot, "Artifact read root");
+  const runDirectory = resolve(realArtifactRoot, options.runId);
+  assertContained(realArtifactRoot, runDirectory, "Artifact read run directory");
+  const realRunDirectory = assertPrivateDirectory(runDirectory, "Artifact read run directory");
+  assertContained(realArtifactRoot, realRunDirectory, "Artifact read run realpath");
+  assertNoSymlinkComponents(realRunDirectory, relativePath);
+  const candidate = resolve(realRunDirectory, ...relativePath.split("/"));
+  assertContained(realRunDirectory, candidate, "Artifact read path");
+  const realCandidate = realpathSync(candidate);
+  assertContained(realRunDirectory, realCandidate, "Artifact read realpath");
+  const body = readRegularFile(realCandidate, maxReadBytes);
+  if (body.byteLength !== expected.sizeBytes || sha(body) !== expected.checksum) {
+    throw new Error("Governed artifact bytes no longer match the approval-bound checksum and size");
+  }
+  const findings = scanArtifactSecrets(body);
+  if (findings.length > 0) throw new ArtifactSecretDetectedError(findings);
+  let content: string;
+  try {
+    // Preserve an optional UTF-8 BOM in the returned string so re-encoding the
+    // successful response yields the exact checksummed bytes.
+    content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body);
+  } catch (error) {
+    throw new Error("Governed artifact is not valid UTF-8 text", { cause: error });
+  }
+  return {
+    relativePath,
+    kind: expected.kind,
+    mediaType: expected.mediaType,
+    checksum: expected.checksum,
+    sizeBytes: expected.sizeBytes,
+    content,
+  };
+}
+
+function canonicalPathList(paths: readonly string[]): string {
+  return JSON.stringify([...paths].sort());
 }

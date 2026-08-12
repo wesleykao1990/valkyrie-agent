@@ -5,6 +5,7 @@ import type { Approval, Artifact, MemoryProposal, Project, Run, RunEvent, Task }
 import { nowIso } from "./ids.ts";
 import { assertUniqueMigrationVersions, loadMigrationFiles } from "./migrations.ts";
 import {
+  assertRunPatchApplied,
   artifactsEqual,
   canonicalJson,
   decodeJson,
@@ -13,6 +14,11 @@ import {
   observeStoreClock,
   StorageConflictError,
   validateArtifactBatchInput,
+  validateApprovalRequestBinding,
+  validateApprovalResolutionBinding,
+  validateApprovalExpiry,
+  validateApprovalExpiryRunPatch,
+  validateQueuedRunClaim,
   validateSandboxInstanceCreate,
   validateSandboxInstanceTransition,
   validateWorkspaceLeaseFence,
@@ -22,6 +28,7 @@ import {
   validateWriterLeaseWindow,
   type ApprovalResolutionInput,
   type ApprovalResolutionResult,
+  type ApprovalExpiryInput,
   type ApprovalRequestInput,
   type ApprovalRequestResult,
   type ArtifactBatchResult,
@@ -234,6 +241,19 @@ export class SqliteStore implements ControlPlaneStore {
       const replay = input.idempotency ? this.replayRunBundle(input.idempotency) : null;
       if (replay) return replay;
 
+      if (input.admission) {
+        if (input.admission.workflow !== effectiveRun.workflow || input.admission.maxNonterminal !== 1) {
+          throw new StorageConflictError("Run admission must bind the exact workflow with maxNonterminal=1");
+        }
+        const row = this.db.prepare(`SELECT COUNT(*) AS count FROM runs
+          WHERE workflow=? AND status IN ('queued','running','paused','awaiting_approval')`).get(
+          input.admission.workflow,
+        ) as { count: number };
+        if (Number(row.count) >= input.admission.maxNonterminal) {
+          throw new StorageConflictError(`Run admission limit reached for workflow ${input.admission.workflow}`);
+        }
+      }
+
       // Insert without the circular reference, then link ownership after the
       // workspace and lease exist. Migration triggers validate the final link.
       this.insertRun(input.workspace ? { ...effectiveRun, workspaceId: null } : effectiveRun);
@@ -354,6 +374,20 @@ export class SqliteStore implements ControlPlaneStore {
         }
       }
       return claimed;
+    });
+  }
+
+  async claimQueuedRunForStart(runId: string, workerId: string, claimUntil: string): Promise<Run | null> {
+    const observedAt = observeStoreClock(this.clock);
+    validateQueuedRunClaim(workerId, claimUntil, observedAt);
+    return this.transaction(() => {
+      const result = this.db.prepare(`UPDATE runs
+        SET worker_claimed_by=?, worker_claim_expires_at=?
+        WHERE id=? AND status='queued'
+          AND (worker_claim_expires_at IS NULL OR worker_claim_expires_at<=?)`)
+        .run(workerId, claimUntil, runId, observedAt) as any;
+      if (Number(result.changes) !== 1) return null;
+      return this.getRunRow(runId);
     });
   }
 
@@ -737,6 +771,7 @@ export class SqliteStore implements ControlPlaneStore {
     if (input.approval.state !== "pending") throw new StorageConflictError("A requested approval must be pending");
     if (input.event.runId !== input.approval.runId) throw new StorageConflictError("Approval request event must belong to the approval run");
     return this.transaction(() => {
+      const observedAt = observeStoreClock(this.clock);
       const idempotency = input.idempotency
         ? this.getIdempotencyRow(input.idempotency.scope, input.idempotency.key)
         : null;
@@ -751,6 +786,7 @@ export class SqliteStore implements ControlPlaneStore {
         const run = this.getRunRow(approval.runId);
         const eventRow = this.db.prepare("SELECT * FROM run_events WHERE id=?").get(input.event.id) as any;
         if (!run || !eventRow) throw new StorageConflictError("Approval request replay is missing its run or event");
+        validateApprovalRequestBinding(input.approval, run, observedAt);
         const event = this.mapEvent(eventRow);
         this.assertEventCompatible(event, input.event);
         return { approval, run, event, replayed: true };
@@ -764,6 +800,7 @@ export class SqliteStore implements ControlPlaneStore {
         if (!run || run.status !== "awaiting_approval" || !eventRow) {
           throw new StorageConflictError("Existing approval request is not in a replayable pending state");
         }
+        validateApprovalRequestBinding(input.approval, run, observedAt);
         const event = this.mapEvent(eventRow);
         this.assertEventCompatible(event, input.event);
         if (input.idempotency) {
@@ -774,6 +811,7 @@ export class SqliteStore implements ControlPlaneStore {
 
       const run = this.getRunRow(input.approval.runId);
       if (!run) throw new StorageConflictError("Approval run not found");
+      validateApprovalRequestBinding(input.approval, run, observedAt);
       if (["completed", "failed", "cancelled"].includes(run.status)) {
         throw new StorageConflictError("A terminal run cannot request approval");
       }
@@ -798,7 +836,12 @@ export class SqliteStore implements ControlPlaneStore {
     const stateCompatible = allowResolved ? true : stored.state === "pending";
     if (!stateCompatible || stored.id !== requested.id || stored.runId !== requested.runId ||
         stored.action !== requested.action || stored.exactEffect !== requested.exactEffect ||
-        stored.requestedAt !== requested.requestedAt || canonicalJson(stored.evidence) !== canonicalJson(requested.evidence)) {
+        stored.requestedAt !== requested.requestedAt || canonicalJson(stored.evidence) !== canonicalJson(requested.evidence) ||
+        (stored.projectId ?? null) !== (requested.projectId ?? null) ||
+        (stored.workflow ?? null) !== (requested.workflow ?? null) ||
+        (stored.evidenceDigest ?? null) !== (requested.evidenceDigest ?? null) ||
+        (stored.policyHash ?? null) !== (requested.policyHash ?? null) ||
+        (stored.expiresAt ?? null) !== (requested.expiresAt ?? null)) {
       throw new StorageConflictError(`Approval ${requested.id} was already used with different request content`);
     }
   }
@@ -812,11 +855,14 @@ export class SqliteStore implements ControlPlaneStore {
 
   private insertApproval(approval: Approval): void {
     this.db.prepare(`INSERT INTO approvals
-      (id,run_id,action,exact_effect,state,evidence_json,requested_at,resolved_at,resolved_by,decision)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+      (id,run_id,action,exact_effect,state,evidence_json,requested_at,resolved_at,resolved_by,decision,
+       project_id,workflow,evidence_digest,policy_hash,expires_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
         approval.id, approval.runId, approval.action, approval.exactEffect, approval.state,
         JSON.stringify(approval.evidence), approval.requestedAt, approval.resolvedAt ?? null,
-        approval.resolvedBy ?? null, approval.decision ?? null,
+        approval.resolvedBy ?? null, approval.decision ?? null, approval.projectId ?? null,
+        approval.workflow ?? null, approval.evidenceDigest ?? null, approval.policyHash ?? null,
+        approval.expiresAt ?? null,
       );
   }
 
@@ -840,6 +886,7 @@ export class SqliteStore implements ControlPlaneStore {
 
   async resolveApprovalTransaction(input: ApprovalResolutionInput): Promise<ApprovalResolutionResult> {
     return this.transaction(() => {
+      let observedAt = observeStoreClock(this.clock);
       if (input.idempotency) {
         const record = this.getIdempotencyRow(input.idempotency.scope, input.idempotency.key);
         if (record) {
@@ -849,6 +896,7 @@ export class SqliteStore implements ControlPlaneStore {
           }
           const approval = this.getApprovalRow(input.approvalId);
           if (!approval) throw new StorageConflictError("Idempotency record refers to a missing approval");
+          validateApprovalResolutionBinding(approval, input.expectedBinding, observedAt);
           if (input.event && input.event.runId !== approval.runId) {
             throw new StorageConflictError("Approval resolution event must belong to the approval run");
           }
@@ -860,6 +908,7 @@ export class SqliteStore implements ControlPlaneStore {
 
       const current = this.getApprovalRow(input.approvalId);
       if (!current) throw new StorageConflictError("Approval not found");
+      validateApprovalResolutionBinding(current, input.expectedBinding, observedAt);
       if (input.event && input.event.runId !== current.runId) {
         throw new StorageConflictError("Approval resolution event must belong to the approval run");
       }
@@ -870,10 +919,13 @@ export class SqliteStore implements ControlPlaneStore {
         }
         replayed = true;
       } else {
+        observedAt = observeStoreClock(this.clock);
+        validateApprovalResolutionBinding(current, input.expectedBinding, observedAt);
         const result = this.db.prepare(`UPDATE approvals
-          SET state=?, decision=?, resolved_by=?, resolved_at=? WHERE id=? AND state='pending'`)
-          .run(input.state, input.decision, input.resolvedBy, input.resolvedAt ?? nowIso(), input.approvalId) as any;
-        if (Number(result.changes) !== 1) throw new StorageConflictError("Approval resolution lost a concurrent race");
+          SET state=?, decision=?, resolved_by=?, resolved_at=?
+          WHERE id=? AND state='pending' AND (expires_at IS NULL OR expires_at>?)`)
+          .run(input.state, input.decision, input.resolvedBy, input.resolvedAt ?? observedAt, input.approvalId, observedAt) as any;
+        if (Number(result.changes) !== 1) throw new StorageConflictError("Approval has expired or resolution lost a concurrent race");
       }
 
       if (!replayed && input.runPatch) this.updateRunRow(current.runId, input.runPatch);
@@ -893,6 +945,85 @@ export class SqliteStore implements ControlPlaneStore {
       const approval = this.getApprovalRow(input.approvalId)!;
       const run = this.getRunRow(current.runId)!;
       return { approval, run, event: storedEvent, replayed };
+    });
+  }
+
+  async expireApprovalTransaction(input: ApprovalExpiryInput): Promise<ApprovalResolutionResult> {
+    validateApprovalExpiryRunPatch(input.runPatch);
+    return this.transaction(() => {
+      const observedAt = observeStoreClock(this.clock);
+      const replayResult = (approval: Approval, run: Run): ApprovalResolutionResult => {
+        if (approval.state !== "denied" || approval.decision !== "expired" || approval.resolvedBy !== "control-plane") {
+          throw new StorageConflictError("Approval was resolved by a different decision");
+        }
+        if (input.event.runId !== approval.runId) {
+          throw new StorageConflictError("Approval expiry event must belong to the approval run");
+        }
+        assertRunPatchApplied(run, input.runPatch);
+        const eventRow = this.db.prepare("SELECT * FROM run_events WHERE id=?").get(input.event.id) as any;
+        if (!eventRow) throw new StorageConflictError("Expired approval replay is missing its event");
+        const event = this.mapEvent(eventRow);
+        this.assertEventCompatible(event, input.event);
+        return { approval, run, event, replayed: true };
+      };
+
+      if (input.idempotency) {
+        const record = this.getIdempotencyRow(input.idempotency.scope, input.idempotency.key);
+        if (record) {
+          if (record.requestHash !== input.idempotency.requestHash) throw new IdempotencyConflictError();
+          if (record.resourceType !== "approval" || record.resourceId !== input.approvalId) {
+            throw new IdempotencyConflictError("Idempotency key refers to another approval or resource type");
+          }
+          const approval = this.getApprovalRow(input.approvalId);
+          if (!approval) throw new StorageConflictError("Idempotency record refers to a missing approval");
+          validateApprovalExpiry(approval, observedAt);
+          const run = this.getRunRow(approval.runId);
+          if (!run) throw new StorageConflictError("Approval refers to a missing run");
+          return replayResult(approval, run);
+        }
+      }
+
+      const current = this.getApprovalRow(input.approvalId);
+      if (!current) throw new StorageConflictError("Approval not found");
+      validateApprovalExpiry(current, observedAt);
+      if (input.event.runId !== current.runId) {
+        throw new StorageConflictError("Approval expiry event must belong to the approval run");
+      }
+
+      if (current.state !== "pending") {
+        const run = this.getRunRow(current.runId);
+        if (!run) throw new StorageConflictError("Approval refers to a missing run");
+        const result = replayResult(current, run);
+        if (input.idempotency) {
+          this.insertIdempotency(input.idempotency, "approval", input.approvalId, {
+            approvalId: input.approvalId, runId: current.runId,
+          });
+        }
+        return result;
+      }
+
+      const updated = this.db.prepare(`UPDATE approvals
+        SET state='denied',decision='expired',resolved_by='control-plane',resolved_at=?
+        WHERE id=? AND state='pending' AND expires_at<=?`).run(observedAt, input.approvalId, observedAt) as any;
+      if (Number(updated.changes) !== 1) throw new StorageConflictError("Approval expiry lost a concurrent race");
+      if (!this.updateRunRow(current.runId, input.runPatch)) {
+        throw new StorageConflictError("Approval expiry could not apply its terminal run patch");
+      }
+      const event = this.insertEvent(input.event);
+      this.insertOutbox("approval.resolved", input.approvalId, {
+        approvalId: input.approvalId, runId: current.runId, state: "denied", decision: "expired",
+      }, "expired");
+      if (input.idempotency) {
+        this.insertIdempotency(input.idempotency, "approval", input.approvalId, {
+          approvalId: input.approvalId, runId: current.runId,
+        });
+      }
+      return {
+        approval: this.getApprovalRow(input.approvalId)!,
+        run: this.getRunRow(current.runId)!,
+        event,
+        replayed: false,
+      };
     });
   }
 
@@ -1106,7 +1237,9 @@ export class SqliteStore implements ControlPlaneStore {
   private mapApproval = (row: any): Approval => ({
     id: row.id, runId: row.run_id, action: row.action, exactEffect: row.exact_effect, state: row.state,
     evidence: decodeJson(row.evidence_json, []), requestedAt: row.requested_at, resolvedAt: row.resolved_at,
-    resolvedBy: row.resolved_by, decision: row.decision,
+    resolvedBy: row.resolved_by, decision: row.decision, projectId: row.project_id ?? null,
+    workflow: row.workflow ?? null, evidenceDigest: row.evidence_digest ?? null,
+    policyHash: row.policy_hash ?? null, expiresAt: row.expires_at ?? null,
   });
 
   private mapArtifact = (row: any): Artifact => ({

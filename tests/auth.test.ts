@@ -7,6 +7,7 @@ import {
   hasValidBearerAuthorization,
   isLoopbackHost,
   loadControlPlaneAuth,
+  validateLoopbackControlPlaneApi,
 } from "../apps/control-plane/src/auth.ts";
 
 const token = "0123456789abcdefghijklmnopqrstuvwxyz-ABCDE";
@@ -70,5 +71,28 @@ test("loopback host recognition rejects wildcard and LAN bindings", () => {
   }
   for (const host of ["0.0.0.0", "::", "192.168.1.5", "control-plane.local", "localhost.example.com"]) {
     assert.equal(isLoopbackHost(host), false, host);
+  }
+});
+
+test("bearer-bearing clients accept only a normalized loopback HTTP origin", () => {
+  for (const [input, expected] of [
+    ["http://127.0.0.1:8787", "http://127.0.0.1:8787"],
+    ["http://127.12.34.56:80/", "http://127.12.34.56"],
+    ["http://localhost:9999/", "http://localhost:9999"],
+    ["http://[::1]:8787", "http://[::1]:8787"],
+  ]) {
+    assert.equal(validateLoopbackControlPlaneApi(input), expected);
+  }
+  for (const input of [
+    "https://127.0.0.1:8787",
+    "http://example.com:8787",
+    "http://localhost.example.com:8787",
+    "http://user:password@127.0.0.1:8787",
+    "http://127.0.0.1:8787/api",
+    "http://127.0.0.1:8787/?next=external",
+    "http://127.0.0.1:8787/#fragment",
+    " http://127.0.0.1:8787",
+  ]) {
+    assert.throws(() => validateLoopbackControlPlaneApi(input), /loopback HTTP origin|http:\/\/ loopback origin/i, input);
   }
 });

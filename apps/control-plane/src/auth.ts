@@ -91,3 +91,26 @@ export function isLoopbackHost(host: string): boolean {
   if (isIP(normalized) === 4) return normalized.split(".")[0] === "127";
   return false;
 }
+
+/**
+ * Bearer-bearing local pilot clients must never accept an arbitrary URL. Return
+ * a normalized origin only after proving the endpoint is plain HTTP loopback
+ * with no userinfo, path, query, or fragment.
+ */
+export function validateLoopbackControlPlaneApi(value: string): string {
+  if (!value || value !== value.trim() || /[\u0000-\u001f\u007f]/u.test(value)) {
+    throw new Error("CONTROL_PLANE_API must be a non-empty, trimmed loopback HTTP origin");
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("CONTROL_PLANE_API must be a valid loopback HTTP origin");
+  }
+  if (parsed.protocol !== "http:" || !isLoopbackHost(parsed.hostname)
+    || parsed.username || parsed.password || (parsed.pathname !== "" && parsed.pathname !== "/")
+    || parsed.search || parsed.hash) {
+    throw new Error("CONTROL_PLANE_API must be an http:// loopback origin without userinfo, path, query, or fragment");
+  }
+  return parsed.origin;
+}

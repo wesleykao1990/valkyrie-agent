@@ -8,7 +8,8 @@
 - Repository-derived package version: `0.2.1`
 - Integration date: 2026-08-11
 - Live runtime status: disabled by default; opt-in Atomic 0.9.12 offline
-  RPC/package-discovery adapter implemented (no model/workflow execution)
+  RPC/package-discovery adapter plus one fixture-specific credential-free
+  tool-only workflow integration. No provider/model execution is enabled.
 
 ## Source identity
 
@@ -47,12 +48,20 @@ The source tree was verified byte-for-byte before these repository-local changes
 - corrected compatibility language so researched Atomic 0.9.12-era sources are
   not presented as a live-validated host version;
 - updated integrated install paths, package metadata, changelog, and structural verification for version `0.2.1`.
+- bumped the launch-manifest wire schema to `1.1.0`, requiring the exact writer
+  lease owner and positive fencing token;
+- added the fixed `atomic-fixture-pilot` workflow and independently testable core
+  for the disposable M5a integration slice. It writes only the reviewed fixture
+  implementation, runs deterministic checks and a fresh deterministic verifier,
+  and emits a bounded artifact manifest. It contains no model stage.
 
 At package-integration time no runtime adapter was enabled, no Atomic process was
 started, no external connector was configured, and no credential was added. The
-later minimum pilot did not alter this subtree; it installs Atomic host 0.9.12
-under ignored `data/runtime/` and performs credential-free offline discovery
-through the control-plane adapter.
+later M3 minimum pilot installs Atomic host 0.9.12 under ignored `data/runtime/`
+and performs credential-free offline discovery through the control-plane adapter.
+M5a adds the reviewed workflow/core above and runs it only inside the separate,
+default-off OCI fixture runner. It does not enable the package router or general
+workflows as repository writers.
 
 ## Dependency and compatibility caveat
 
@@ -62,9 +71,12 @@ The source package was researched against Atomic 0.9.12-era documentation, but i
 - `@bastani/workflows`;
 - `typebox`.
 
-Until that succeeds, Atomic model/workflow execution must remain disabled and
-cross-process resume must remain unadvertised. The minimum offline discovery
-adapter does not establish peer compatibility for a real workflow run.
+The committed M5a runner lock pins the exact Atomic 0.9.12 dependency graph used
+for the tool-only fixture. Its real workflow execution can establish compatibility
+only for that fixed no-model path. It does not validate an Atomic provider/model,
+the general package workflows, native HIL, or DBOS/PostgreSQL durability. Those
+capabilities remain disabled and `crossProcessResume=false` until separately
+contract-tested.
 
 ## License boundary
 
@@ -72,7 +84,8 @@ The package retains its nested `LICENSE.md` and `package.json` value `UNLICENSED
 
 ## Verification
 
-The original 0.2.0 source passed its dependency-free structural verification before import. The derived 0.2.1 package then passed:
+The original 0.2.0 source passed its dependency-free structural verification
+before import. Before M5a, the derived 0.2.1 package passed:
 
 ```text
 npm run verify
@@ -91,6 +104,23 @@ npm run verify:all
 ```
 
 The type check used the containing repository's installed TypeScript toolchain. No
-dependency was installed by the original package integration. The later local
-pilot installation is ignored runtime state and no provider/model execution is
+dependency was installed by the original package integration. M3's host pilot
+installation remains ignored runtime state. M5a instead uses the lockfile and
+pinned build inputs under `docker/atomic-runner/`; no provider/model execution is
 claimed by this provenance record.
+
+After adding the M5a workflow and manifest `1.1.0`, the narrow package command was
+rerun on 2026-08-12:
+
+```text
+npm run verify:atomic
+  31 required files
+  4 workflows
+  16 routing cases
+  5 prompt templates
+  11 invalid launch-manifest rejection cases
+  tsc --noEmit: passed
+```
+
+This is source/contract evidence. It is not the separate live OCI/Atomic workflow
+proof and it does not validate a provider/model.

@@ -58,10 +58,13 @@ Returns one preflight record per configured adapter:
 ]
 ```
 
-`available` is the start gate. Atomic authentication is `unknown` because its
-available pilot operation is credential-free offline discovery. A preflight is
-evidence about the configured command/version/auth check, not proof of a full
-coding workflow.
+`available` is the start gate. The M3 Atomic connectivity record reports
+authentication `unknown` because it performs credential-free offline discovery.
+When M5a is enabled, a second Atomic record has
+`workflow="atomic-fixture-pilot"`, `executionMode="isolated-writer"`,
+`authenticated=false`, and `modelExecutionAttempted=false`. It proves only the
+configured immutable runner and fixed tool-only workflow preflight, not model
+availability or general repository-writing authority.
 
 ## Read operations
 
@@ -75,6 +78,17 @@ coding workflow.
   - Raw native JSONL is retained in events whose `type` is `runtime.native`; the
     parsed record is `payload.rawNative` and `payload.recordIndex` preserves each
     occurrence.
+- `GET /api/atomic-fixture/runs/:runId/artifacts/:artifactId`
+  - Available only for an M5a run with exactly one pending, unexpired
+    `accept_atomic_fixture_result` gate. Both IDs use the control-plane safe-ID
+    grammar and are never interpreted as filesystem paths.
+  - Reopens the approval-bound governed artifact with no-follow semantics,
+    rechecks its recorded size and SHA-256, rejects invalid UTF-8 and secret-scan
+    findings, and returns at most 256 KiB. Allowed media types are
+    `application/json`, `text/x-diff`, and `text/plain`.
+  - Returns `{ runId, approvalId, artifactId, kind, mediaType, checksum,
+    sizeBytes, evidenceDigest, content }`. It never returns a host path. A failed
+    read returns a path-opaque error and no content.
 - `GET /api/runs/:runId/events?after=<sequence>`
   - Server-Sent Events for normalized and raw-native records after the numeric
     sequence. Supply the bearer header when auth is enabled.
@@ -113,12 +127,35 @@ Native connectivity example:
 }
 ```
 
-Native adapters accept only the literal `runtime-connectivity` workflow in this
-milestone. Omitting it or asking for another workflow is rejected. Atomic performs
-offline RPC/package discovery; Codex and an available Claude adapter make bounded
+Credential-free Atomic fixture example (only when the separate default-off
+feature is configured):
+
+```json
+{
+  "projectId": "atomic-pilot",
+  "taskId": "task_atomic_fixture_m5",
+  "objective": "Implement normalizeProjectSlug in the disposable Atomic pilot fixture and stop after verified evidence for control-plane approval.",
+  "runtime": "atomic",
+  "workflow": "atomic-fixture-pilot",
+  "maxCostUsd": 0.25,
+  "idempotencyKey": "mobile-atomic-fixture-001"
+}
+```
+
+M3 native adapters accept only the literal `runtime-connectivity` workflow.
+Omitting it or asking for another workflow is rejected. Atomic performs offline
+RPC/package discovery; Codex and an available Claude adapter make bounded
 read-only model calls. Direct Codex/Claude objectives must be exactly `Return
 exactly MARKER and nothing else.` where `MARKER` is 3–64 uppercase letters,
 digits, or underscores. Every final action is `analysis_only`.
+
+The separate M5a workflow accepts only the exact project, task, objective, and
+Atomic runtime shown above. Repository/image/engine/command/artifact choices are
+server configuration and are never request fields. A healthy request first
+returns `queued`; poll until it reaches cleaned `awaiting_approval` or a terminal
+failure. It runs a real Atomic 0.9.12 tool-only workflow in the no-network OCI
+writer, not an Atomic provider/model. Its fresh verifier is deterministic, model
+cost/tokens remain zero, and `crossProcessResume=false`.
 
 The response has the selected route plus a run detail:
 
@@ -158,6 +195,13 @@ returns a conflict.
 - `POST /api/approvals/:approvalId/resolve`
   - `{ "decision":"approve" | "deny" | "request_changes" }`
   - Native runtime approval/HIL mapping is not implemented.
+- `POST /api/atomic-fixture/approvals/:approvalId/resolve`
+  - `{ "decision":"approve" | "deny" | "request_changes" }`
+  - Resolves only action `accept_atomic_fixture_result`. The approval is bound to
+    its run/project/workflow, complete artifact digest, sandbox policy hash, and
+    expiry (15 minutes in the current coordinator). Approve records a safe mock receipt after writer cleanup; it cannot
+    create a PR, merge, deploy, mutate an external database, expand credentials,
+    or promote the proposed memory.
 
 ## Idea and demo mutations
 

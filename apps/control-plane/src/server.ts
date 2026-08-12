@@ -13,6 +13,9 @@ const media: Record<string, string> = {
   ".svg": "image/svg+xml"
 };
 
+const ATOMIC_FIXTURE_ARTIFACT_READ_ERROR =
+  "Atomic fixture artifact evidence is unavailable or no longer matches the pending approval";
+
 export function createControlPlaneServer(
   service: ControlPlaneService,
   store: ControlPlaneStore,
@@ -112,6 +115,30 @@ async function route(
   if (method === "POST" && match) {
     const body = await readJson(req);
     return sendJson(res, 200, await service.resolveApproval(decodeURIComponent(match[1]), String(body.decision ?? ""), "wesley"));
+  }
+
+  match = path.match(/^\/api\/atomic-fixture\/approvals\/([^/]+)\/resolve$/);
+  if (method === "POST" && match) {
+    const body = await readJson(req);
+    return sendJson(res, 200, await service.resolveAtomicFixtureApproval(
+      decodeURIComponent(match[1]),
+      String(body.decision ?? ""),
+      "wesley",
+    ));
+  }
+
+  match = path.match(/^\/api\/atomic-fixture\/runs\/([^/]+)\/artifacts\/([^/]+)$/);
+  if (method === "GET" && match) {
+    try {
+      return sendJson(res, 200, await service.readAtomicFixtureArtifact(
+        decodeURIComponent(match[1]),
+        decodeURIComponent(match[2]),
+      ));
+    } catch {
+      // Never serialize a filesystem/store exception from this human-review
+      // surface: native fs errors commonly embed absolute host paths.
+      return sendJson(res, 400, { error: ATOMIC_FIXTURE_ARTIFACT_READ_ERROR });
+    }
   }
 
   match = path.match(/^\/api\/memory\/proposals\/([^/]+)\/resolve$/);

@@ -8,6 +8,10 @@ import { contextPackChecksum, type LocalProjectBrain, type PromotionPreview } fr
 import type { WorkspaceManager } from "./workspace.ts";
 import { id, nowIso } from "./ids.ts";
 import { routeTask, validateBudget } from "./policy.ts";
+import {
+  ATOMIC_FIXTURE_WORKFLOW_NAME,
+  type AtomicFixturePilotCoordinator,
+} from "./atomic-fixture-pilot.ts";
 
 function requestHash(value: unknown): string {
   const normalized = JSON.parse(JSON.stringify(value)) as unknown;
@@ -21,6 +25,7 @@ export const MEMORY_PROMOTION_PREVIEW_MAX_FUTURE_SKEW_MS = 30 * 1_000;
 
 interface ControlPlaneServiceOptions {
   now?: () => Date;
+  atomicFixturePilot?: AtomicFixturePilotCoordinator;
 }
 
 export class ControlPlaneService {
@@ -30,6 +35,7 @@ export class ControlPlaneService {
   private adapters: Map<RuntimeName, RuntimeAdapter>;
   private readonly workerId = id("worker");
   private readonly now: () => Date;
+  private readonly atomicFixturePilot?: AtomicFixturePilotCoordinator;
   private currentTick: Promise<void> | null = null;
   private approvalQueue = new Map<string, Promise<unknown>>();
 
@@ -45,6 +51,7 @@ export class ControlPlaneService {
     this.workspaces = workspaces;
     this.adapters = adapters;
     this.now = options.now ?? (() => new Date());
+    this.atomicFixturePilot = options.atomicFixturePilot;
   }
 
   listProjects(): Promise<Project[]> { return this.store.listProjects(); }
@@ -54,7 +61,7 @@ export class ControlPlaneService {
   listMemoryProposals(): Promise<MemoryProposal[]> { return this.store.listMemoryProposals(); }
 
   async runtimeStatus(): Promise<RuntimePreflight[]> {
-    return Promise.all([...this.adapters.values()].map(async (adapter) => {
+    const adapterStatuses = await Promise.all([...this.adapters.values()].map(async (adapter) => {
       try {
         return await adapter.preflight();
       } catch (error) {
@@ -70,6 +77,22 @@ export class ControlPlaneService {
         } satisfies RuntimePreflight;
       }
     }));
+    if (!this.atomicFixturePilot) return adapterStatuses;
+    const pilot = await this.atomicFixturePilot.preflight();
+    return [...adapterStatuses, {
+      runtime: "atomic",
+      adapter: "native",
+      enabled: pilot.enabled,
+      available: pilot.available,
+      executionMode: pilot.executionMode,
+      workflow: pilot.workflow,
+      modelExecutionAttempted: pilot.modelExecutionAttempted,
+      version: pilot.runner?.atomicVersion,
+      authenticated: false,
+      capabilities: { steer: false, pause: false, resume: false, approve: false, artifacts: true },
+      controlPlaneFinalAcceptance: true,
+      reason: pilot.reason,
+    }];
   }
 
   async portfolio() {
@@ -168,6 +191,9 @@ export class ControlPlaneService {
         if (existing.requestHash !== hash) throw new IdempotencyConflictError();
         if (existing.resourceType !== "run") throw new IdempotencyConflictError("Idempotency key refers to another resource type");
         const replayed = await this.getRun(existing.resourceId);
+        if (this.atomicFixturePilot?.isPilotRun(replayed.run) && replayed.run.status === "queued") {
+          this.atomicFixturePilot.schedule(replayed.run.id);
+        }
         return {
           run: replayed,
           route: {
@@ -176,6 +202,66 @@ export class ControlPlaneService {
           },
         };
       }
+    }
+
+    if (input.workflow === ATOMIC_FIXTURE_WORKFLOW_NAME) {
+      if (!this.atomicFixturePilot) throw new Error("Atomic fixture pilot is disabled");
+      const pilotBudgetUsd = this.atomicFixturePilot.validateStart(input);
+      if (input.approvalPolicy?.preparePr === "automatic") {
+        throw new Error("Atomic fixture pilot requires a human final-action boundary");
+      }
+      const preflight = await this.atomicFixturePilot.preflight();
+      if (!preflight.available) throw new Error(`Atomic fixture pilot is unavailable: ${preflight.reason ?? "preflight failed"}`);
+      const runner = preflight.runner;
+      if (!runner?.available || !runner.atomicVersion || !runner.imageDigest
+          || !runner.provenanceDigest || !runner.provenanceLabels) {
+        throw new Error("Atomic fixture pilot preflight omitted exact runner evidence");
+      }
+      const run: Run = {
+        id: id("run"),
+        taskId: task!.id,
+        projectId: project.id,
+        rootRuntime: "atomic",
+        workflow: ATOMIC_FIXTURE_WORKFLOW_NAME,
+        status: "queued",
+        stage: null,
+        stageIndex: 0,
+        budgetUsd: pilotBudgetUsd,
+        costUsd: 0,
+        workspaceId: null,
+        nativeRunId: null,
+        nextActionAt: null,
+        startedAt: null,
+        completedAt: null,
+        metadata: {
+          routeReason: route.reason,
+          requestedObjective: input.objective,
+          approvalPolicy: { preparePr: "human" },
+          adapter: "atomic-fixture-pilot",
+          executionMode: "isolated-writer",
+          atomicVersion: runner.atomicVersion,
+          atomicRunnerImageRef: runner.imageRef,
+          atomicRunnerImageDigest: runner.imageDigest,
+          atomicRunnerProvenanceDigest: runner.provenanceDigest,
+          atomicRunnerProvenanceLabels: { ...runner.provenanceLabels },
+          atomicRunnerPreflightNetwork: "none",
+          modelExecutionAttempted: false,
+          automaticEpisodicCapture: false,
+          crossProcessResume: false,
+          externalActionPerformed: false,
+        },
+        createdAt: this.now().toISOString(),
+      };
+      const created = await this.store.createRunBundle({
+        run,
+        idempotency: key && hash ? { scope: "run.create", key, requestHash: hash } : undefined,
+        admission: { workflow: ATOMIC_FIXTURE_WORKFLOW_NAME, maxNonterminal: 1 },
+      });
+      if (created.run.status === "queued") this.atomicFixturePilot.schedule(created.run.id);
+      return {
+        run: await this.getRun(created.run.id),
+        route: { runtime: "atomic" as const, reason: route.reason },
+      };
     }
 
     const adapter = this.requireAdapter(route.runtime);
@@ -376,6 +462,10 @@ export class ControlPlaneService {
   async cancelRun(runId: string) {
     const run = await this.requireRun(runId);
     if (["completed", "failed", "cancelled"].includes(run.status)) return this.getRun(runId);
+    if (this.atomicFixturePilot?.isPilotRun(run)) {
+      await this.atomicFixturePilot.cancel(run);
+      return this.getRun(runId);
+    }
     await this.requireAdapter(run.rootRuntime).cancel(run);
     return this.getRun(runId);
   }
@@ -395,10 +485,34 @@ export class ControlPlaneService {
     }
   }
 
+  async resolveAtomicFixtureApproval(approvalId: string, decision: string, resolvedBy = "wesley") {
+    const approval = await this.store.getApproval(approvalId);
+    if (!approval || approval.action !== "accept_atomic_fixture_result") {
+      throw new Error("Approval is not the evidence-bound Atomic fixture final gate");
+    }
+    return this.resolveApproval(approvalId, decision, resolvedBy);
+  }
+
+  async readAtomicFixtureArtifact(runId: string, artifactId: string) {
+    if (!this.atomicFixturePilot) throw new Error("Atomic fixture pilot is disabled");
+    return this.atomicFixturePilot.readApprovalArtifact(runId, artifactId);
+  }
+
   private async resolveApprovalOnce(approvalId: string, decision: string, resolvedBy: string) {
     const approval = await this.store.getApproval(approvalId);
     if (!approval) throw new Error("Approval not found");
     const run = await this.requireRun(approval.runId);
+    if (approval.action === "accept_atomic_fixture_result") {
+      if (!this.atomicFixturePilot || !this.atomicFixturePilot.isPilotRun(run)) {
+        throw new Error("Atomic fixture approval cannot be resolved while its pilot is disabled");
+      }
+      await this.atomicFixturePilot.resolveApproval(
+        approval,
+        decision as "approve" | "deny" | "request_changes",
+        resolvedBy,
+      );
+      return this.getRun(run.id);
+    }
     const state = decision === "approve" ? "approved" : decision === "request_changes" ? "changes_requested" : "denied";
     const resolvedAt = nowIso();
     const resolution = await this.store.resolveApprovalTransaction({
@@ -563,6 +677,7 @@ export class ControlPlaneService {
     };
 
     for (const run of candidates.queuedRuns) {
+      if (this.atomicFixturePilot?.isPilotRun(run)) continue;
       const completedAt = nowIso();
       await this.store.updateRun(run.id, {
         status: "failed",
@@ -593,7 +708,7 @@ export class ControlPlaneService {
       ["running", "paused", "awaiting_approval"].includes(run.status)
       && run.metadata.adapter === "native"
       && run.metadata.crossProcessResume !== true,
-    );
+    ).filter((run) => !this.atomicFixturePilot?.isPilotRun(run));
     for (const run of nativeOrphans) {
       const completedAt = nowIso();
       await this.store.updateRun(run.id, {
@@ -671,6 +786,10 @@ export class ControlPlaneService {
     const reconciliationTime = Date.now();
     const activeLeases = await this.store.listLeases();
     for (const { approval, run: candidateRun } of candidates.strandedApprovals) {
+      if (approval.action === "accept_atomic_fixture_result" && this.atomicFixturePilot?.isPilotRun(candidateRun)) {
+        strandedApprovalsAlreadySettled += 1;
+        continue;
+      }
       const run = await this.store.getRun(candidateRun.id);
       if (!run) {
         strandedApprovalsNeedingAttention += 1;
@@ -740,13 +859,23 @@ export class ControlPlaneService {
   }
 
   private async tickOnce(): Promise<void> {
-    const now = new Date();
-    const runs = await this.store.claimRunnableRuns(
-      now.toISOString(),
-      new Date(now.getTime() + 30_000).toISOString(),
-      this.workerId,
-    );
     let firstError: unknown = null;
+    try {
+      await this.atomicFixturePilot?.tick();
+    } catch (error) {
+      firstError = error;
+    }
+    const now = this.now();
+    let runs: Run[] = [];
+    try {
+      runs = await this.store.claimRunnableRuns(
+        now.toISOString(),
+        new Date(now.getTime() + 30_000).toISOString(),
+        this.workerId,
+      );
+    } catch (error) {
+      firstError ??= error;
+    }
     for (const run of runs) {
       try {
         await this.requireAdapter(run.rootRuntime).advance(run);

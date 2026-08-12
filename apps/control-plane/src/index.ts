@@ -8,6 +8,15 @@ import { createRuntimeAdapters } from "./runtime-registry.ts";
 import { ControlPlaneService } from "./service.ts";
 import { createControlPlaneServer } from "./server.ts";
 import { shutdownControlPlane } from "./shutdown.ts";
+import { WriterWorkspaceManager } from "./writer-workspace.ts";
+import { OciSandboxProvider } from "./oci-sandbox-provider.ts";
+import { WriterSandboxBoundary } from "./writer-sandbox-boundary.ts";
+import {
+  ATOMIC_FIXTURE_RUNNER_PROVENANCE_LABELS,
+  ATOMIC_FIXTURE_RUNTIME_VERSION,
+  AtomicFixturePilotCoordinator,
+} from "./atomic-fixture-pilot.ts";
+import { setupAtomicFixtureRepository } from "../../../scripts/setup-atomic-fixture.ts";
 
 // Local databases, context packs, contracts, and native output are sensitive.
 // New POSIX files/directories created by the server must be owner-only.
@@ -37,9 +46,81 @@ if (config.seedDemoData) await store.seedProjects(loadProjectSeed());
 const brain = new LocalProjectBrain(config.projectBrainDir);
 const workspaces = new WorkspaceManager(store, join(config.dataDir, "workspaces"));
 const adapters = createRuntimeAdapters(store, workspaces, config);
-const service = new ControlPlaneService(store, brain, workspaces, adapters);
+let atomicFixturePilot: AtomicFixturePilotCoordinator | undefined;
+if (config.atomicFixturePilot.enabled) {
+  const pilotRoot = config.atomicFixturePilot.root;
+  const writerRoot = join(pilotRoot, "writer-workspaces");
+  const contextRoot = join(pilotRoot, "run-contexts");
+  const artifactRoot = join(pilotRoot, "artifacts");
+  const providerStateRoot = join(pilotRoot, "oci-state");
+  for (const path of [pilotRoot, writerRoot, contextRoot, artifactRoot, providerStateRoot]) {
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+  }
+  const fixtureRepository = setupAtomicFixtureRepository(config.atomicFixturePilot.repositoryPath!);
+  const writerWorkspaces = new WriterWorkspaceManager({
+    store,
+    root: writerRoot,
+    gitCommand: "/usr/bin/git",
+    leaseTtlMs: 45_000,
+  });
+  const provider = new OciSandboxProvider({
+    enabled: true,
+    engineCommand: config.atomicFixturePilot.engineCommand!,
+    ...(config.atomicFixturePilot.engineSocket ? { engineSocket: config.atomicFixturePilot.engineSocket } : {}),
+    image: config.atomicFixturePilot.image!,
+    workspaceRoot: writerRoot,
+    contextRoot,
+    artifactRoot,
+    stateRoot: providerStateRoot,
+    networkPolicy: { mode: "none" },
+    resourceBounds: {
+      memoryBytes: 2 * 1024 * 1024 * 1024,
+      cpus: 2,
+      pidsLimit: 256,
+      tmpfsBytes: 128 * 1024 * 1024,
+    },
+    ...(config.atomicFixturePilot.user ? { user: config.atomicFixturePilot.user } : {}),
+    atomicRpc: {
+      reviewedBinaryPath: "/usr/local/bin/atomic",
+      expectedVersion: ATOMIC_FIXTURE_RUNTIME_VERSION,
+      reviewedImageLabels: ATOMIC_FIXTURE_RUNNER_PROVENANCE_LABELS,
+      transportBounds: { sessionMs: 3 * 60 * 1_000, maxTransportBytes: 16 * 1024 * 1024 },
+    },
+  });
+  const boundary = new WriterSandboxBoundary({
+    store,
+    workspaces: writerWorkspaces,
+    provider,
+    artifactRoot,
+    ownerId: "atomic_fixture_pilot",
+    leaseTtlMs: 45_000,
+    heartbeatIntervalMs: 5_000,
+  });
+  atomicFixturePilot = new AtomicFixturePilotCoordinator({
+    store,
+    brain,
+    boundary,
+    provider,
+    packageDir: config.atomicPackageDir,
+    repositoryPath: config.atomicFixturePilot.repositoryPath!,
+    repositoryCommit: fixtureRepository.commit,
+    contextRoot,
+    maxCostUsd: config.atomicFixturePilot.maxCostUsd,
+  });
+}
+const service = new ControlPlaneService(store, brain, workspaces, adapters, { atomicFixturePilot });
 const [existingTasks, existingRuns] = await Promise.all([store.listTasks(), store.listRuns(1)]);
 if (config.seedDemoData && existingTasks.length === 0 && existingRuns.length === 0) await service.resetDemo(true);
+if (atomicFixturePilot) await atomicFixturePilot.bootstrap();
+const atomicFixtureReconciliation = atomicFixturePilot ? await atomicFixturePilot.reconcileStartup() : null;
+if (atomicFixtureReconciliation && (
+  atomicFixtureReconciliation.sandbox.instancesExamined > 0
+  || atomicFixtureReconciliation.queuedScheduled > 0
+  || atomicFixtureReconciliation.approvalsRecovered > 0
+  || atomicFixtureReconciliation.expiredApprovals > 0
+)) {
+  console.log(`Atomic fixture startup reconciliation: ${JSON.stringify(atomicFixtureReconciliation)}`);
+}
 const reconciliation = await service.reconcileStartup();
 if (Object.values(reconciliation).some((value) => value > 0)) {
   console.log(`startup reconciliation: ${JSON.stringify(reconciliation)}`);
@@ -62,7 +143,10 @@ function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   clearInterval(worker);
-  void shutdownControlPlane(server, adapters.values(), store).then(
+  void (async () => {
+    await atomicFixturePilot?.shutdown();
+    await shutdownControlPlane(server, adapters.values(), store);
+  })().then(
     () => process.exit(0),
     (error) => {
       console.error("control-plane shutdown failed", error);

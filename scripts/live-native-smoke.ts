@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
-import { loadControlPlaneAuth } from "../apps/control-plane/src/auth.ts";
+import { loadControlPlaneAuth, validateLoopbackControlPlaneApi } from "../apps/control-plane/src/auth.ts";
 
 type RuntimeName = "atomic" | "codex" | "claude";
 
@@ -51,7 +51,7 @@ interface PromotionPreview {
   approvedAt: string;
 }
 
-const apiBase = (process.env.CONTROL_PLANE_API ?? "http://127.0.0.1:8787").replace(/\/$/, "");
+const apiBase = validateLoopbackControlPlaneApi(process.env.CONTROL_PLANE_API ?? "http://127.0.0.1:8787");
 const authEnvironment = { ...process.env };
 if (!authEnvironment.CONTROL_PLANE_AUTH_TOKEN?.trim() && !authEnvironment.CONTROL_PLANE_AUTH_TOKEN_FILE?.trim()) {
   authEnvironment.CONTROL_PLANE_AUTH_TOKEN_FILE = "data/auth/control-plane.token";

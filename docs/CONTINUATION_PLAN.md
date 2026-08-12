@@ -71,9 +71,10 @@ actually available/exercised on the host. ADR-P003 remains proposed.
 
 ## Milestone 3b — Atomic model workflow and native capability mapping: deferred
 
-Do not reinterpret offline discovery as a live Atomic model workflow. After an
-external sandbox exists, pin and exercise only the exact capabilities supported
-by that installed Atomic version: model start/status/event cursoring, steering or
+Do not reinterpret either offline discovery or the credential-free M5a tool-only
+workflow as a live Atomic model workflow. The external sandbox now exists, but a
+model path still requires scoped inference access. Pin and exercise only the exact
+capabilities supported by that installed Atomic version: model start/status/event cursoring, steering or
 follow-up, pause/resume/quit/cancel, HIL input/approval mapping, artifacts,
 cost/model metadata, and native durability. Atomic's main session must retain
 ownership of its workflow; Codex/Claude must not orchestrate its stages.
@@ -111,19 +112,45 @@ states. Writer runtime registration remains a separate Milestone 5 action.
 - [ ] Remote micro-VM or equivalent stronger isolation for confidential/high-risk
   work; scoped model egress and short-lived credential broker.
 
-## Milestone 5 — End-to-end Atomic pilot
+## Milestone 5 — End-to-end Atomic pilot: integration slice implemented; model slice pending
 
-Run one medium-risk, non-production fixture with deterministic acceptance criteria:
+### M5a — credential-free native integration slice
 
-Hermes-compatible MCP request → stable run/task → current/fake Linear context →
-bounded Project Brain pack → isolated workspace/container → Atomic preflight and
-contract → implementation → deterministic checks → fresh verifier → bounded
-repair → human approval → safe draft-PR mock or gated draft PR → evidence → memory
-proposal without automatic promotion.
+The default-off `atomic-fixture-pilot` now composes the hard lifecycle boundaries
+for one disposable, non-production fixture:
 
-Bound repair rounds, cost, time, turns, concurrency, and child depth. Preserve the
-literal task contract, use implementer continuity for repairs, fresh contexts for
-independent reviewers, and artifacts rather than full transcripts.
+authenticated Hermes-compatible MCP request → stable fixed task/run → isolated
+fake Linear projection → bounded accepted Project Brain pack → M4 private
+worktree/fenced no-network container → real Atomic 0.9.12 main session and native
+tool-only workflow → reviewed fixture implementation → deterministic checks →
+fresh deterministic verifier → frozen/secret-scanned checksummed evidence →
+container/worktree/lease cleanup → evidence/policy/expiry-bound,
+operator-intended approval gate → safe mock receipt, while the evidence-derived
+memory proposal remains unpromoted.
+
+The fixed workflow has one turn, zero repair rounds, one concurrency slot, zero
+child depth, and hard command/workflow/output/cost limits. Every raw Atomic record
+is retained alongside normalized lifecycle events. The approval is exposed through
+a narrow MCP mutation that cannot create a PR or promote memory. The feature flag
+is false by default and the zero-service SQLite/mock demo is unchanged.
+The live smoke exercised approval automatically after its assertions; this does
+not attest human presence or judgment.
+
+This is valid integration evidence, not model-quality evidence. No provider/model
+request, model-based verifier, token/cost, real GitHub PR, merge, deploy, Linear
+write, expanded secret access, or canonical promotion is implemented. Native
+cross-process resume remains false.
+
+### M5b — model-backed pilot: pending
+
+Complete the original model-backed acceptance gate only after a reviewed local
+model endpoint or scoped inference proxy keeps provider credentials outside the
+writer and enforces provider/model/request/token/cost/time/concurrency policy.
+Then run real model implementation and a fresh independent model verifier under
+the same literal contract, workspace, deterministic checks, approval, and evidence
+boundaries. Add bounded evidence-driven repair continuity only for that model
+variant. Atomic must still own its graph, and real draft PR creation remains a
+separate final action.
 
 ## Milestone 6 — Direct Codex/Claude comparison
 

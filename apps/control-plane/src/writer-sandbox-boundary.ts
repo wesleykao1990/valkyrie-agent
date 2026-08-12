@@ -6,8 +6,11 @@ import type { ControlPlaneStore, SandboxInstanceState, WorkspaceLease } from "./
 import {
   ArtifactSecretDetectedError,
   exportGovernedArtifacts,
+  readGovernedArtifactExport,
+  verifyGovernedArtifactExports,
   type ArtifactManifestEntry,
   type GovernedArtifactExport,
+  type GovernedArtifactVerificationEntry,
 } from "./governed-artifact-export.ts";
 import type {
   OciCleanupResult,
@@ -74,6 +77,81 @@ export interface WriterSandboxFixtureResult {
   command: OciRunResult;
   exports: GovernedArtifactExport[];
   artifacts: Artifact[];
+}
+
+export type WriterSandboxWorkloadCompletion = "completed" | "evidence_ready";
+
+/**
+ * Path-free digest of one frozen governed export. Trusted workload validators
+ * receive only these immutable facts, never artifact-root host paths.
+ */
+export interface WriterSandboxValidatedExport {
+  relativePath: string;
+  kind: string;
+  mediaType: string;
+  checksum: string;
+  sizeBytes: number;
+}
+
+/**
+ * Immutable ownership and policy facts supplied to trusted in-process hooks.
+ * Host paths and commands are intentionally absent: the M5 coordinator owns
+ * those fixed configuration values rather than accepting them from HTTP/MCP.
+ */
+export interface WriterSandboxWorkloadBinding {
+  runId: string;
+  projectId: string;
+  workflow: string;
+  workspaceId: string;
+  leaseOwnerId: string;
+  fencingToken: number;
+  baseCommit: string;
+  branchName: string;
+  workspaceProvider: string;
+  sandboxContract: OciSandboxContract;
+}
+
+/**
+ * Trusted, internal-only writer workload. `allowedWorkflow`, repositoryPath,
+ * contextPath, hooks, and artifact manifest must come from reviewed host
+ * configuration; this type is deliberately not an API/MCP request contract.
+ */
+export interface WriterSandboxWorkloadInput {
+  allowedWorkflow: string;
+  run: Run;
+  project: Project;
+  repositoryPath: string;
+  contextPath: string;
+  artifacts: readonly ArtifactManifestEntry[];
+  prepareContext: (binding: Readonly<WriterSandboxWorkloadBinding>) => Promise<void>;
+  execute: (
+    handle: OciSandboxHandle,
+    binding: Readonly<WriterSandboxWorkloadBinding>,
+  ) => Promise<OciRunResult>;
+  /** Rebind the stopped/frozen export to bytes validated during execution. */
+  validateExports?: (exports: readonly Readonly<WriterSandboxValidatedExport>[]) => Promise<void> | void;
+  completion: WriterSandboxWorkloadCompletion;
+  baseRef?: string;
+}
+
+export interface WriterSandboxWorkloadResult {
+  runId: string;
+  workspaceId: string;
+  fencingToken: number;
+  baseCommit: string;
+  branchName: string;
+  execution: OciRunResult;
+  exports: GovernedArtifactExport[];
+  artifacts: Artifact[];
+  completion: WriterSandboxWorkloadCompletion;
+}
+
+interface WriterSandboxLifecycleLabels {
+  boundary: "contract-fixture-only" | "trusted-internal-workload";
+  runningStage: string;
+  failedStage: string;
+  completedStage: string;
+  completedMetadataKey: "sandboxFixtureCompleted" | "writerWorkloadCompleted";
 }
 
 export class WriterSandboxQuarantinedError extends Error {
@@ -279,16 +357,98 @@ export class WriterSandboxBoundary {
       throw new Error("Writer sandbox boundary accepts only the explicit sandbox-fixture workflow");
     }
     if (input.run.status !== "queued") throw new Error("Writer sandbox fixture run must be queued");
+    const result = await this.runInternalWorkload({
+      allowedWorkflow: "sandbox-fixture",
+      run: input.run,
+      project: input.project,
+      repositoryPath: input.repositoryPath,
+      contextPath: input.contextPath,
+      artifacts: input.artifacts,
+      prepareContext: async () => undefined,
+      execute: (handle) => this.options.provider.execute(handle, input.command),
+      completion: "completed",
+      baseRef: input.baseRef,
+    }, {
+      boundary: "contract-fixture-only",
+      runningStage: "sandbox_fixture_running",
+      failedStage: "sandbox_fixture_failed",
+      completedStage: "sandbox_fixture_completed",
+      completedMetadataKey: "sandboxFixtureCompleted",
+    });
+    return {
+      runId: result.runId,
+      workspaceId: result.workspaceId,
+      fencingToken: result.fencingToken,
+      baseCommit: result.baseCommit,
+      branchName: result.branchName,
+      command: result.execution,
+      exports: result.exports,
+      artifacts: result.artifacts,
+    };
+  }
+
+  /**
+   * Runs one host-allowlisted workload through the same fenced M4 boundary.
+   * This is an in-process composition seam, not an HTTP/MCP or arbitrary exec
+   * contract. Its hooks must be closed over reviewed host configuration only.
+   */
+  async runWorkload(input: WriterSandboxWorkloadInput): Promise<WriterSandboxWorkloadResult> {
+    return this.runInternalWorkload(input, {
+      boundary: "trusted-internal-workload",
+      runningStage: "writer_workload_running",
+      failedStage: "writer_workload_failed",
+      completedStage: "writer_workload_completed",
+      completedMetadataKey: "writerWorkloadCompleted",
+    });
+  }
+
+  /**
+   * Re-opens the control-plane-owned governed exports without exposing their
+   * host paths to the runtime coordinator. Used immediately before a bound
+   * approval and during restart reconciliation.
+   */
+  verifyGovernedArtifacts(
+    runId: string,
+    expected: readonly Readonly<GovernedArtifactVerificationEntry>[],
+  ): WriterSandboxValidatedExport[] {
+    return verifyGovernedArtifactExports(expected, {
+      artifactRoot: this.options.artifactRoot,
+      runId,
+    });
+  }
+
+  /** Returns only approval-bound UTF-8 bytes, never a host filesystem path. */
+  readGovernedArtifact(
+    runId: string,
+    expected: Readonly<GovernedArtifactVerificationEntry>,
+  ) {
+    return readGovernedArtifactExport(expected, {
+      artifactRoot: this.options.artifactRoot,
+      runId,
+    });
+  }
+
+  private async runInternalWorkload(
+    input: WriterSandboxWorkloadInput,
+    lifecycle: WriterSandboxLifecycleLabels,
+  ): Promise<WriterSandboxWorkloadResult> {
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(input.allowedWorkflow)) {
+      throw new Error("Writer sandbox workload allowlist entry is invalid");
+    }
+    if (input.run.workflow !== input.allowedWorkflow) {
+      throw new Error("Writer sandbox boundary rejected a run outside the exact workload allowlist");
+    }
+    if (input.run.status !== "queued") throw new Error("Writer sandbox workload run must be queued");
     if (input.run.projectId !== input.project.id) throw new Error("Writer sandbox project/run ownership mismatch");
     const persistedRun = await this.options.store.getRun(input.run.id);
     if (!persistedRun || persistedRun.workspaceId) throw new Error("Writer sandbox run must be persisted without a workspace");
     if (
       persistedRun.status !== "queued"
-      || persistedRun.workflow !== "sandbox-fixture"
+      || persistedRun.workflow !== input.allowedWorkflow
       || persistedRun.projectId !== input.project.id
       || persistedRun.rootRuntime !== input.run.rootRuntime
     ) {
-      throw new Error("Persisted writer sandbox run does not match the queued fixture contract");
+      throw new Error("Persisted writer sandbox run does not match the queued workload contract");
     }
     const preflight = await this.options.provider.preflight();
     if (!preflight.enabled || !preflight.available) {
@@ -317,28 +477,21 @@ export class WriterSandboxBoundary {
       });
       const lease = prepared.persistedLease;
       const sandboxContract = this.options.provider.contract();
-      const sandboxCreatedAt = this.clock().toISOString();
-      const contextContentHash = checksumContextDirectory(input.contextPath);
-      await this.options.store.createSandboxInstance({
+      const binding: Readonly<WriterSandboxWorkloadBinding> = Object.freeze({
         runId: input.run.id,
+        projectId: input.project.id,
+        workflow: input.allowedWorkflow,
         workspaceId: prepared.workspaceId,
         leaseOwnerId: lease.ownerId,
         fencingToken: lease.fencingToken,
-        provider: sandboxContract.provider,
-        imageRef: sandboxContract.imageRef,
-        policyHash: sandboxContract.policyHash,
-        workspaceDigest: sha(realpathSync(prepared.runRoot)),
-        contextDigest: sha(realpathSync(input.contextPath)),
-        contextContentHash,
-        workdirDigest: sha("worktree"),
-        createdAt: sandboxCreatedAt,
-        updatedAt: sandboxCreatedAt,
+        baseCommit: prepared.baseCommit,
+        branchName: prepared.branchName,
+        workspaceProvider: prepared.workspace.provider,
+        sandboxContract: Object.freeze({ ...sandboxContract }),
       });
-      sandboxInstanceCreated = true;
-      // Supervision begins at the durable lease boundary, before any other
-      // storage or provider operation. Provider startup is bounded but may be
-      // slower than the lease TTL; a late handle is checked against this same
-      // original fence before it can ever execute a writer command.
+      // Supervision begins as soon as the durable lease and immutable provider
+      // policy are available. Context preparation is therefore fenced too; a
+      // slow hook cannot silently outlive its writer ownership.
       supervisor = new WriterLeaseSupervisor({
         store: this.options.store,
         lease,
@@ -358,13 +511,38 @@ export class WriterSandboxBoundary {
       await supervisor.pulse();
       supervisor.assertHealthy();
       assertArtifactRootDisjoint(this.options.artifactRoot, prepared.runRoot, input.contextPath);
+      // The trusted hook receives ownership/policy facts but no host paths. Its
+      // caller owns the fixed context root and may bind a launch manifest to the
+      // real workspace/fence only at this point in the lifecycle.
+      await input.prepareContext(binding);
+      await supervisor.pulse();
+      supervisor.assertHealthy();
+      assertArtifactRootDisjoint(this.options.artifactRoot, prepared.runRoot, input.contextPath);
+      const sandboxCreatedAt = this.clock().toISOString();
+      const contextContentHash = checksumContextDirectory(input.contextPath);
+      await this.options.store.createSandboxInstance({
+        runId: input.run.id,
+        workspaceId: prepared.workspaceId,
+        leaseOwnerId: lease.ownerId,
+        fencingToken: lease.fencingToken,
+        provider: sandboxContract.provider,
+        imageRef: sandboxContract.imageRef,
+        policyHash: sandboxContract.policyHash,
+        workspaceDigest: sha(realpathSync(prepared.runRoot)),
+        contextDigest: sha(realpathSync(input.contextPath)),
+        contextContentHash,
+        workdirDigest: sha("worktree"),
+        createdAt: sandboxCreatedAt,
+        updatedAt: sandboxCreatedAt,
+      });
+      sandboxInstanceCreated = true;
       await this.options.store.updateRun(input.run.id, {
         status: "running",
         stage: "sandbox_starting",
         startedAt: this.clock().toISOString(),
         metadata: {
           ...persistedRun.metadata,
-          sandboxBoundary: "contract-fixture-only",
+          sandboxBoundary: lifecycle.boundary,
           sandboxLiveVerified: false,
           workspaceProvider: prepared.workspace.provider,
           workspaceBaseCommit: prepared.baseCommit,
@@ -392,9 +570,9 @@ export class WriterSandboxBoundary {
       // still provable, while never releasing or mutating a successor fence.
       await supervisor.pulse();
       supervisor.assertHealthy();
-      await this.options.store.updateRun(input.run.id, { stage: "sandbox_fixture_running" });
+      await this.options.store.updateRun(input.run.id, { stage: lifecycle.runningStage });
 
-      const command = await this.options.provider.execute(handle, input.command);
+      const execution = await input.execute(handle, binding);
       await supervisor.pulse();
       supervisor.assertHealthy();
       if (checksumContextDirectory(input.contextPath) !== contextContentHash) {
@@ -415,6 +593,23 @@ export class WriterSandboxBoundary {
         artifactRoot: this.options.artifactRoot,
         runId: input.run.id,
       });
+      if (input.validateExports) {
+        const validationView = Object.freeze(exports.map((item) => Object.freeze({
+          relativePath: item.sourceRelativePath,
+          kind: item.kind,
+          mediaType: item.mediaType,
+          checksum: item.checksum,
+          sizeBytes: item.sizeBytes,
+        })));
+        try {
+          await input.validateExports(validationView);
+        } catch {
+          // A stopped workspace differing from the bytes accepted during native
+          // execution is an integrity event. Preserve its exact lease/worktree
+          // under quarantine; never persist or approve the divergent exports.
+          throw new WriterSandboxQuarantinedError("export_validation_failed");
+        }
+      }
       const createdAt = lease.acquiredAt;
       const artifacts: Artifact[] = exports.map((item) => ({
         id: `artifact_sandbox_${sha(`${input.run.id}\0${item.sourceRelativePath}\0${item.checksum}`).slice(0, 32)}`,
@@ -443,30 +638,51 @@ export class WriterSandboxBoundary {
       cleanupFreezePersisted = false;
       await this.transitionSandbox(lease, "exporting", "cleaned");
 
-      const completedAt = this.clock().toISOString();
       const refreshed = await this.options.store.getRun(input.run.id) ?? input.run;
-      await this.options.store.updateRun(input.run.id, {
-        status: "completed",
-        stage: "sandbox_fixture_completed",
-        completedAt,
-        nextActionAt: null,
-        metadata: {
-          ...refreshed.metadata,
-          sandboxFixtureCompleted: true,
-          artifactCount: artifacts.length,
-          containerCleaned: true,
-          writerWorkspaceRemoved: true,
-        },
-      });
+      const successMetadata = lifecycle.boundary === "contract-fixture-only"
+        ? {
+            ...refreshed.metadata,
+            sandboxFixtureCompleted: true,
+            artifactCount: artifacts.length,
+            containerCleaned: true,
+            writerWorkspaceRemoved: true,
+          }
+        : {
+            ...refreshed.metadata,
+            [lifecycle.completedMetadataKey]: input.completion === "completed",
+            sandboxEvidenceReady: input.completion === "evidence_ready",
+            artifactCount: artifacts.length,
+            containerCleaned: true,
+            writerWorkspaceRemoved: true,
+            writerLeaseReleased: true,
+          };
+      if (input.completion === "evidence_ready") {
+        await this.options.store.updateRun(input.run.id, {
+          status: "running",
+          stage: "evidence_ready",
+          completedAt: null,
+          nextActionAt: null,
+          metadata: successMetadata,
+        });
+      } else {
+        await this.options.store.updateRun(input.run.id, {
+          status: "completed",
+          stage: lifecycle.completedStage,
+          completedAt: this.clock().toISOString(),
+          nextActionAt: null,
+          metadata: successMetadata,
+        });
+      }
       return {
         runId: input.run.id,
         workspaceId: prepared.workspaceId,
         fencingToken: lease.fencingToken,
         baseCommit: prepared.baseCommit,
         branchName: prepared.branchName,
-        command,
+        execution,
         exports,
         artifacts,
+        completion: input.completion,
       };
     } catch (error) {
       if (supervisor) await supervisor.stop().catch(() => undefined);
@@ -542,7 +758,7 @@ export class WriterSandboxBoundary {
       if (current && !["completed", "failed", "cancelled"].includes(current.status)) {
         await this.options.store.updateRun(input.run.id, {
           status: "failed",
-          stage: quarantinePersisted ? "workspace_quarantined" : "sandbox_fixture_failed",
+          stage: quarantinePersisted ? "workspace_quarantined" : lifecycle.failedStage,
           completedAt: this.clock().toISOString(),
           nextActionAt: null,
           metadata: {

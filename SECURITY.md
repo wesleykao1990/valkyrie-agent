@@ -18,7 +18,7 @@ confidential repository or give it production credentials.
 - Proposal, exact promotion preview, canonical promotion, PR, merge, deploy, and
   secret expansion remain separate final actions.
 
-## Two execution postures
+## Three execution postures
 
 The default `npm start` posture binds loopback, uses SQLite, and registers only
 deterministic mock runtimes. It needs no credential or external service.
@@ -37,6 +37,16 @@ these disabled-by-default native adapters:
   MCP, tools, hooks/browser, slash commands, and session persistence disabled.
   It accepts only an explicitly forwarded `ANTHROPIC_API_KEY`; OAuth/keychain state
   is deliberately ignored.
+
+The separate M5a posture uses normal `npm start` with
+`ATOMIC_FIXTURE_PILOT_ENABLED=true`, bearer auth, exact absolute fixture/engine/
+state paths, and an already-present immutable runner digest. It does not enable a
+general writer. It accepts one literal project/task/objective/workflow contract
+and runs real Atomic 0.9.12 inside the M4 OCI boundary with network `none` and no
+provider credential. Atomic's reviewed workflow uses only deterministic tool
+stages. Its "fresh verifier" is a separate deterministic process, not a model.
+The only final approval effect is a safe mock receipt, and generated memory stays
+proposed.
 
 Codex/Claude connectivity objectives must exactly match
 `Return exactly MARKER and nothing else.` where `MARKER` is 3–64 uppercase ASCII
@@ -90,8 +100,12 @@ rate/abuse limits, and an audited approval principal.
 `npm run setup:hermes` creates an empty dedicated profile without cloning the
 default profile. It disables Hermes built-in CLI toolsets and built-in/user-profile
 memory, then registers a restricted MCP wrapper. The wrapper's server-side allow-list excludes runtime
-steering/comparison, approval resolution, demo reset, and canonical-memory
-promotion. Disallowed/unknown MCP tool calls fail closed.
+steering/comparison, general approval resolution, demo reset, and canonical-memory
+promotion. Its narrow Atomic fixture approval tool can resolve only the fixed,
+evidence-bound disposable pilot gate. The matching artifact-read tool returns
+only pending-gate evidence after no-follow, size, checksum, secret-scan, and fatal
+UTF-8 checks; success and error responses never include host paths.
+Disallowed/unknown MCP tool calls fail closed.
 
 Inference credentials must be configured inside the isolated profile. Reusing an
 older cloned profile can carry unrelated MCP servers, settings, skills, or `.env`
@@ -107,6 +121,9 @@ runtime-specific variables:
 
 - Atomic offline discovery receives its isolated Atomic directories and offline
   flag; configured provider-secret allow-lists are not inherited for discovery.
+- The Atomic fixture runner receives fixed control-plane IDs/contracts and staged
+  accepted context only. It runs offline with no forwarded provider secret or
+  host authentication state.
 - Codex uses its installed CLI authentication state; the pilot does not require a
   new provider key in repository configuration.
 - Claude receives `ANTHROPIC_API_KEY` only when the server has both the value and
@@ -140,10 +157,10 @@ prompt-injected claims before approval.
 
 ## Workspaces are not sandboxes
 
-A directory/Git worktree and writer lease provide concurrency isolation only.
+A directory/Git worktree and writer lease by themselves provide concurrency isolation only.
 They do not block network access, credential access, process escape, symlink
-tricks, or writes outside the worktree. The native pilot therefore has no writer
-mode and no implementation/PR action.
+tricks, or writes outside the worktree. The M3 native connectivity pilot therefore
+has no writer mode and no implementation/PR action.
 
 Milestone 4 adds a separate, disabled Docker-compatible boundary for a disposable
 fixture. It never mounts the developer checkout: an exact clean base commit is
@@ -169,13 +186,40 @@ scan blocks high-confidence private-key/provider/token patterns before atomic
 artifact registration or display; findings retain rule IDs/fingerprints, never
 matched values. This scanner is not proof that arbitrary data contains no secret.
 
-Fake-engine tests prove orchestration, not isolation. The separate opt-in smoke
-passed locally against Colima/Docker and an immutable ARM64 Alpine fixture while
-the boundary remains unregistered as a runtime, HTTP route, or MCP tool. Atomic,
-Codex, and Claude Code remain read-only. A container also remains weaker than a
+Fake-engine tests prove orchestration, not isolation. The separate M4 opt-in smoke
+passed locally against Colima/Docker and an immutable ARM64 Alpine fixture. M5a
+composes that boundary only through a fixture-specific coordinator and narrow MCP
+contract; Hermes never receives raw engine, Git, command, or path controls. Direct
+Codex and Claude Code remain read-only. A container also remains weaker than a
 reviewed remote micro-VM for confidential or hostile multi-tenant work.
 
-Before any real writing runtime:
+For M5a the entire Atomic process runs inside the container. The runner is built
+from immutable Node inputs, a checksum-verified Git 2.50.1 source tarball, and a
+committed npm lock for Atomic 0.9.12. It receives a staged, bounded copy of the
+reviewed package workflow and accepted context, not host Atomic/Codex/Claude homes,
+keychain/browser state, Docker socket, SSH agent, cloud configuration, or provider
+secret. Post-workflow export is frozen under the exact fence and revalidated
+against the native evidence snapshot before persistence. The nine artifact paths,
+types, and bounds are fixed.
+
+The fixed M5a process uses Atomic's native `--approve` project/tool trust only
+inside that credential-free, network-none container. It does not approve the
+control-plane final action: that remains a separate, operator-intended,
+evidence-bound gate. M5a authenticates the bearer and exact transition but does
+not attest that a human person is present; the live smoke resolves it
+automatically after assertions. Do not carry blanket native trust into M5b;
+model-backed execution needs authenticated actor provenance plus a reviewed
+permission/HIL policy. M5a also assumes one active control-plane pilot coordinator
+process. PostgreSQL admission is cross-process, but cancellation ownership is not.
+
+Approval is requested only after Atomic/container stop, artifact registration,
+worktree removal, and lease release. Migration 006 binds it to run, project,
+workflow, evidence digest, policy hash, and expiry. Approve cannot resurrect the
+writer; it records `externalActionPerformed=false`. Deny/request-changes terminalize
+the cleaned candidate. Approval expiry fails closed. `crossProcessResume=false`:
+an active process is never claimed resumable after control-plane restart.
+
+Before any model-backed or general-repository writing runtime:
 
 1. enforce reviewed model egress policy rather than changing the default
    no-network posture;
@@ -203,6 +247,10 @@ Before any real writing runtime:
   sandbox-instance lifecycle, immutable engine/image/policy evidence, bounded
   cleanup attempts, and quarantine state. Older binaries reject the v5 ledger;
   rollback requires a pre-v5 backup rather than a destructive down migration.
+  Migration 006 adds all-or-none project/workflow/evidence-digest/policy-hash/
+  expiry fields for the M5a final gate plus an expiry index. Older binaries reject
+  the v6 ledger; rollback requires a verified pre-v6 backup or separate compatible
+  database. There is no destructive down migration.
 - A fence protects database state, not raw filesystem writes. Terminating and
   inspecting the exact labeled container remains mandatory before release/reuse.
 - Idempotency/outbox/events may retain objectives, native output, approval effects,
@@ -220,11 +268,12 @@ runs with host-process authority. The imported Atomic Workflow Architect subtree
 is visible in this public repository but retains its own `UNLICENSED`, private-use,
 all-rights-reserved notice. Root MIT licensing does not override it.
 
-`setup:atomic` pins `@bastani/atomic` at the top level, but installs into ignored
-runtime state without a committed lockfile for its transitive graph. Reproduce,
-review, and lock that graph before treating the install as a production supply-
-chain boundary. Crash/SIGKILL and descendant-process cleanup also remain outside
-the host-process pilot's guarantees; the container/VM milestone must own them.
+`setup:atomic` pins `@bastani/atomic` at the top level for the M3 host connectivity
+probe, but installs into ignored runtime state without a committed lockfile for
+its transitive graph. Do not reuse that install as the M5 writer. The M5a runner
+has its own committed lock and immutable/checksummed build inputs, but that review
+establishes only the fixed tool-only fixture path. It does not validate a provider,
+model, general workflow, native HIL, or durable DBOS/PostgreSQL resume.
 
 Wesley explicitly chose public repository visibility on 2026-08-11. Never commit a
 secret, private project context, raw provider transcript, or confidential

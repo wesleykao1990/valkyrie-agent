@@ -11,26 +11,36 @@ This is the user guide for
 
 ## What PR #1 can do
 
-There are two deliberately different modes.
+There are three deliberately different postures: the default mock demo, the M3
+read-only native connectivity pilot, and the separately configured M5a Atomic
+fixture writer. The two opt-in postures are summarized in the right column.
 
 | Area | Default demo | Authenticated native pilot |
 |---|---|---|
 | Storage | Automatic local SQLite; PostgreSQL is an opt-in, contract-tested adapter | Automatic local SQLite |
-| Atomic | Deterministic mock lifecycle | Real Atomic 0.9.12 LF-JSONL process, but **offline package/workflow discovery only**; no model call |
+| Atomic | Deterministic mock lifecycle | Real Atomic 0.9.12 connectivity discovery plus a separate, default-off `atomic-fixture-pilot` that runs one credential-free tool-only workflow inside the OCI writer; no model call |
 | Codex | Deterministic mock lifecycle | Real authenticated Codex CLI model call in `read-only`/ephemeral mode |
 | Claude Code | Deterministic mock lifecycle | Optional real `--bare` model call using an explicitly allow-listed `ANTHROPIC_API_KEY`; OAuth/keychain state is ignored |
 | Hermes | Local MCP bridge | Isolated Hermes profile, authenticated stdio MCP, and a restricted tool list |
 | Project Brain | Read accepted local Markdown; propose/review/reject/promote separately | Search, proposal, exact promotion preview, and rejection; pilot MCP cannot promote |
 | Events/evidence | Real run records around simulated stages | Raw native JSONL plus normalized events, native IDs, checksummed context/run-contract/result artifacts |
-| Writer isolation | Disabled; simulated directories/worktrees remain concurrency aids only | A real Docker-compatible boundary, fenced leases, strict private Git worktrees, and secret-scanned artifact export are contract-tested and live-verified locally, but **not connected to model runtimes** |
+| Writer isolation | Disabled; simulated directories/worktrees remain concurrency aids only | A real Docker-compatible boundary, fenced leases, strict private Git worktrees, and secret-scanned artifact export; only the literal Atomic fixture workflow is composed into it |
 
-The native pilot is a connectivity slice, not a coding pipeline. It cannot edit a
-repository, run Atomic's model workflow, create a PR, merge, deploy, call Linear,
-or use OpenViking. The Milestone 4 writer boundary now exists as an internal,
-disabled provider contract, and its local Colima/Docker live smoke and restart
-contracts pass. No model runtime is connected to it. All native final actions remain
-fixed to `analysis_only`. A successful pilot run is connectivity evidence, not
-implementation acceptance.
+The normal native pilot is still a connectivity slice, not a coding pipeline. A
+second, explicitly configured Milestone 5a path may edit only the disposable
+fixture created by this repository. It starts a real Atomic 0.9.12 main session
+inside the Milestone 4 container, dispatches Atomic's reviewed tool-only workflow,
+runs deterministic checks plus a fresh deterministic verifier, freezes and
+checksums nine governed artifacts, cleans the container/worktree/lease, then asks
+for one evidence-bound human acceptance. Approval records a safe mock receipt;
+the memory remains only a proposal.
+
+This does **not** establish Atomic model execution or a model-based independent
+reviewer. It supplies no provider credential, performs no real GitHub/PR, merge,
+deployment, Linear, OpenViking, destructive database, or canonical-memory action,
+and advertises no cross-process Atomic durability. The complete model-backed
+Milestone 5 remains pending a scoped inference proxy or reviewed local-model
+boundary.
 
 ## Requirements
 
@@ -41,9 +51,14 @@ implementation acceptance.
   `0.147.0-alpha.6.5` with working `codex login status`, and optionally Claude
   Code `2.1.81` plus an Anthropic API key.
 - Hermes CLI for the Hermes walkthrough (this pilot was exercised with `0.19.0`).
-- Optional Milestone 4 live test: a Docker-compatible CLI/daemon reachable through
+- Optional Milestone 4 live test and required Milestone 5a fixture test: a
+  Docker-compatible CLI/daemon reachable through
   its default local socket or one explicitly configured local `unix:///` socket,
   plus an already-present, reviewed image referenced by immutable SHA-256 digest.
+  The fixture runner build uses Docker/BuildKit, a loopback registry for a local
+  repository digest, and roughly 2–5 GiB of temporary image/build-cache space.
+  The recorded local build target is Linux/ARM64; another architecture needs its
+  own build, immutable digest, and live contract evidence.
 
 The pilot fails closed when an installed runtime version differs from its pinned
 contract. Do not change an expected-version setting merely to bypass that check;
@@ -176,10 +191,15 @@ Propose (but do not promote) a memory that this Hermes MCP connectivity test pas
 Start a Codex runtime-connectivity run for Ovalo that returns VALKYRIE_HERMES_CODEX_OK, then inspect its evidence.
 ```
 
-The pilot MCP allow-list omits approval resolution, steering, comparison, demo
-reset, and canonical-memory promotion. Hermes can preview a proposed promotion but
-cannot perform it. See [the Hermes guide](docs/HERMES_MCP_SETUP.md) for exact tool
-names and troubleshooting.
+The pilot MCP allow-list omits general approval resolution, steering, comparison,
+demo reset, and canonical-memory promotion. It includes one narrow
+`atomic_fixture_approval_resolve` mutation, which can act only on the cleaned,
+evidence-bound disposable fixture gate and can record only the safe mock receipt.
+Before resolving it, `atomic_fixture_artifact_read` lets Hermes read bounded,
+checksum-verified patch/check/verifier/evidence text without learning host paths.
+Hermes can preview a proposed promotion but cannot perform it. See
+[the Hermes guide](docs/HERMES_MCP_SETUP.md) for exact tool names and
+troubleshooting.
 
 This setup was live-tested with Hermes `0.19.0` using
 `gpt-5.6-sol`/`openai-codex`: the model called runtime status and Project Brain
@@ -195,9 +215,11 @@ authenticated channel and is not enabled in PR #1.
 ## Test the Milestone 4 writer boundary
 
 Milestone 4 adds a real but disabled Docker-compatible provider and an internal
-fixture coordinator. It does **not** make Atomic, Codex, or Claude Code a writer.
-The deterministic suite proves exact orchestration and failure handling; only an
-opt-in test against a real engine can provide isolation evidence.
+fixture coordinator. By itself it does **not** make Atomic, Codex, or Claude Code
+a writer. M5a separately composes only its fixed Atomic fixture path; direct Codex
+and Claude Code remain read-only. The deterministic suite proves exact
+orchestration and failure handling; only an opt-in test against a real engine can
+provide isolation evidence.
 
 Run the safe default first:
 
@@ -294,6 +316,152 @@ verification cannot accidentally contact a real engine. See
 [the Milestone 4 plan](docs/IMPLEMENTATION_PLAN_M4.md) and
 [proposed ADR-P004](docs/adr/ADR-P004-external-writer-boundary.md).
 
+## Test the Milestone 5a Atomic fixture slice
+
+This opt-in proof is deliberately narrower than a general coding agent. The only
+accepted contract is project `atomic-pilot`, task `task_atomic_fixture_m5`,
+runtime `atomic`, workflow `atomic-fixture-pilot`, and objective:
+
+```text
+Implement normalizeProjectSlug in the disposable Atomic pilot fixture and stop after verified evidence for control-plane approval.
+```
+
+Hermes/MCP cannot choose a repository, command, image, credential, workflow
+source, or arbitrary prompt. The workflow is tool-only and network-disabled. Its
+"fresh verifier" is a separate deterministic process over the frozen contract,
+candidate, fixed tests, and check evidence; it is not an LLM reviewer.
+
+### 1. Build and pin the local runner
+
+The runner Dockerfile pins Node, Atomic `0.9.12`, and Git `2.50.1` (Git 2.48 or
+newer is required to read the host-created relative-worktree metadata). It builds
+Git from the verified kernel.org source digest. A local registry is used so the
+engine can address the result by immutable repository digest:
+
+```bash
+docker run --detach --name valkyrie-m5-registry \
+  --publish 127.0.0.1:5000:5000 \
+  registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+
+docker build --platform linux/arm64 \
+  --tag localhost:5000/valkyrie-atomic-runner:0.9.12-m5a \
+  docker/atomic-runner
+docker push localhost:5000/valkyrie-atomic-runner:0.9.12-m5a
+
+docker image inspect \
+  --format '{{index .RepoDigests 0}}' \
+  localhost:5000/valkyrie-atomic-runner:0.9.12-m5a
+```
+
+Keep the printed `localhost:5000/...@sha256:...` value. Do not substitute the
+mutable tag in `ATOMIC_FIXTURE_PILOT_IMAGE`. On an existing setup, start or inspect
+the already-created registry instead of creating another container with the same
+name. The provider uses `--pull never`; building/pushing is an explicit operator
+step, never a control-plane side effect.
+
+### 2. Create ignored local state and start the server
+
+```bash
+npm ci
+npm run setup:pilot
+install -d -m 700 \
+  "$PWD/data/fixture-repositories" \
+  "$PWD/data/atomic-fixture-pilot/runtime"
+npm run setup:atomic-fixture -- \
+  "$PWD/data/fixture-repositories/atomic-m5"
+
+export VALKYRIE_ATOMIC_RUNNER_IMAGE="$(docker image inspect \
+  --format '{{index .RepoDigests 0}}' \
+  localhost:5000/valkyrie-atomic-runner:0.9.12-m5a)"
+
+env \
+  CONTROL_PLANE_AUTH_TOKEN_FILE="$PWD/data/auth/control-plane.token" \
+  DATA_DIR="$PWD/data/atomic-fixture-pilot/control-plane" \
+  PROJECT_BRAIN_DIR="$PWD/project-brain" \
+  ENABLE_DEMO_RESET=false \
+  ATOMIC_FIXTURE_PILOT_ENABLED=true \
+  ATOMIC_FIXTURE_PILOT_REPOSITORY="$PWD/data/fixture-repositories/atomic-m5" \
+  ATOMIC_FIXTURE_PILOT_ENGINE=/opt/homebrew/bin/docker \
+  ATOMIC_FIXTURE_PILOT_ENGINE_SOCKET="unix://$HOME/.colima/default/docker.sock" \
+  ATOMIC_FIXTURE_PILOT_IMAGE="$VALKYRIE_ATOMIC_RUNNER_IMAGE" \
+  ATOMIC_FIXTURE_PILOT_ROOT="$PWD/data/atomic-fixture-pilot/runtime" \
+  ATOMIC_FIXTURE_PILOT_MAX_COST_USD=1 \
+  npm start
+```
+
+Use the absolute engine path/socket for your own Docker-compatible installation.
+The repository and pilot root must also be absolute and engine-visible. The flag
+fails closed without bearer auth, those paths, and an immutable image digest.
+
+### 3. Exercise authenticated MCP, evidence, cleanup, and approval
+
+From a second terminal:
+
+```bash
+env \
+  CONTROL_PLANE_API=http://127.0.0.1:8787 \
+  CONTROL_PLANE_AUTH_TOKEN_FILE="$PWD/data/auth/control-plane.token" \
+  npm run smoke:atomic-fixture
+```
+
+The smoke exposes exactly six MCP tools (seven only when optional memory rejection
+is requested), replays the start idempotently, waits for the cleaned
+`awaiting_approval` gate, verifies raw/normalized Atomic records,
+checks all nine frozen artifact references and reads four bounded artifact bodies
+back through MCP, verifies their approval digest, and verifies the
+persisted owned-cleanup proof for container/worktree/lease. It approves only the
+safe mock receipt and leaves the generated memory proposal in `proposed`. Set
+`VALKYRIE_ATOMIC_FIXTURE_SMOKE_REJECT_MEMORY=true` only if you explicitly want the
+smoke to reject that proposal afterward.
+
+The server never auto-approves the control-plane final-action gate. The fixed M5a
+workflow does launch Atomic with native project/tool trust pre-approved inside its
+credential-free, network-none container; that narrowly reviewed internal trust is
+not permission for the final action and must not be reused for M5b. Running this
+opt-in smoke explicitly authorizes the test client to invoke `approve` after all
+local assertions pass;
+normal Hermes/manual use can stop at `awaiting_approval`, inspect the evidence,
+and choose approve, deny, or request changes through the narrow tool.
+The smoke therefore proves the evidence-bound approval transition, not that a
+person independently reviewed the evidence. A full model-backed pilot must stop
+for real human review and record authenticated actor provenance.
+
+No Atomic provider/model is contacted. No model token use or cost is claimed, and no real PR,
+merge, deployment, external database mutation, credential expansion, or memory
+promotion can result. `crossProcessResume` stays false; active work fails and is
+cleaned or quarantined after restart, while already-cleaned evidence may be
+recovered for its still-valid approval.
+
+M5a supports one active control-plane pilot coordinator process. PostgreSQL makes
+admission transactional across processes, but cancellation and native ownership
+handoff are intentionally not horizontally coordinated while
+`crossProcessResume=false`.
+
+Disable the slice by stopping the server and leaving
+`ATOMIC_FIXTURE_PILOT_ENABLED` unset/false. Migration 006 only adds complete
+evidence/policy/expiry bindings to approvals. It is checksummed and forward-only;
+there is no destructive down migration. An older binary must use a verified
+pre-v6 backup or separate compatible database, not the migrated ledger.
+
+SQLite applies migration 006 automatically on the next start. For an explicitly
+selected PostgreSQL development database, back it up first and run:
+
+```bash
+CONTROL_PLANE_STORE=postgres \
+  DATABASE_URL='postgresql://user:password@127.0.0.1:5432/control_plane' \
+  npm run migrate
+```
+
+Supply the URL through your secret manager rather than committing it or relying
+on the illustrative value above. Disabling the feature does not require deleting
+its ignored data, image, registry, or proposal; retain them until evidence review
+and cleanup are complete.
+
+See [the M5 plan](docs/IMPLEMENTATION_PLAN_M5.md) and
+[proposed ADR-P005](docs/adr/ADR-P005-atomic-writer-pilot.md). The exact live
+runner digest and run evidence belong in [the verification record](docs/VERIFICATION.md),
+not in reusable setup instructions.
+
 ## Loopback and the “invisible” database
 
 `127.0.0.1` and `::1` are loopback addresses. A listener on loopback accepts
@@ -380,6 +548,13 @@ command. Important settings are:
 | `ATOMIC_ADAPTER`, `CODEX_ADAPTER`, `CLAUDE_ADAPTER` | `mock` | Each must be explicitly set to `native` for the pilot. |
 | `*_EXPECTED_VERSION` | pinned versions above | Exact runtime contract; mismatch is unavailable. |
 | `CLAUDE_RUNTIME_ENV_ALLOWLIST` | empty | Must contain `ANTHROPIC_API_KEY` for a live Claude probe. |
+| `ATOMIC_FIXTURE_PILOT_ENABLED` | `false` | Enables only the fixed credential-free M5a fixture coordinator; requires bearer auth plus the repository, engine, image, and absolute root settings below. |
+| `ATOMIC_FIXTURE_PILOT_REPOSITORY` | unset | Absolute disposable fixture repository created by `setup:atomic-fixture`. |
+| `ATOMIC_FIXTURE_PILOT_ENGINE` / `_ENGINE_SOCKET` | unset | Absolute Docker-compatible CLI and optional local `unix:///` socket; never exposed through MCP. |
+| `ATOMIC_FIXTURE_PILOT_IMAGE` | unset | Already-present runner repository digest (`name@sha256:...`); mutable tags fail. |
+| `ATOMIC_FIXTURE_PILOT_ROOT` | `./data/atomic-fixture-pilot` while disabled | Explicit absolute, private, engine-visible state root when enabled. |
+| `ATOMIC_FIXTURE_PILOT_USER` | derived non-root owner | Optional reviewed numeric `uid:gid` override. |
+| `ATOMIC_FIXTURE_PILOT_MAX_COST_USD` | `1` | Admission cap (maximum `5`); the credential-free workflow must report zero model cost. |
 | `CONTROL_PLANE_STORE` | `sqlite` | Select `postgres` only for storage development. |
 | `REPOSITORY_PATH_<PROJECT>` | unset | Creates a real branch/worktree even for a mock; use only a disposable repo. |
 
@@ -405,6 +580,7 @@ npm run verify:atomic
 npm run smoke:http
 npm run smoke:mcp
 npm run smoke:native   # opt-in; requires the running authenticated pilot
+npm run smoke:atomic-fixture  # opt-in; requires the separate M5a server/runner
 ```
 
 ## Troubleshooting
@@ -423,6 +599,12 @@ npm run smoke:native   # opt-in; requires the running authenticated pilot
   `hermes profile delete valkyrieeval` and repeat `npm run setup:hermes`.
 - MCP output contains non-JSON: configure `bin/project-os-pilot-mcp`, not plain
   `npm run mcp`, so npm banners cannot corrupt stdio.
+- Runner reports `unknown repository extension ... relativeworktrees`: the image
+  contains an older Git. Rebuild the pinned M5a runner; the reviewed Dockerfile
+  installs Git 2.50.1.
+- Fixture image unavailable: pass the repository digest printed after the local
+  registry push, confirm it is present in the selected daemon, and do not replace
+  it with a tag. The provider never pulls automatically.
 
 ## Architecture, storage, and license
 

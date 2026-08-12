@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { isLoopbackHost, loadControlPlaneAuth } from "./auth.ts";
 
 export interface AppConfig {
@@ -30,6 +30,18 @@ export interface AppConfig {
   claudeCommand: string;
   claudeExpectedVersion: string;
   claudeRuntimeEnvAllowlist: string[];
+  atomicFixturePilot: AtomicFixturePilotConfig;
+}
+
+export interface AtomicFixturePilotConfig {
+  enabled: boolean;
+  repositoryPath?: string;
+  engineCommand?: string;
+  engineSocket?: string;
+  image?: string;
+  root: string;
+  user?: string;
+  maxCostUsd: number;
 }
 
 export type RuntimeAdapterMode = "mock" | "native";
@@ -57,6 +69,21 @@ function envAllowlist(name: string): string[] {
   return [...new Set(names)];
 }
 
+function positiveNumber(name: string, fallback: number, maximum: number): number {
+  const value = Number(process.env[name] ?? String(fallback));
+  if (!Number.isFinite(value) || value <= 0 || value > maximum) {
+    throw new Error(`${name} must be greater than zero and at most ${maximum}`);
+  }
+  return value;
+}
+
+function optionalAbsolutePath(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  if (!value) return undefined;
+  if (!isAbsolute(value)) throw new Error(`${name} must be an absolute path`);
+  return resolve(value);
+}
+
 export function loadConfig(): AppConfig {
   const backend = (process.env.CONTROL_PLANE_STORE ?? "sqlite").trim().toLowerCase();
   if (backend !== "sqlite" && backend !== "postgres") {
@@ -67,18 +94,42 @@ export function loadConfig(): AppConfig {
     throw new Error("DATABASE_URL is required when CONTROL_PLANE_STORE=postgres");
   }
   const sqliteDemo = backend === "sqlite";
+  const enableDemoReset = sqliteDemo && booleanFlag("ENABLE_DEMO_RESET", true);
   const host = process.env.HOST?.trim() || "127.0.0.1";
   const runtimeAdapters = {
     atomic: adapterMode("ATOMIC_ADAPTER"),
     codex: adapterMode("CODEX_ADAPTER"),
     claude: adapterMode("CLAUDE_ADAPTER"),
   };
+  const atomicFixturePilotEnabled = booleanFlag("ATOMIC_FIXTURE_PILOT_ENABLED", false);
   const auth = loadControlPlaneAuth();
-  if (!auth && Object.values(runtimeAdapters).includes("native")) {
-    throw new Error("Control-plane bearer authentication is required when any native runtime adapter is enabled");
+  if (!auth && (Object.values(runtimeAdapters).includes("native") || atomicFixturePilotEnabled)) {
+    throw new Error("Control-plane bearer authentication is required when a native runtime or the Atomic fixture pilot is enabled");
   }
   if (!auth && !isLoopbackHost(host)) {
     throw new Error("Control-plane bearer authentication is required for a non-loopback HOST binding");
+  }
+
+  const atomicFixturePilot: AtomicFixturePilotConfig = {
+    enabled: atomicFixturePilotEnabled,
+    repositoryPath: optionalAbsolutePath("ATOMIC_FIXTURE_PILOT_REPOSITORY"),
+    engineCommand: optionalAbsolutePath("ATOMIC_FIXTURE_PILOT_ENGINE"),
+    engineSocket: process.env.ATOMIC_FIXTURE_PILOT_ENGINE_SOCKET?.trim() || undefined,
+    image: process.env.ATOMIC_FIXTURE_PILOT_IMAGE?.trim() || undefined,
+    root: resolve(process.env.ATOMIC_FIXTURE_PILOT_ROOT ?? "./data/atomic-fixture-pilot"),
+    user: process.env.ATOMIC_FIXTURE_PILOT_USER?.trim() || undefined,
+    maxCostUsd: positiveNumber("ATOMIC_FIXTURE_PILOT_MAX_COST_USD", 1, 5),
+  };
+  if (atomicFixturePilot.enabled) {
+    if (!atomicFixturePilot.repositoryPath) throw new Error("ATOMIC_FIXTURE_PILOT_REPOSITORY is required when the Atomic fixture pilot is enabled");
+    if (!atomicFixturePilot.engineCommand) throw new Error("ATOMIC_FIXTURE_PILOT_ENGINE is required when the Atomic fixture pilot is enabled");
+    if (!atomicFixturePilot.image) throw new Error("ATOMIC_FIXTURE_PILOT_IMAGE is required when the Atomic fixture pilot is enabled");
+    if (!isAbsolute(process.env.ATOMIC_FIXTURE_PILOT_ROOT ?? "")) {
+      throw new Error("ATOMIC_FIXTURE_PILOT_ROOT must be an explicit absolute path when the pilot is enabled");
+    }
+    if (enableDemoReset) {
+      throw new Error("ENABLE_DEMO_RESET must be false when the Atomic fixture pilot is enabled");
+    }
   }
 
   return {
@@ -92,7 +143,7 @@ export function loadConfig(): AppConfig {
     databaseUrl,
     postgresAutoMigrate: booleanFlag("POSTGRES_AUTO_MIGRATE", false),
     seedDemoData: sqliteDemo && booleanFlag("SEED_DEMO_DATA", true),
-    enableDemoReset: sqliteDemo && booleanFlag("ENABLE_DEMO_RESET", true),
+    enableDemoReset,
     authToken: auth?.token,
     runtimeAdapters,
     atomicCommand: process.env.ATOMIC_COMMAND?.trim() || "atomic",
@@ -105,6 +156,7 @@ export function loadConfig(): AppConfig {
     claudeCommand: process.env.CLAUDE_COMMAND?.trim() || "claude",
     claudeExpectedVersion: process.env.CLAUDE_EXPECTED_VERSION?.trim() || "2.1.81",
     claudeRuntimeEnvAllowlist: envAllowlist("CLAUDE_RUNTIME_ENV_ALLOWLIST"),
+    atomicFixturePilot,
   };
 }
 

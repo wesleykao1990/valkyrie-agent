@@ -9,6 +9,8 @@ data/artifacts/*
 data/runtime/
 data/atomic/
 data/auth/
+data/atomic-fixture-pilot/
+data/fixture-repositories/
 .env
 .DS_Store
 

@@ -15,8 +15,11 @@ modules:
     integration_version: 0.2.1
     source_archive_sha256: 9188e5d4326092d4782795ac39a13ff28274643c67bfac0e14d2314022754178
     research_basis_atomic_version: 0.9.12
-    live_compatibility_validated: false
+    live_compatibility_validated: true
     live_enabled: false
+    tool_only_fixture_compatibility: live-verified-no-model
+    model_workflow_compatibility_validated: false
+    native_cross_process_durability_validated: false
     license: private-all-rights-reserved
 canonical_knowledge:
   architecture_review: docs/Agentic_Development_Control_Plane_Architecture_Review_v0.2.2.docx
@@ -28,7 +31,14 @@ project_brain:
   candidate_backend: openviking
   automatic_capture: false
 runtime_policy:
-  atomic_status: pilot-gated
+  atomic_status: connectivity-plus-literal-tool-only-fixture-gated
+  atomic_fixture_workflow: atomic-fixture-pilot
+  atomic_fixture_default_enabled: false
+  atomic_fixture_model_execution: false
+  atomic_fixture_network: none
+  atomic_fixture_final_action: safe-mock-receipt-only
+  atomic_fixture_memory_promotion: false
+  atomic_cross_process_resume: false
   direct_coding_agents:
     - codex
     - claude-code
@@ -47,5 +57,7 @@ milestones:
   transactional_postgres_storage: complete
   atomic_package_integration_non_live: complete
   native_connectivity_minimum: implemented-disabled-by-default
-  atomic_model_workflow: deferred-until-external-sandbox
+  atomic_model_workflow: deferred-pending-scoped-inference-boundary
   real_workspace_boundary: complete-local-live-verified-disabled-by-default
+  atomic_tool_only_fixture_slice: live-verified-disabled-by-default
+  atomic_model_backed_pilot: deferred-pending-scoped-inference-boundary

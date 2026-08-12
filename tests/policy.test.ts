@@ -94,6 +94,49 @@ test("native runtime adapters are explicit and invalid selections fail closed", 
   }
 });
 
+test("Atomic fixture pilot is default-off and fails closed without auth or exact local boundary configuration", () => {
+  const names = [
+    "ATOMIC_FIXTURE_PILOT_ENABLED",
+    "ATOMIC_FIXTURE_PILOT_REPOSITORY",
+    "ATOMIC_FIXTURE_PILOT_ENGINE",
+    "ATOMIC_FIXTURE_PILOT_IMAGE",
+    "ATOMIC_FIXTURE_PILOT_ROOT",
+    "ENABLE_DEMO_RESET",
+    "CONTROL_PLANE_AUTH_TOKEN",
+  ] as const;
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  try {
+    for (const name of names) delete process.env[name];
+    assert.equal(loadConfig().atomicFixturePilot.enabled, false);
+
+    process.env.ATOMIC_FIXTURE_PILOT_ENABLED = "true";
+    assert.throws(() => loadConfig(), /bearer authentication is required/);
+    process.env.CONTROL_PLANE_AUTH_TOKEN = "0123456789abcdefghijklmnopqrstuvwxyz-ABCDE";
+    assert.throws(() => loadConfig(), /ATOMIC_FIXTURE_PILOT_REPOSITORY is required/);
+    process.env.ATOMIC_FIXTURE_PILOT_REPOSITORY = "/tmp/fixture-repository";
+    process.env.ATOMIC_FIXTURE_PILOT_ENGINE = "/usr/local/bin/docker";
+    process.env.ATOMIC_FIXTURE_PILOT_IMAGE = `fixture.invalid/atomic@sha256:${"a".repeat(64)}`;
+    process.env.ATOMIC_FIXTURE_PILOT_ROOT = "/tmp/atomic-pilot-root";
+    assert.throws(() => loadConfig(), /ENABLE_DEMO_RESET must be false/);
+    process.env.ENABLE_DEMO_RESET = "false";
+    const configured = loadConfig().atomicFixturePilot;
+    assert.equal(configured.enabled, true);
+    assert.equal(configured.maxCostUsd, 1);
+
+    process.env.ENABLE_DEMO_RESET = "true";
+    assert.throws(() => loadConfig(), /ENABLE_DEMO_RESET must be false/);
+    process.env.ENABLE_DEMO_RESET = "false";
+    process.env.ATOMIC_FIXTURE_PILOT_ROOT = "relative/path";
+    assert.throws(() => loadConfig(), /must be an explicit absolute path/);
+  } finally {
+    for (const name of names) {
+      const value = previous[name];
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
 test("non-loopback bindings require control-plane authentication", () => {
   const names = ["HOST", "CONTROL_PLANE_AUTH_TOKEN", "CONTROL_PLANE_AUTH_TOKEN_FILE"] as const;
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));

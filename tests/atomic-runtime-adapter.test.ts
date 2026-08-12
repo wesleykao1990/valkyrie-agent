@@ -39,6 +39,7 @@ test("Atomic native adapter performs credential-free package/RPC discovery witho
   const prepared = workspaces.prepare(run.id, project);
   run.workspaceId = prepared.workspaceId;
   const created = await store.createRunBundle({ run, workspace: prepared.workspace, lease: prepared.lease });
+  assert.ok(created.lease);
   const controlDir = join(prepared.path, ".control-plane");
   mkdirSync(controlDir, { recursive: true });
   const contextBody = JSON.stringify({ runId: run.id, acceptedDecisions: [] });
@@ -65,7 +66,7 @@ test("Atomic native adapter performs credential-free package/RPC discovery witho
     assert.equal(preflight.authenticated, "unknown");
     assert.match(preflight.reason ?? "", /discovery only/);
 
-    const native = await adapter.start({
+    const runtimeContext = {
       run: created.run,
       objective: "Discover the pinned Atomic package",
       workspacePath: prepared.path,
@@ -73,8 +74,13 @@ test("Atomic native adapter performs credential-free package/RPC discovery witho
       writerLease: created.lease,
       contextPack: { path: contextPath, uri: contextPath, checksum: sha(contextBody) },
       runContract: { path: contractPath, uri: contractPath, checksum: sha(contractBody) },
-      finalAction: "analysis_only",
-    });
+      finalAction: "analysis_only" as const,
+    };
+    await assert.rejects(adapter.start({
+      ...runtimeContext,
+      writerLease: { ...created.lease, fencingToken: created.lease.fencingToken + 1 },
+    }), /exact writer lease owner and fence/);
+    const native = await adapter.start(runtimeContext);
     assert.equal(native.nativeSessionId, "fake-main-session");
     assert.equal(native.metadata?.crossProcessResume, false);
     const terminal = await store.getRun(run.id);
@@ -95,12 +101,15 @@ test("Atomic native adapter performs credential-free package/RPC discovery witho
     const launchArtifact = artifacts.find((artifact) => artifact.kind === "atomic-launch-manifest");
     assert.ok(launchArtifact);
     const launch = JSON.parse(readFileSync(launchArtifact.uri, "utf8"));
+    assert.equal(launch.schema_version, "1.1.0");
     assert.equal(launch.run_id, run.id);
     assert.equal(launch.root_runtime, "atomic");
     assert.equal(launch.workflow.name, "request-preflight");
     assert.equal(launch.crossProcessResume, false);
     assert.equal(launch.final_action, "analysis_only");
     assert.equal(launch.writer_lease.holder_run_id, run.id);
+    assert.equal(launch.writer_lease.owner_id, created.lease.ownerId);
+    assert.equal(launch.writer_lease.fencing_token, created.lease.fencingToken);
   } finally {
     if (previousAllowlist === undefined) delete process.env.ATOMIC_RUNTIME_ENV_ALLOWLIST;
     else process.env.ATOMIC_RUNTIME_ENV_ALLOWLIST = previousAllowlist;
@@ -114,4 +123,20 @@ test("Atomic native adapter performs credential-free package/RPC discovery witho
 
 test("Atomic launch-manifest validation rejects values outside the imported schema", () => {
   assert.ok(validateAtomicLaunchManifest({ root_runtime: "atomic" }, atomicPackage).some((error) => error.includes("missing run_id")));
+  const template = JSON.parse(readFileSync(join(
+    atomicPackage,
+    "skills",
+    "atomic-workflow-architect",
+    "assets",
+    "launch-manifest-template.json",
+  ), "utf8"));
+  const missingOwner = structuredClone(template);
+  delete missingOwner.writer_lease.owner_id;
+  assert.ok(validateAtomicLaunchManifest(missingOwner, atomicPackage).some((error) => error.includes("missing owner_id")));
+  const staleFence = structuredClone(template);
+  staleFence.writer_lease.fencing_token = 1.5;
+  assert.ok(validateAtomicLaunchManifest(staleFence, atomicPackage).some((error) => error.includes("expected integer")));
+  const unsafeFence = structuredClone(template);
+  unsafeFence.writer_lease.fencing_token = Number.MAX_SAFE_INTEGER + 1;
+  assert.ok(validateAtomicLaunchManifest(unsafeFence, atomicPackage).some((error) => error.includes("above maximum")));
 });

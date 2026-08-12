@@ -199,6 +199,428 @@ async function requestPendingApproval(store: ControlPlaneStore, runId: string, s
   return approval;
 }
 
+async function exerciseQueuedStartClaimContract(
+  store: ControlPlaneStore,
+  prefix: string,
+  clock: MutableStoreClock,
+): Promise<void> {
+  const startingTime = clock.current();
+  const queued = run(`${prefix}_queued_start_claim`);
+  await store.createRun(queued);
+  const firstUntil = new Date(clock.current() + 10_000).toISOString();
+  const first = await store.claimQueuedRunForStart(queued.id, `${prefix}-worker-a`, firstUntil);
+  assert.equal(first?.id, queued.id);
+  assert.equal(first?.status, "queued", "claiming must not transition the run lifecycle");
+  assert.equal(await store.claimQueuedRunForStart(
+    queued.id,
+    `${prefix}-worker-b`,
+    new Date(clock.current() + 20_000).toISOString(),
+  ), null);
+  await store.releaseRunClaim(queued.id, `${prefix}-worker-b`);
+  assert.equal(await store.claimQueuedRunForStart(
+    queued.id,
+    `${prefix}-worker-b`,
+    new Date(clock.current() + 20_000).toISOString(),
+  ), null, "a non-owner release must not clear the active claim");
+
+  clock.set(clock.current() + 10_001);
+  const second = await store.claimQueuedRunForStart(
+    queued.id,
+    `${prefix}-worker-b`,
+    new Date(clock.current() + 10_000).toISOString(),
+  );
+  assert.equal(second?.status, "queued", "an expired queued-run claim must be reclaimable");
+  await store.releaseRunClaim(queued.id, `${prefix}-worker-a`);
+  assert.equal(await store.claimQueuedRunForStart(
+    queued.id,
+    `${prefix}-worker-c`,
+    new Date(clock.current() + 10_000).toISOString(),
+  ), null, "an expired owner must not release a replacement claim");
+  await store.releaseRunClaim(queued.id, `${prefix}-worker-b`);
+  assert.equal((await store.claimQueuedRunForStart(
+    queued.id,
+    `${prefix}-worker-c`,
+    new Date(clock.current() + 10_000).toISOString(),
+  ))?.id, queued.id);
+
+  const running = run(`${prefix}_running_start_claim`, "running");
+  await store.createRun(running);
+  assert.equal(await store.claimQueuedRunForStart(
+    running.id,
+    `${prefix}-worker-a`,
+    new Date(clock.current() + 10_000).toISOString(),
+  ), null, "only the exact queued state is claimable for start");
+  await assert.rejects(store.claimQueuedRunForStart(
+    queued.id,
+    `${prefix}-worker-a`,
+    new Date(clock.current()).toISOString(),
+  ), /claim expiry must be after observed storage time/i);
+  clock.set(startingTime);
+}
+
+async function exerciseRunAdmissionContract(store: ControlPlaneStore, prefix: string): Promise<void> {
+  const workflow = `${prefix}-single-pilot`;
+  const admission = { workflow, maxNonterminal: 1 };
+  const first = { ...run(`${prefix}_admission_first`), workflow };
+  const second = { ...run(`${prefix}_admission_second`), workflow };
+  await store.createRunBundle({ run: first, admission });
+  await assert.rejects(
+    store.createRunBundle({ run: second, admission }),
+    /admission limit reached/i,
+  );
+  await assert.rejects(
+    store.createRunBundle({ run: { ...second, workflow: `${workflow}-other` }, admission }),
+    /bind the exact workflow/i,
+  );
+  await store.updateRun(first.id, {
+    status: "completed",
+    completedAt: new Date().toISOString(),
+  });
+  assert.equal((await store.createRunBundle({ run: second, admission })).run.id, second.id);
+}
+
+async function exercisePilotApprovalBindingContract(
+  store: ControlPlaneStore,
+  prefix: string,
+  clock: MutableStoreClock,
+): Promise<void> {
+  const startingTime = clock.current();
+  const evidenceDigest = "a".repeat(64);
+  const policyHash = "b".repeat(64);
+  const request = async (approval: Approval, eventSuffix: string) => store.requestApprovalTransaction({
+    approval,
+    event: {
+      id: `${prefix}_pilot_event_${eventSuffix}`,
+      runId: approval.runId,
+      type: "approval.requested",
+      message: "Bound pilot approval requested",
+      payload: { approvalId: approval.id },
+      createdAt: approval.requestedAt,
+    },
+    idempotency: {
+      scope: "approval.request",
+      key: `${prefix}-pilot-request-${eventSuffix}`,
+      requestHash: `${prefix}-pilot-request-hash-${eventSuffix}`,
+    },
+  });
+
+  const boundRun = run(`${prefix}_pilot_bound`, "running");
+  await store.createRun(boundRun);
+  const expiresAt = new Date(clock.current() + 60_000).toISOString();
+  const approval: Approval = {
+    id: `${prefix}_pilot_approval`,
+    runId: boundRun.id,
+    action: "prepare_pr",
+    exactEffect: "Prepare a safe mock draft PR only",
+    state: "pending",
+    evidence: ["deterministic checks"],
+    requestedAt: new Date(clock.current()).toISOString(),
+    projectId: boundRun.projectId,
+    workflow: boundRun.workflow,
+    evidenceDigest,
+    policyHash,
+    expiresAt,
+  };
+  const first = await request(approval, "success");
+  assert.equal(first.replayed, false);
+  assert.deepEqual({
+    projectId: first.approval.projectId,
+    workflow: first.approval.workflow,
+    evidenceDigest: first.approval.evidenceDigest,
+    policyHash: first.approval.policyHash,
+    expiresAt: first.approval.expiresAt,
+  }, { projectId: "ovalo", workflow: "test", evidenceDigest, policyHash, expiresAt });
+  const replay = await request(approval, "success");
+  assert.equal(replay.replayed, true);
+  await assert.rejects(request({ ...approval, evidenceDigest: "c".repeat(64) }, "success"),
+    /different request content/i);
+
+  const expectedBinding = {
+    action: approval.action,
+    exactEffect: approval.exactEffect,
+    projectId: "ovalo",
+    workflow: "test",
+    evidenceDigest,
+    policyHash,
+    expiresAt,
+  };
+  await assert.rejects(store.resolveApprovalTransaction({
+    approvalId: approval.id,
+    state: "approved",
+    decision: "approve",
+    resolvedBy: "wesley",
+  }), /requires its exact expected action, effect, evidence, and policy binding/i);
+  await assert.rejects(
+    store.resolveApproval(approval.id, "approved", "approve", "wesley"),
+    /requires its exact expected action, effect, evidence, and policy binding/i,
+  );
+  await assert.rejects(store.resolveApprovalTransaction({
+    approvalId: approval.id,
+    state: "approved",
+    decision: "approve",
+    resolvedBy: "wesley",
+    expectedBinding: { ...expectedBinding, action: "another_action" },
+  }), /does not match the expected evidence and policy/i);
+  await assert.rejects(store.resolveApprovalTransaction({
+    approvalId: approval.id,
+    state: "approved",
+    decision: "approve",
+    resolvedBy: "wesley",
+    expectedBinding: { ...expectedBinding, exactEffect: "A different exact effect" },
+  }), /does not match the expected evidence and policy/i);
+  await assert.rejects(store.resolveApprovalTransaction({
+    approvalId: approval.id,
+    state: "approved",
+    decision: "approve",
+    resolvedBy: "wesley",
+    expectedBinding: { ...expectedBinding, evidenceDigest: "c".repeat(64) },
+  }), /does not match the expected evidence and policy/i);
+  assert.equal((await store.getApproval(approval.id))?.state, "pending");
+
+  const resolutionInput = {
+    approvalId: approval.id,
+    state: "approved",
+    decision: "approve",
+    resolvedBy: "wesley",
+    expectedBinding,
+    runPatch: { status: "running" as const, stage: "finalize" },
+    event: {
+      id: `${prefix}_pilot_resolution_event`,
+      runId: boundRun.id,
+      type: "approval.decision_recorded",
+      message: "Bound pilot approval granted",
+      payload: { approvalId: approval.id },
+      createdAt: new Date(clock.current()).toISOString(),
+    },
+  };
+  const concurrent = await Promise.all(Array.from({ length: 4 }, () =>
+    store.resolveApprovalTransaction(resolutionInput)));
+  assert.equal(concurrent.filter((item) => !item.replayed).length, 1);
+  assert.equal(concurrent.filter((item) => item.replayed).length, 3);
+  assert.equal((await store.getApproval(approval.id))?.state, "approved");
+  const durableReplayInput = {
+    ...resolutionInput,
+    idempotency: {
+      scope: "approval.resolve",
+      key: `${prefix}-bound-resolution-replay`,
+      requestHash: `${prefix}-bound-resolution-replay-hash`,
+    },
+  };
+  assert.equal((await store.resolveApprovalTransaction(durableReplayInput)).replayed, true);
+
+  const rejectedCases: Array<{ suffix: string; approval: Approval; pattern: RegExp }> = [];
+  for (const suffix of ["project", "workflow", "partial", "past"] as const) {
+    const candidateRun = run(`${prefix}_pilot_reject_${suffix}`, "running");
+    await store.createRun(candidateRun);
+    const candidate: Approval = {
+      ...approval,
+      id: `${prefix}_pilot_reject_approval_${suffix}`,
+      runId: candidateRun.id,
+      requestedAt: new Date(clock.current()).toISOString(),
+      expiresAt: new Date(clock.current() + 60_000).toISOString(),
+    };
+    if (suffix === "project") candidate.projectId = "another-project";
+    if (suffix === "workflow") candidate.workflow = "different-workflow";
+    if (suffix === "partial") candidate.policyHash = null;
+    if (suffix === "past") candidate.expiresAt = new Date(clock.current() - 1).toISOString();
+    rejectedCases.push({
+      suffix,
+      approval: candidate,
+      pattern: suffix === "project" ? /project binding does not match/i
+        : suffix === "workflow" ? /workflow binding does not match/i
+          : suffix === "partial" ? /binding must be complete/i
+            : /must expire in the future/i,
+    });
+  }
+  for (const item of rejectedCases) {
+    await assert.rejects(request(item.approval, `reject_${item.suffix}`), item.pattern);
+    assert.equal(await store.getApproval(item.approval.id), null);
+    assert.equal((await store.getRun(item.approval.runId))?.status, "running");
+  }
+
+  const expiringRun = run(`${prefix}_pilot_expiring`, "running");
+  await store.createRun(expiringRun);
+  const expiringAt = new Date(clock.current() + 5_000).toISOString();
+  const expiringApproval: Approval = {
+    ...approval,
+    id: `${prefix}_pilot_expiring_approval`,
+    runId: expiringRun.id,
+    requestedAt: new Date(clock.current()).toISOString(),
+    expiresAt: expiringAt,
+  };
+  await request(expiringApproval, "expiring");
+  clock.set(clock.current() + 5_001);
+  await assert.rejects(store.resolveApprovalTransaction({
+    approvalId: expiringApproval.id,
+    state: "approved",
+    decision: "approve",
+    resolvedBy: "wesley",
+    // A caller-supplied time before expiry cannot bypass the store clock.
+    resolvedAt: new Date(Date.parse(expiringAt) - 1).toISOString(),
+    expectedBinding: { ...expectedBinding, expiresAt: expiringAt },
+  }), /approval has expired/i);
+  assert.equal((await store.getApproval(expiringApproval.id))?.state, "pending");
+
+  const expiredAt = new Date(clock.current()).toISOString();
+  const expiryInput = {
+    approvalId: expiringApproval.id,
+    runPatch: {
+      status: "failed" as const,
+      stage: "approval_expired",
+      nextActionAt: null,
+      completedAt: expiredAt,
+    },
+    event: {
+      id: `${prefix}_pilot_expiry_event`,
+      runId: expiringRun.id,
+      type: "approval.expired",
+      message: "Bound pilot approval expired",
+      payload: { approvalId: expiringApproval.id },
+      createdAt: expiredAt,
+    },
+    idempotency: {
+      scope: "approval.expire",
+      key: `${prefix}-pilot-expiry-key`,
+      requestHash: `${prefix}-pilot-expiry-hash`,
+    },
+  };
+  const expiryResults = await Promise.all(Array.from({ length: 4 }, () =>
+    store.expireApprovalTransaction(expiryInput)));
+  assert.equal(expiryResults.filter((item) => !item.replayed).length, 1);
+  assert.equal(expiryResults.filter((item) => item.replayed).length, 3);
+  const expired = await store.getApproval(expiringApproval.id);
+  assert.equal(expired?.state, "denied");
+  assert.equal(expired?.decision, "expired");
+  assert.equal(expired?.resolvedBy, "control-plane");
+  assert.equal(expired?.resolvedAt, expiredAt);
+  assert.deepEqual({
+    status: (await store.getRun(expiringRun.id))?.status,
+    stage: (await store.getRun(expiringRun.id))?.stage,
+    completedAt: (await store.getRun(expiringRun.id))?.completedAt,
+  }, { status: "failed", stage: "approval_expired", completedAt: expiredAt });
+  assert.equal((await store.listEvents(expiringRun.id)).some((event) => event.id === expiryInput.event.id), true);
+  await assert.rejects(store.expireApprovalTransaction({
+    ...expiryInput,
+    idempotency: { ...expiryInput.idempotency, requestHash: `${prefix}-changed-expiry-hash` },
+  }), IdempotencyConflictError);
+
+  const futureRun = run(`${prefix}_pilot_future_expiry`, "running");
+  await store.createRun(futureRun);
+  const futureApproval: Approval = {
+    ...approval,
+    id: `${prefix}_pilot_future_expiry_approval`,
+    runId: futureRun.id,
+    requestedAt: expiredAt,
+    expiresAt: new Date(clock.current() + 10_000).toISOString(),
+  };
+  await request(futureApproval, "future_expiry");
+  await assert.rejects(store.expireApprovalTransaction({
+    approvalId: futureApproval.id,
+    runPatch: { status: "failed", completedAt: expiredAt },
+    event: {
+      id: `${prefix}_future_expiry_event`, runId: futureRun.id, type: "approval.expired",
+      message: "Must not expire early", payload: {}, createdAt: expiredAt,
+    },
+  }), /has not expired/i);
+  assert.equal((await store.getApproval(futureApproval.id))?.state, "pending");
+  assert.equal((await store.getRun(futureRun.id))?.status, "awaiting_approval");
+
+  const legacyRun = run(`${prefix}_legacy_expiry`, "running");
+  await store.createRun(legacyRun);
+  const legacyApproval = await requestPendingApproval(store, legacyRun.id, `${prefix}_legacy_expiry`);
+  await assert.rejects(store.expireApprovalTransaction({
+    approvalId: legacyApproval.id,
+    runPatch: { status: "failed", completedAt: expiredAt },
+    event: {
+      id: `${prefix}_legacy_expiry_event`, runId: legacyRun.id, type: "approval.expired",
+      message: "Must not expire a legacy approval", payload: {}, createdAt: expiredAt,
+    },
+  }), /complete bound pilot approval/i);
+  await assert.rejects(store.expireApprovalTransaction({
+    ...expiryInput,
+    runPatch: { status: "running" } as any,
+  }), /requires a terminal run patch/i);
+
+  clock.set(Date.parse(expiresAt) + 1);
+  assert.equal((await store.resolveApprovalTransaction(durableReplayInput)).replayed, true,
+    "an exact durable replay remains idempotent after its approval deadline");
+  await assert.rejects(store.resolveApprovalTransaction({
+    ...resolutionInput,
+    state: "denied",
+    decision: "deny",
+  }), /different decision/i);
+  clock.set(startingTime);
+}
+
+async function exercisePostgresApprovalLockExpiry(
+  store: ControlPlaneStore,
+  databaseUrl: string,
+  clock: MutableStoreClock,
+): Promise<void> {
+  const startingTime = clock.current();
+  const owningRun = run("postgres_pilot_lock_expiry", "running");
+  await store.createRun(owningRun);
+  const expiresAt = new Date(startingTime + 1_000).toISOString();
+  const approval: Approval = {
+    id: "postgres_pilot_lock_expiry_approval",
+    runId: owningRun.id,
+    action: "accept_atomic_fixture_result",
+    exactEffect: "Record one safe mock receipt only",
+    state: "pending",
+    evidence: ["artifact digest"],
+    requestedAt: new Date(startingTime).toISOString(),
+    projectId: owningRun.projectId,
+    workflow: owningRun.workflow,
+    evidenceDigest: "d".repeat(64),
+    policyHash: "e".repeat(64),
+    expiresAt,
+  };
+  await store.requestApprovalTransaction({
+    approval,
+    event: {
+      id: "postgres_pilot_lock_expiry_requested",
+      runId: owningRun.id,
+      type: "approval.requested",
+      message: "Lock crossing expiry fixture",
+      payload: {},
+      createdAt: approval.requestedAt,
+    },
+  });
+  const { Pool } = await import("pg");
+  const pool = new Pool({ connectionString: databaseUrl, max: 1 });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT id FROM approvals WHERE id=$1 FOR UPDATE", [approval.id]);
+    const resolution = store.resolveApprovalTransaction({
+      approvalId: approval.id,
+      state: "approved",
+      decision: "approve",
+      resolvedBy: "wesley",
+      expectedBinding: {
+        action: approval.action,
+        exactEffect: approval.exactEffect,
+        projectId: approval.projectId!,
+        workflow: approval.workflow!,
+        evidenceDigest: approval.evidenceDigest!,
+        policyHash: approval.policyHash!,
+        expiresAt,
+      },
+    });
+    const rejected = assert.rejects(resolution, /approval has expired/i);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+    clock.set(startingTime + 1_001);
+    await client.query("COMMIT");
+    await rejected;
+    assert.equal((await store.getApproval(approval.id))?.state, "pending");
+  } finally {
+    await client.query("ROLLBACK").catch(() => undefined);
+    client.release();
+    await pool.end();
+    clock.set(startingTime);
+  }
+}
+
 async function exerciseApprovalRequestContract(store: ControlPlaneStore, prefix: string): Promise<void> {
   const successRun = run(`${prefix}_request_success`, "running", new Date(Date.now() + 5_000).toISOString());
   await store.createRun(successRun);
@@ -589,9 +1011,9 @@ test("SQLite migrations are explicit, repeatable, and current", async () => {
   const store = new SqliteStore(":memory:");
   try {
     const first = await store.migrate();
-    assert.deepEqual(first.map((item) => [item.version, item.status]), [[1, "applied"], [2, "applied"], [3, "applied"], [4, "applied"], [5, "applied"]]);
+    assert.deepEqual(first.map((item) => [item.version, item.status]), [[1, "applied"], [2, "applied"], [3, "applied"], [4, "applied"], [5, "applied"], [6, "applied"]]);
     const second = await store.migrate();
-    assert.deepEqual(second.map((item) => item.status), ["already_applied", "already_applied", "already_applied", "already_applied", "already_applied"]);
+    assert.deepEqual(second.map((item) => item.status), ["already_applied", "already_applied", "already_applied", "already_applied", "already_applied", "already_applied"]);
     assert.deepEqual(await store.healthCheck(), { ok: true, backend: "sqlite", migrationsCurrent: true });
   } finally {
     await store.close();
@@ -630,7 +1052,7 @@ test("SQLite adopts a legacy unversioned database and rejects migration checksum
 
     const adopted = new SqliteStore(path);
     const applied = await adopted.migrate();
-    assert.deepEqual(applied.map((item) => item.status), ["applied", "applied", "applied", "applied", "applied"]);
+    assert.deepEqual(applied.map((item) => item.status), ["applied", "applied", "applied", "applied", "applied", "applied"]);
     assert.equal((await adopted.healthCheck()).migrationsCurrent, true);
     await adopted.close();
 
@@ -684,6 +1106,10 @@ test("SQLite forward migration backfills and preserves an existing writer lease 
       VALUES ('legacy_fenced_ws','legacy_fenced_run','/tmp/legacy-fenced','test','leased',?)`).run(heartbeatAt);
     db.prepare(`INSERT INTO workspace_leases(workspace_id,run_id,mode,expires_at,heartbeat_at)
       VALUES ('legacy_fenced_ws','legacy_fenced_run','writer','2026-08-11T01:00:00.000Z',?)`).run(heartbeatAt);
+    db.prepare(`INSERT INTO approvals
+      (id,run_id,action,exact_effect,state,evidence_json,requested_at)
+      VALUES ('legacy_nullable_approval','legacy_fenced_run','prepare_pr','Legacy mock only','pending','[]',?)`)
+      .run(heartbeatAt);
     db.prepare("UPDATE runs SET workspace_id='legacy_fenced_ws' WHERE id='legacy_fenced_run'").run();
     db.close();
 
@@ -703,6 +1129,14 @@ test("SQLite forward migration backfills and preserves an existing writer lease 
       quarantinedAt: null,
       quarantineReason: null,
     });
+    const legacyApproval = await store.getApproval("legacy_nullable_approval");
+    assert.deepEqual({
+      projectId: legacyApproval?.projectId,
+      workflow: legacyApproval?.workflow,
+      evidenceDigest: legacyApproval?.evidenceDigest,
+      policyHash: legacyApproval?.policyHash,
+      expiresAt: legacyApproval?.expiresAt,
+    }, { projectId: null, workflow: null, evidenceDigest: null, policyHash: null, expiresAt: null });
     await store.close();
 
     const inspected = new DatabaseSync(path);
@@ -1027,6 +1461,29 @@ test("run claiming is exclusive and releasing a claim preserves nextActionAt", a
   }
 });
 
+test("queued-run start claims are exact-state, expiring compare-and-set claims", async () => {
+  const clock = mutableStoreClock();
+  const store = new SqliteStore(":memory:", { now: clock.now });
+  try {
+    await seed(store);
+    await exerciseQueuedStartClaimContract(store, "sqlite", clock);
+    await exerciseRunAdmissionContract(store, "sqlite");
+  } finally {
+    await store.close();
+  }
+});
+
+test("pilot approvals bind project, workflow, evidence, policy, and authoritative expiry", async () => {
+  const clock = mutableStoreClock();
+  const store = new SqliteStore(":memory:", { now: clock.now });
+  try {
+    await seed(store);
+    await exercisePilotApprovalBindingContract(store, "sqlite", clock);
+  } finally {
+    await store.close();
+  }
+});
+
 test("restart reconciliation identifies queued runs, terminal and expired leases", async () => {
   const root = mkdtempSync(join(tmpdir(), "valkyrie-restart-"));
   const path = join(root, "test.sqlite");
@@ -1102,6 +1559,9 @@ async function preparePostgresVersion3LeaseFixture(databaseUrl: string): Promise
         VALUES ('pg_legacy_fenced_ws','pg_legacy_fenced_run','/tmp/pg-legacy-fenced','test','leased',$1)`, [heartbeatAt]);
       await pool.query(`INSERT INTO workspace_leases(workspace_id,run_id,mode,expires_at,heartbeat_at)
         VALUES ('pg_legacy_fenced_ws','pg_legacy_fenced_run','writer','2026-08-11T01:00:00.000Z',$1)`, [heartbeatAt]);
+      await pool.query(`INSERT INTO approvals
+        (id,run_id,action,exact_effect,state,evidence_json,requested_at)
+        VALUES ('pg_legacy_nullable_approval','pg_legacy_fenced_run','prepare_pr','Legacy mock only','pending','[]',$1)`, [heartbeatAt]);
       await pool.query("UPDATE runs SET workspace_id='pg_legacy_fenced_ws' WHERE id='pg_legacy_fenced_run'");
       await pool.query("COMMIT");
     } catch (error) {
@@ -1121,9 +1581,9 @@ test("PostgreSQL storage contract smoke", { skip: !postgresUrl }, async () => {
   });
   try {
     const migrationOutput = await store.migrate();
-    assert.deepEqual(migrationOutput.map((item) => item.version), [1, 2, 3, 4, 5]);
+    assert.deepEqual(migrationOutput.map((item) => item.version), [1, 2, 3, 4, 5, 6]);
     const repeatedMigrations = await store.migrate();
-    assert.deepEqual(repeatedMigrations.map((item) => item.status), ["already_applied", "already_applied", "already_applied", "already_applied", "already_applied"]);
+    assert.deepEqual(repeatedMigrations.map((item) => item.status), ["already_applied", "already_applied", "already_applied", "already_applied", "already_applied", "already_applied"]);
     assert.deepEqual(await store.healthCheck(), { ok: true, backend: "postgres", migrationsCurrent: true });
     assert.deepEqual(await store.getWorkspaceLease("pg_legacy_fenced_ws"), {
       workspaceId: "pg_legacy_fenced_ws",
@@ -1138,6 +1598,14 @@ test("PostgreSQL storage contract smoke", { skip: !postgresUrl }, async () => {
       quarantinedAt: null,
       quarantineReason: null,
     });
+    const legacyApproval = await store.getApproval("pg_legacy_nullable_approval");
+    assert.deepEqual({
+      projectId: legacyApproval?.projectId,
+      workflow: legacyApproval?.workflow,
+      evidenceDigest: legacyApproval?.evidenceDigest,
+      policyHash: legacyApproval?.policyHash,
+      expiresAt: legacyApproval?.expiresAt,
+    }, { projectId: null, workflow: null, evidenceDigest: null, policyHash: null, expiresAt: null });
 
     await store.resetOperationalData();
     await seed(store);
@@ -1146,6 +1614,10 @@ test("PostgreSQL storage contract smoke", { skip: !postgresUrl }, async () => {
     await exerciseArtifactBatchContract(store, "postgres");
     await exerciseApprovalRequestContract(store, "postgres");
     await exerciseMismatchedApprovalEventContract(store, "postgres");
+    await exerciseQueuedStartClaimContract(store, "postgres", clock);
+    await exerciseRunAdmissionContract(store, "postgres");
+    await exercisePilotApprovalBindingContract(store, "postgres", clock);
+    await exercisePostgresApprovalLockExpiry(store, postgresUrl!, clock);
     const runsBeforeCandidates = (await store.listRuns()).length;
     const candidates = Array.from({ length: 8 }, (_, index) => {
       const item = run(`pg_candidate_${index}`);
