@@ -179,25 +179,34 @@ ADR-P009. The authenticated assessment ledger and reusable package-local Atomic
 Lite contract now exist, and the subscription broker retains one process-local
 provider thread per capability/role with appended-message continuation. Forked
 repair, artifact/delta handoff, model-free deterministic gates, and conditional
-review are encoded in the Lite contract. General launch remains fail-closed until
-M7 resolves live Linear/Git authority and an accepted project execution policy.
+review are encoded in the Lite contract. M7 can now supply revision-bound
+Linear/Git authority and an accepted project execution policy, but general launch
+remains fail-closed until a separate reviewed launcher consumes that evidence.
 The next benchmark must hold model/provider/cache/task/checks constant and include
 a task large or risky enough for workflow structure to have a measurable
 opportunity to help.
 
 ## Milestone 7 — Production connectors
 
-Only after storage/runtime/workspace paths are stable:
+Status: deterministic implementation complete, default-off; live Linear/GitHub
+credential exercise pending.
 
-- authenticated least-privilege Hermes/control-plane MCP;
-- live Linear reads plus idempotent issue/idea/evidence writes without depending
+- [x] authenticated least-privilege control-plane HTTP/MCP operations with a
+  separate default Hermes allowlist;
+- [x] Linear reads plus idempotent issue/idea/evidence writes without depending
   on preview AgentSession APIs or mirroring the roadmap;
-- deterministic local Project Brain context packs first;
-- read-only OpenViking provider flag and retrieval/isolation/staleness/deletion/
+- [x] deterministic local Project Brain context packs first;
+- [x] read-only OpenViking candidate provider and retrieval/isolation/staleness/deletion/
   latency/token evaluation;
-- GitHub draft PR creation only after exact approval/evidence gates;
-- concise Linear milestone updates without comment flooding;
-- external outbox dispatcher, retention, observability, and recovery runbooks.
+- [x] GitHub draft PR creation only after exact approval/evidence gates and from
+  a pre-existing remote head;
+- [x] concise Linear evidence updates without comment flooding;
+- [x] approval-bound external-action outbox dispatcher, retention, observability, dead-letter replay,
+  ambiguous-effect reconciliation, and recovery runbook.
+
+General project execution launch, branch publication, merge/deploy, multi-user
+actor attestation, a live OpenViking transport, and live connector evidence are
+separate remaining gates.
 
 ## Required method for every milestone
 

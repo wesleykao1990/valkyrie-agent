@@ -8,8 +8,9 @@ import { LocalProjectBrain } from "../apps/control-plane/src/project-brain.ts";
 import { WorkspaceManager } from "../apps/control-plane/src/workspace.ts";
 import { createMockAdapters } from "../apps/control-plane/src/mock-runtimes.ts";
 import { ControlPlaneService, ENGINEERING_ROUTING_ASSESSMENT_TTL_MS } from "../apps/control-plane/src/service.ts";
+import type { ProductionConnectorRegistry } from "../apps/control-plane/src/production-connectors.ts";
 
-async function fixture() {
+async function fixture(options: { connectors?: ProductionConnectorRegistry } = {}) {
   let nowMs = Date.parse("2026-08-13T00:00:00.000Z");
   const root = mkdtempSync(join(tmpdir(), "valkyrie-engineering-routing-"));
   const brainRoot = join(root, "brain");
@@ -49,9 +50,49 @@ async function fixture() {
     brain,
     workspaces,
     createMockAdapters(store, workspaces, join(root, "artifacts"), 0),
-    { now: () => new Date(nowMs) },
+    { now: () => new Date(nowMs), ...(options.connectors ? { connectors: options.connectors } : {}) },
   );
   return { root, store, service, advance(ms: number) { nowMs += ms; } };
+}
+
+function liveAuthorityFixture(): ProductionConnectorRegistry {
+  const observedAt = "2026-08-13T00:00:00.000Z";
+  const projectSnapshot = {
+    provider: "linear" as const, kind: "project" as const, providerId: "linear_project_1",
+    externalId: "linear_project_1", revision: observedAt, updatedAt: observedAt,
+    observedAt, payloadHash: "a".repeat(64), payload: { id: "linear_project_1" },
+  };
+  const issueSnapshot = {
+    provider: "linear" as const, kind: "issue" as const, providerId: "linear_issue_1",
+    externalId: "linear_issue_1", revision: observedAt, updatedAt: observedAt,
+    observedAt, payloadHash: "b".repeat(64), payload: { id: "linear_issue_1" },
+  };
+  return {
+    policyForProject(projectId: string) {
+      return projectId === "ovalo" ? {
+        projectId,
+        linear: { teamId: "linear_team_1", projectId: "linear_project_1" },
+        git: { repositoryIdentity: "github.com/acme/ovalo" },
+      } : undefined;
+    },
+    linearForProject(projectId: string) {
+      return projectId === "ovalo" ? {
+        readProject: async () => projectSnapshot,
+        readIssue: async () => issueSnapshot,
+      } : undefined;
+    },
+    gitForProject(projectId: string) {
+      return projectId === "ovalo" ? {
+        read: async () => ({
+          provider: "git" as const, projectId, repositoryIdentity: "github.com/acme/ovalo",
+          remoteUrlIdentity: "github.com/acme/ovalo", baseRef: "main", baseCommit: "c".repeat(40),
+          baseTree: "d".repeat(40), headRef: "feature/m7", headCommit: "e".repeat(40),
+          headTree: "f".repeat(40), clean: true as const, patchDigest: "1".repeat(64), patchBytes: 10,
+          checkPolicyDigest: "2".repeat(64), policyDigest: "3".repeat(64), observedAt,
+        }),
+      } : undefined;
+    },
+  } as unknown as ProductionConnectorRegistry;
 }
 
 test("authenticated intake persists the literal request and a fail-closed explainable route without launching", async () => {
@@ -157,6 +198,41 @@ test("assessment reads report expiry without converting the unsupported recommen
     const read = await item.service.getEngineeringRoutingAssessment(created.assessment.id);
     assert.equal(read.expired, true);
     assert.equal(read.launch.supported, false);
+    assert.deepEqual(await item.store.listRuns(), []);
+  } finally {
+    await item.store.close();
+    rmSync(item.root, { recursive: true, force: true });
+  }
+});
+
+test("accepted Linear and Git gateways bind current revisions without authorizing a general launcher", async () => {
+  const connectors = liveAuthorityFixture();
+  const item = await fixture({ connectors });
+  try {
+    const result = await item.service.assessEngineeringRequest({
+      projectId: "ovalo",
+      taskId: "task_ovalo_parser",
+      request: "Implement a bounded parser in two files with unit tests.",
+    });
+    assert.equal((result.assessment.contextSources.linear as { status: string }).status, "revision-bound");
+    assert.equal((result.assessment.contextSources.git as { status: string }).status, "revision-bound");
+    assert.deepEqual(result.assessment.unsupportedReasons, ["general-atomic-lite-launch-unavailable"]);
+    assert.equal(result.assessment.executionSupported, false);
+    const [projectBinding, taskBinding, gitBinding] = await Promise.all([
+      item.store.getAuthorityBinding("linear", "project", "ovalo"),
+      item.store.getAuthorityBinding("linear", "task", "task_ovalo_parser"),
+      item.store.getAuthorityBinding("git", "project", "ovalo"),
+    ]);
+    assert.equal(projectBinding?.externalId, "linear_project_1");
+    assert.equal(taskBinding?.externalId, "linear_issue_1");
+    assert.equal(gitBinding?.revision, "e".repeat(40));
+    const brief = await item.service.projectBrief("ovalo");
+    assert.equal(brief.linearProjection.prototype, false);
+    assert.equal(brief.linearProjection.authority.status, "revision-bound");
+    assert.equal((brief.freshness.git as { status: string }).status, "revision-bound");
+    const idea = await item.service.captureIdea({ projectId: "ovalo", title: "A new bounded connector idea" });
+    assert.equal(typeof idea.linearAction, "string");
+    assert.match(idea.linearAction!, /separate evidence-bound external-action plan and approval/);
     assert.deepEqual(await item.store.listRuns(), []);
   } finally {
     await item.store.close();

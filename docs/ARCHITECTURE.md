@@ -90,8 +90,34 @@ The control plane uses one asynchronous store contract with two adapters:
 
 Both adapters own explicit versioned migrations, lifecycle idempotency records,
 and a transactional outbox. Selecting PostgreSQL never silently falls back to
-SQLite, and there is no dual-write or automatic data copy between them. The
-outbox is durable state in this milestone; an external broker/publisher is not.
+SQLite, and there is no dual-write or automatic data copy between them. M7 adds
+one default-off external-final-action consumer for approved action deliveries;
+ordinary task events have no external writer. It is not a generic broker or
+permission to publish other topics.
+
+## Production connector boundary
+
+M7 keeps network credentials and clients in the host control plane. One accepted
+digest-pinned project policy maps a local project to exact Linear team/project/
+evidence-issue IDs, a reviewed Git checkout and fixed checks, and GitHub
+owner/repository/base/head refs. Hermes and runtimes receive only bounded domain
+operations; they cannot provide a token, URL, filesystem path, ref, command,
+issue target, or arbitrary GraphQL/REST body.
+
+Current Linear/Git observations are retained as narrow authority bindings with
+provider revision, canonical payload hash, observed time, and freshness. The
+transactional business outbox remains immutable while each external consumer has
+its own expiring fenced delivery state. Final provider mutations use a second
+immutable action-plan aggregate bound to exact run/workflow/evidence/policy/
+effect/expiry and current target revision. Approval authorizes the plan, not a
+generic connector. A process crash after durable begin becomes ambiguous and
+requires exact marker-based reconciliation.
+
+The first GitHub write is draft creation only and requires a pre-existing remote
+head whose OID still matches. M7 does not retain/publish a writer branch, merge,
+deploy, or promote memory. The authenticated assessment may now record live
+authority when configured, but general Direct/Lite/Full launch remains a separate
+reviewed composition.
 
 ## Atomic module boundary
 

@@ -3,7 +3,9 @@
 Default base URL: `http://127.0.0.1:8787`
 
 The API is a prototype contract. It does not expose raw shell/container/secret or
-filesystem-management tools, and no route creates a real PR or deployment.
+filesystem-management tools. M7 can create only a separately approved GitHub
+draft PR from a pre-existing configured remote head; no route publishes a branch,
+merges, or deploys.
 
 ## Authentication
 
@@ -127,10 +129,51 @@ preference, final-action intent, and an idempotency key:
 ```
 
 Scores and hard signals are control-plane-owned; extra fields are rejected.
-Migration 010 persists the decision transactionally. Until M7 provides live
-Linear/Git freshness and an accepted project execution policy, the response has
-`executionSupported=false`, `status="unsupported"`, and `launch.supported=false`.
-It creates no run, workspace, lease, container, or fixed-pilot substitution.
+Migration 010 persists the decision transactionally. Without M7 configuration,
+the response records prototype/unavailable sources. With a reviewed M7 policy and
+read connectors, it records bounded current Linear/Git revisions. In both cases
+general execution remains `executionSupported=false`, `status="unsupported"`,
+and `launch.supported=false`: this route creates no run, workspace, lease,
+container, or fixed-pilot substitution.
+
+## Milestone 7 connector operations
+
+Every route below requires configured bearer authentication. Mutations also
+require a configured `CONTROL_PLANE_OPERATOR_ID`.
+
+- `GET /api/connectors/status` returns enabled modes, configured project IDs,
+  safe credential-loaded booleans, bounded final-action delivery status, and external-action
+  counts. It returns no token, path, provider URL, or policy contents.
+- `GET /api/connectors/outbox/dead?limit=...` lists a bounded page for the exact
+  external-final-action consumer.
+- `POST /api/connectors/outbox/dead/:outboxId` accepts `{}` and requeues only a
+  dead exact delivery under its stable action identity.
+- `POST /api/external-actions/github-draft-pr` accepts only `runId`, bounded
+  `title`/`body`, optional `idempotencyKey`, and optional `expiresAt`. The
+  repository/base/head/OIDs come exclusively from policy and current authority.
+- `POST /api/external-actions/linear-evidence-comment` accepts only `runId`,
+  bounded `body`, optional `idempotencyKey`, and optional `expiresAt`. The fixed
+  issue target comes exclusively from policy.
+- `POST /api/external-actions/linear-issue` accepts only `runId`, bounded
+  `title`/`description`, optional `idempotencyKey`, and optional `expiresAt`.
+  The team/project target comes exclusively from the accepted connector policy;
+  ordinary idea/task creation never calls the provider.
+- `GET /api/external-actions?projectId=...&state=...&limit=...` and
+  `GET /api/external-actions/:planId` expose bounded durable plan/receipt state.
+- `POST /api/external-actions/:planId/resolve` accepts `approve`, `deny`, or
+  `request_changes` plus an optional idempotency key. Approval only authorizes
+  the already-bound plan; provider work happens after a fresh worker preflight.
+- `POST /api/external-actions/:planId/reconcile` is HTTP-only and accepts a
+  bounded zero/one/multiple result plus exact provider identity hashes. It is for
+  an already-ambiguous effect and cannot supply a target, URL, ref, command, or
+  arbitrary payload. Zero remains ambiguous; one exact match succeeds; multiple
+  matches quarantine for operator review.
+
+The general MCP implementation contains bounded counterparts for status,
+dead-letter operations, plan preparation/list/get, and plan resolution. The
+default Hermes pilot wrapper does not automatically enable those M7 mutations;
+operators must set an explicit reviewed tool allowlist. Reconciliation remains
+HTTP-only.
 
 ### `POST /api/runs`
 

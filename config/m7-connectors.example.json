@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "1.0.0",
+  "projects": [
+    {
+      "projectId": "replace-local-project-id",
+      "linear": {
+        "teamId": "replace-linear-team-uuid",
+        "projectId": "replace-linear-project-uuid",
+        "evidenceIssueId": "replace-fixed-linear-issue-uuid"
+      },
+      "git": {
+        "repositoryPath": "/absolute/path/to/reviewed/repository",
+        "baseRef": "main",
+        "headRef": "reviewed-existing-remote-head",
+        "policyVersion": "m7-policy-v1",
+        "checks": [
+          {
+            "id": "root-verify",
+            "executable": "/usr/bin/env",
+            "argv": ["npm", "run", "verify"],
+            "maxOutputBytes": 8388608
+          }
+        ]
+      },
+      "github": {
+        "owner": "replace-owner",
+        "repo": "replace-repository",
+        "baseRef": "main",
+        "headRef": "reviewed-existing-remote-head"
+      }
+    }
+  ]
+}

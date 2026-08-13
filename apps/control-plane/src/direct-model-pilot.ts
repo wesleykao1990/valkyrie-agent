@@ -332,6 +332,34 @@ export class DirectModelPilotCoordinator {
     };
   }
 
+  /** Revalidate the exact accepted direct-candidate evidence for a later external action. */
+  async validateExternalActionEvidence(runId: string) {
+    const run = await this.options.store.getRun(runId);
+    if (!run || !this.isPilotRun(run) || run.status !== "completed") {
+      throw new Error("Direct Codex external action requires a completed pilot run");
+    }
+    const approvals = (await this.options.store.listApprovals())
+      .filter((item) => item.runId === run.id && item.action === DIRECT_CODEX_APPROVAL_ACTION && item.state === "approved");
+    if (approvals.length !== 1) throw new Error("Direct Codex external action requires one accepted evidence gate");
+    const binding = approvalBindingOf(approvals[0]!);
+    if (!binding || binding.projectId !== run.projectId || binding.workflow !== DIRECT_CODEX_MODEL_WORKFLOW) {
+      throw new Error("Direct Codex accepted evidence binding is incomplete");
+    }
+    const validated = await this.validateEvidenceBytes(run, undefined, true);
+    const evidenceDigest = artifactDigest(validated.artifacts);
+    if (binding.evidenceDigest !== evidenceDigest || binding.policyHash !== validated.instance.policyHash) {
+      throw new Error("Direct Codex accepted evidence changed before external-action planning");
+    }
+    return {
+      runId: run.id,
+      projectId: run.projectId,
+      workflow: DIRECT_CODEX_MODEL_WORKFLOW,
+      evidenceDigest,
+      policyHash: validated.instance.policyHash,
+      artifacts: validated.artifacts,
+    };
+  }
+
   async resolveApproval(approval: Approval, decision: "approve" | "deny" | "request_changes", resolvedBy: string): Promise<void> {
     const current = await this.options.store.getApproval(approval.id);
     if (!current || current.action !== DIRECT_CODEX_APPROVAL_ACTION || current.exactEffect !== DIRECT_CODEX_APPROVAL_EFFECT) {

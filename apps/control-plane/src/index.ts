@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { loadConfig, loadProjectSeed } from "./config.ts";
 import { createControlPlaneStore } from "./store-factory.ts";
 import { LocalProjectBrain } from "./project-brain.ts";
+import { LocalProjectBrainProvider } from "./project-brain-provider.ts";
 import { WorkspaceManager } from "./workspace.ts";
 import { createRuntimeAdapters } from "./runtime-registry.ts";
 import { ControlPlaneService } from "./service.ts";
@@ -28,6 +29,8 @@ import {
 } from "./scoped-inference-gateway.ts";
 import { DockerCliBridgeEngine, ScopedInferenceBridge } from "./scoped-inference-bridge.ts";
 import { DirectModelPilotCoordinator } from "./direct-model-pilot.ts";
+import { ProductionConnectorRegistry } from "./production-connectors.ts";
+import { ExternalFinalActionCoordinator } from "./external-final-action.ts";
 
 // Local databases, context packs, contracts, and native output are sensitive.
 // New POSIX files/directories created by the server must be owner-only.
@@ -55,6 +58,7 @@ if (!health.ok || !health.migrationsCurrent) {
 }
 if (config.seedDemoData) await store.seedProjects(loadProjectSeed());
 const brain = new LocalProjectBrain(config.projectBrainDir);
+const brainReads = new LocalProjectBrainProvider(brain);
 const workspaces = new WorkspaceManager(store, join(config.dataDir, "workspaces"));
 const adapters = createRuntimeAdapters(store, workspaces, config);
 let atomicFixturePilot: AtomicFixturePilotCoordinator | undefined;
@@ -297,11 +301,58 @@ if (config.atomicFixtureModelPilot.enabled) {
   }
 }
 
+const connectors = new ProductionConnectorRegistry(config.m7Connectors, store);
+const externalFinalActions = config.m7Connectors.linear.mode === "read-write"
+  || config.m7Connectors.github.mode === "draft-pr"
+  ? new ExternalFinalActionCoordinator({
+      store,
+      evidenceAuthority: async (runId) => {
+        const run = await store.getRun(runId);
+        if (!run) throw new Error("External action evidence run not found");
+        if (atomicFixturePilot?.isPilotRun(run)) return atomicFixturePilot.validateExternalActionEvidence(run.id);
+        if (atomicModelPilot?.isPilotRun(run)) return atomicModelPilot.validateExternalActionEvidence(run.id);
+        if (directModelPilot?.isPilotRun(run)) return directModelPilot.validateExternalActionEvidence(run.id);
+        throw new Error("External actions require a completed, accepted governed pilot run");
+      },
+      projectPolicy: (projectId) => {
+        const policy = connectors.policyForProject(projectId);
+        if (!policy) throw new Error("External action project policy is unavailable");
+        return {
+          projectId,
+          connectorPolicyDigest: config.m7Connectors.policy!.digest,
+          ...(policy.git ? { repositoryIdentity: policy.git.repositoryIdentity } : {}),
+          ...(policy.github ? {
+            owner: policy.github.owner,
+            repo: policy.github.repo,
+            baseRef: policy.github.baseRef,
+            headRef: policy.github.headRef,
+          } : {}),
+          ...(policy.linear ? {
+            linearProjectId: policy.linear.projectId,
+            linearTeamId: policy.linear.teamId,
+          } : {}),
+          ...(policy.linearEvidenceIssueId ? {
+            linearIssueId: policy.linearEvidenceIssueId,
+            evidenceIssueId: policy.linearEvidenceIssueId,
+          } : {}),
+          policyVersion: config.m7Connectors.policy!.digest,
+        };
+      },
+      gitAuthority: (projectId: string) => connectors.gitForProject(projectId),
+      githubGateway: (projectId: string) => connectors.githubDraftPrForProject(projectId),
+      linearGateway: (projectId: string) => connectors.linearWriteForProject(projectId),
+      defaultOwnerId: config.operatorId ?? "external-final-action-worker",
+    })
+  : undefined;
+
 const service = new ControlPlaneService(store, brain, workspaces, adapters, {
+  projectBrainReadProvider: brainReads,
   atomicFixturePilot,
   atomicModelPilot,
   directModelPilot,
   directClaudeModelPilotEnabled: config.directClaudeModelPilotEnabled,
+  connectors,
+  externalFinalActions,
 });
 const [existingTasks, existingRuns] = await Promise.all([store.listTasks(), store.listRuns(1)]);
 if (config.seedDemoData && existingTasks.length === 0 && existingRuns.length === 0) await service.resetDemo(true);

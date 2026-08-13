@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { Approval, Artifact, MemoryProposal, Project, Run, RunEvent, Task } from "./types.ts";
 import { nowIso } from "./ids.ts";
 import { assertUniqueMigrationVersions, loadMigrationFiles } from "./migrations.ts";
@@ -13,6 +14,22 @@ import {
   observeStoreClock,
   StorageConflictError,
   validateArtifactBatchInput,
+  validateAuthorityBinding,
+  validateAuthorityRefresh,
+  validateProviderReceipt,
+  validateOutboxDeliveryClaim,
+  validateOutboxDeliveryFence,
+  validateOutboxDeliveryFailure,
+  validateOutboxDeliveryReplay,
+  validateOutboxDeliveryPrune,
+  validateExternalActionPlan,
+  validateExternalActionPlanRequest,
+  validateExternalActionReceipt,
+  validateExternalActionReconciliation,
+  validateExternalActionDeliveryFence,
+  validateExternalActionError,
+  externalActionAuthorizedOutboxId,
+  validateDeliveryIdentity,
   validateInferenceCapability,
   validateInferenceCompletion,
   validateInferenceReservation,
@@ -37,6 +54,8 @@ import {
   type ApprovalRequestInput,
   type ApprovalRequestResult,
   type ArtifactBatchResult,
+  type AuthorityBinding,
+  type AuthorityBindingRefreshInput,
   type ControlPlaneStore,
   type IdempotencyInput,
   type InferenceCapability,
@@ -52,6 +71,27 @@ import {
   type MigrationResult,
   type MutableRunPatch,
   type OutboxEvent,
+  type OutboxDelivery,
+  type OutboxDeliveryAckInput,
+  type OutboxDeliveryAttemptEvidence,
+  type OutboxDeliveryClaimInput,
+  type OutboxDeliveryFailureInput,
+  type OutboxDeliveryPruneInput,
+  type OutboxDeliveryReplayInput,
+  type OutboxDeliveryState,
+  type ExternalActionPlan,
+  type ExternalActionPlanRequestInput,
+  type ExternalActionPlanRequestResult,
+  type ExternalActionApprovalInput,
+  type ExternalActionApprovalResult,
+  type ExternalActionPlanExpiryInput,
+  type BeginExternalActionAttemptInput,
+  type CompleteExternalActionAttemptInput,
+  type FailExternalActionAttemptInput,
+  type ReconcileExternalActionPlanInput,
+  type ExternalActionPlanListInput,
+  type ExternalActionPlanState,
+  MAX_OUTBOX_DELIVERY_ATTEMPTS,
   type ReconciliationCandidates,
   type RunBundleInput,
   type RunBundleResult,
@@ -247,7 +287,7 @@ export class PostgresStore implements ControlPlaneStore {
   async resetOperationalData(): Promise<void> {
     await this.transaction(async (client) => {
       await client.query(`TRUNCATE TABLE
-        idempotency_keys,outbox_events,inference_requests,inference_capabilities,engineering_routing_assessments,comparison_candidates,comparisons,sandbox_instances,workspace_leases,artifacts,approvals,run_events,
+        idempotency_keys,external_action_plans,outbox_deliveries,outbox_events,authority_bindings,inference_requests,inference_capabilities,engineering_routing_assessments,comparison_candidates,comparisons,sandbox_instances,workspace_leases,artifacts,approvals,run_events,
         memory_proposals,workspaces,runs,tasks RESTART IDENTITY`);
     });
   }
@@ -931,7 +971,7 @@ export class PostgresStore implements ControlPlaneStore {
   }
 
   private assertEventCompatible(stored: RunEvent, requested: Omit<RunEvent, "seq">): void {
-    if (stored.runId !== requested.runId || stored.type !== requested.type || stored.message !== requested.message ||
+    if (stored.id !== requested.id || stored.runId !== requested.runId || stored.type !== requested.type || stored.message !== requested.message ||
         canonicalJson(stored.payload) !== canonicalJson(requested.payload)) {
       throw new StorageConflictError(`Event ${requested.id} was already used with different content`);
     }
@@ -1676,6 +1716,691 @@ export class PostgresStore implements ControlPlaneStore {
     return result.rowCount === 1;
   }
 
+  async createAuthorityBinding(binding: AuthorityBinding): Promise<AuthorityBinding> {
+    validateAuthorityBinding(binding);
+    return this.transaction(async (client) => this.persistAuthorityBinding(client, binding, false));
+  }
+
+  async bindAuthority(binding: AuthorityBinding): Promise<AuthorityBinding> {
+    return this.createAuthorityBinding(binding);
+  }
+
+  async getAuthorityBinding(provider: string, localKind: string, localId: string): Promise<AuthorityBinding | null> {
+    validateDeliveryIdentity(provider, "Authority provider", 128);
+    validateDeliveryIdentity(localKind, "Authority local kind", 128);
+    validateDeliveryIdentity(localId, "Authority local ID", 256);
+    const row = (await this.pool.query(`SELECT * FROM authority_bindings
+      WHERE provider=$1 AND local_kind=$2 AND local_id=$3`, [provider, localKind, localId])).rows[0];
+    return row ? this.mapAuthorityBinding(row) : null;
+  }
+
+  async listAuthorityBindings(provider?: string, limit = 100): Promise<AuthorityBinding[]> {
+    if (provider !== undefined) validateDeliveryIdentity(provider, "Authority provider", 128);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+      throw new StorageConflictError("Authority binding list limit must be between 1 and 1000");
+    }
+    const result = provider === undefined
+      ? await this.pool.query(`SELECT * FROM authority_bindings
+        ORDER BY observed_at DESC,provider,local_kind,local_id LIMIT $1`, [limit])
+      : await this.pool.query(`SELECT * FROM authority_bindings WHERE provider=$1
+        ORDER BY observed_at DESC,local_kind,local_id LIMIT $2`, [provider, limit]);
+    return result.rows.map(this.mapAuthorityBinding);
+  }
+
+  async refreshAuthorityBinding(input: AuthorityBindingRefreshInput): Promise<AuthorityBinding> {
+    validateAuthorityRefresh(input);
+    return this.transaction(async (client) => this.persistAuthorityBinding(client, input, true));
+  }
+
+  async claimOutboxDeliveries(input: OutboxDeliveryClaimInput): Promise<OutboxDelivery[]> {
+    return this.transaction(async (client) => {
+      const observedAt = await this.observeApprovalClock(client);
+      validateOutboxDeliveryClaim(input, observedAt);
+      const limit = input.limit ?? 100;
+      const topicParameters = input.topics.map((_, index) => `$${index + 3}`).join(",");
+      const limitParameter = input.topics.length + 3;
+      const candidates = (await client.query(`SELECT oe.* FROM outbox_events oe
+        LEFT JOIN outbox_deliveries d ON d.outbox_id=oe.id AND d.consumer_id=$1
+        WHERE oe.published_at IS NULL AND oe.available_at<=$2
+          AND oe.topic IN (${topicParameters})
+          AND (
+            d.outbox_id IS NULL
+            OR (d.state='pending' AND d.next_attempt_at<=$2)
+            OR (d.state='claimed' AND d.claim_expires_at<=$2)
+          )
+        ORDER BY oe.created_at,oe.id LIMIT $${limitParameter}
+        FOR UPDATE OF oe SKIP LOCKED`, [input.consumerId, observedAt, ...input.topics, limit])).rows;
+      const claimed: OutboxDelivery[] = [];
+      for (const event of candidates) {
+        // The outer-join snapshot above can become stale while waiting for the
+        // outbox-event lock: another transaction may insert this consumer's
+        // delivery without updating the outbox row itself. Re-read and lock the
+        // delivery identity, then make the absent-row insert conflict-safe.
+        // This unique-key fence—not the candidate scan—is the claim arbiter.
+        const existing = (await client.query(`SELECT * FROM outbox_deliveries
+          WHERE outbox_id=$1 AND consumer_id=$2 FOR UPDATE`, [event.id, input.consumerId])).rows[0];
+        if (existing) {
+          const claimable = (existing.state === "pending"
+              && existing.next_attempt_at !== null
+              && this.rowTimestamp(existing.next_attempt_at) <= observedAt)
+            || (existing.state === "claimed"
+              && existing.claim_expires_at !== null
+              && this.rowTimestamp(existing.claim_expires_at) <= observedAt);
+          if (!claimable) continue;
+        }
+        let attempts = existing ? Number(existing.attempts) : 0;
+        let history = existing ? this.deliveryHistory(existing.attempt_history_json) : [];
+        if (existing?.state === "claimed" && this.rowTimestamp(existing.claim_expires_at) <= observedAt) {
+          history = this.appendDeliveryHistory(history, { kind: "claim_expired", attempt: attempts, observedAt });
+        }
+        if (attempts >= MAX_OUTBOX_DELIVERY_ATTEMPTS) {
+          if (existing && existing.state !== "dead") {
+            await client.query(`UPDATE outbox_deliveries SET state='dead',claim_owner_id=NULL,
+              claim_token=NULL,claim_expires_at=NULL,next_attempt_at=NULL,attempt_history_json=$1::jsonb
+              WHERE outbox_id=$2 AND consumer_id=$3`, [JSON.stringify(history), event.id, input.consumerId]);
+          }
+          continue;
+        }
+        const token = randomBytes(32).toString("hex");
+        attempts += 1;
+        let row: any;
+        if (!existing) {
+          const inserted = await client.query(`INSERT INTO outbox_deliveries
+            (outbox_id,consumer_id,state,claim_owner_id,claim_token,claim_expires_at,attempts,
+             next_attempt_at,delivered_at,last_error_code,last_error_fingerprint,attempt_history_json)
+            VALUES ($1,$2,'claimed',$3,$4,$5,$6,NULL,NULL,NULL,NULL,$7::jsonb)
+            ON CONFLICT (outbox_id,consumer_id) DO NOTHING
+            RETURNING *`, [
+            event.id, input.consumerId, input.ownerId, token, input.claimUntil, attempts, JSON.stringify([]),
+          ]);
+          row = inserted.rows[0];
+          if (!row) continue;
+        } else {
+          const updated = await client.query(`UPDATE outbox_deliveries SET state='claimed',claim_owner_id=$1,claim_token=$2,
+            claim_expires_at=$3,attempts=$4,next_attempt_at=NULL,attempt_history_json=$5::jsonb
+            WHERE outbox_id=$6 AND consumer_id=$7 RETURNING *`, [
+            input.ownerId, token, input.claimUntil, attempts, JSON.stringify(history), event.id, input.consumerId,
+          ]);
+          row = updated.rows[0];
+        }
+        if (row) claimed.push(this.mapOutboxDelivery(row));
+      }
+      return claimed;
+    });
+  }
+
+  async getOutboxDelivery(outboxId: string, consumerId: string): Promise<OutboxDelivery | null> {
+    validateDeliveryIdentity(outboxId, "Outbox ID", 256);
+    validateDeliveryIdentity(consumerId, "Outbox consumer ID", 128);
+    const row = await this.getOutboxDeliveryRow(this.pool, outboxId, consumerId);
+    return row ? this.mapOutboxDelivery(row) : null;
+  }
+
+  async listOutboxDeliveries(consumerId?: string, state?: OutboxDeliveryState, limit = 100): Promise<OutboxDelivery[]> {
+    if (consumerId !== undefined) validateDeliveryIdentity(consumerId, "Outbox consumer ID", 128);
+    if (state !== undefined && !["pending", "claimed", "delivered", "dead"].includes(state)) {
+      throw new StorageConflictError("Outbox delivery state is invalid");
+    }
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+      throw new StorageConflictError("Outbox delivery list limit must be between 1 and 1000");
+    }
+    const conditions: string[] = [];
+    const params: any[] = [];
+    if (consumerId !== undefined) { conditions.push("d.consumer_id=$1"); params.push(consumerId); }
+    if (state !== undefined) { conditions.push(`d.state=$${params.length + 1}`); params.push(state); }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    params.push(limit);
+    const result = await this.pool.query(`SELECT d.*,oe.id AS event_id,oe.topic,oe.aggregate_id,
+      oe.payload_json,oe.created_at AS event_created_at,oe.available_at,oe.published_at,
+      oe.attempts AS event_attempts,oe.last_error AS event_last_error
+      FROM outbox_deliveries d JOIN outbox_events oe ON oe.id=d.outbox_id ${where}
+      ORDER BY oe.created_at,d.outbox_id,d.consumer_id LIMIT $${params.length}`, params);
+    return result.rows.map(this.mapOutboxDelivery);
+  }
+
+  async ackOutboxDelivery(input: OutboxDeliveryAckInput): Promise<OutboxDelivery> {
+    validateOutboxDeliveryFence(input);
+    if (input.providerReceipt) validateProviderReceipt(input.providerReceipt);
+    if (input.authorityBinding) validateAuthorityBinding(input.authorityBinding);
+    return this.transaction(async (client) => {
+      const observedAt = await this.observeApprovalClock(client);
+      const row = await this.getOutboxDeliveryRow(client, input.outboxId, input.consumerId);
+      if (!row) throw new StorageConflictError("Outbox delivery was not found");
+      this.assertActiveDeliveryFence(row, input, observedAt);
+      if (input.authorityBinding && !input.providerReceipt) {
+        throw new StorageConflictError("An authority binding requires a matching provider receipt");
+      }
+      if (input.providerReceipt && input.authorityBinding) {
+        this.assertReceiptMatchesAuthority(input.providerReceipt, input.authorityBinding);
+        if ("expectedExternalId" in input.authorityBinding) {
+          await this.persistAuthorityBinding(client, input.authorityBinding as AuthorityBindingRefreshInput, true);
+        } else {
+          await this.persistAuthorityBinding(client, input.authorityBinding as AuthorityBinding, false);
+        }
+      }
+      const receipt = input.providerReceipt;
+      const result = await client.query(`UPDATE outbox_deliveries SET state='delivered',delivered_at=$1,
+        claim_owner_id=NULL,claim_token=NULL,claim_expires_at=NULL,next_attempt_at=NULL,
+        last_error_code=NULL,last_error_fingerprint=NULL,receipt_external_id=$2,receipt_external_revision=$3,
+        receipt_payload_hash=$4,receipt_observed_at=$5
+        WHERE outbox_id=$6 AND consumer_id=$7 AND state='claimed' AND claim_owner_id=$8 AND claim_token=$9
+          AND claim_expires_at>$1`, [
+        observedAt, receipt?.externalId ?? null, receipt?.externalRevision ?? null, receipt?.payloadHash ?? null,
+        receipt?.observedAt ?? null, input.outboxId, input.consumerId, input.ownerId, input.claimToken,
+      ]);
+      if (result.rowCount !== 1) throw new StorageConflictError("Outbox delivery claim was lost before acknowledgement");
+      const updated = await this.getOutboxDeliveryRow(client, input.outboxId, input.consumerId);
+      if (!updated) throw new StorageConflictError("Outbox delivery disappeared during acknowledgement");
+      return this.mapOutboxDelivery(updated);
+    });
+  }
+
+  async failOutboxDelivery(input: OutboxDeliveryFailureInput): Promise<OutboxDelivery> {
+    return this.transaction(async (client) => {
+      const observedAt = await this.observeApprovalClock(client);
+      validateOutboxDeliveryFailure(input, observedAt);
+      const row = await this.getOutboxDeliveryRow(client, input.outboxId, input.consumerId);
+      if (!row) throw new StorageConflictError("Outbox delivery was not found");
+      this.assertActiveDeliveryFence(row, input, observedAt);
+      const attempts = Number(row.attempts);
+      const history = this.appendDeliveryHistory(this.deliveryHistory(row.attempt_history_json), {
+        kind: "failure", attempt: attempts, observedAt,
+        errorCode: input.errorCode, errorFingerprint: input.errorFingerprint,
+      });
+      const dead = attempts >= MAX_OUTBOX_DELIVERY_ATTEMPTS;
+      const result = await client.query(`UPDATE outbox_deliveries SET state=$1,claim_owner_id=NULL,claim_token=NULL,
+        claim_expires_at=NULL,next_attempt_at=$2,last_error_code=$3,last_error_fingerprint=$4,
+        attempt_history_json=$5::jsonb
+        WHERE outbox_id=$6 AND consumer_id=$7 AND state='claimed' AND claim_owner_id=$8 AND claim_token=$9
+          AND claim_expires_at>$10`, [
+        dead ? "dead" : "pending", dead ? null : (input.nextAttemptAt ?? observedAt), input.errorCode,
+        input.errorFingerprint, JSON.stringify(history), input.outboxId, input.consumerId, input.ownerId, input.claimToken, observedAt,
+      ]);
+      if (result.rowCount !== 1) throw new StorageConflictError("Outbox delivery claim was lost before failure acknowledgement");
+      const updated = await this.getOutboxDeliveryRow(client, input.outboxId, input.consumerId);
+      if (!updated) throw new StorageConflictError("Outbox delivery disappeared during failure acknowledgement");
+      return this.mapOutboxDelivery(updated);
+    });
+  }
+
+  async replayOutboxDelivery(input: OutboxDeliveryReplayInput): Promise<OutboxDelivery> {
+    return this.transaction(async (client) => {
+      const observedAt = await this.observeApprovalClock(client);
+      validateOutboxDeliveryReplay(input, observedAt);
+      const row = await this.getOutboxDeliveryRow(client, input.outboxId, input.consumerId);
+      if (!row) throw new StorageConflictError("Outbox delivery was not found");
+      if (row.state !== "dead") throw new StorageConflictError("Only a dead-letter delivery can be replayed explicitly");
+      const history = this.appendDeliveryHistory(this.deliveryHistory(row.attempt_history_json), {
+        kind: "replay", attempt: Number(row.attempts), observedAt, operatorId: input.operatorId,
+      });
+      await client.query(`UPDATE outbox_deliveries SET state='pending',claim_owner_id=NULL,claim_token=NULL,
+        claim_expires_at=NULL,attempts=0,next_attempt_at=$1,delivered_at=NULL,attempt_history_json=$2::jsonb
+        WHERE outbox_id=$3 AND consumer_id=$4 AND state='dead'`, [
+        input.nextAttemptAt ?? observedAt, JSON.stringify(history), input.outboxId, input.consumerId,
+      ]);
+      const updated = await this.getOutboxDeliveryRow(client, input.outboxId, input.consumerId);
+      if (!updated) throw new StorageConflictError("Outbox delivery disappeared during replay");
+      return this.mapOutboxDelivery(updated);
+    });
+  }
+
+  pruneOutboxDeliveries(input: OutboxDeliveryPruneInput): Promise<number>;
+  pruneOutboxDeliveries(before: string, limit?: number): Promise<number>;
+  async pruneOutboxDeliveries(inputOrBefore: OutboxDeliveryPruneInput | string, positionalLimit?: number): Promise<number> {
+    const input = typeof inputOrBefore === "string"
+      ? { before: inputOrBefore, limit: positionalLimit }
+      : inputOrBefore;
+    validateOutboxDeliveryPrune(input);
+    const limit = input.limit ?? 100;
+    return this.transaction(async (client) => {
+      const observedAt = await this.observeApprovalClock(client);
+      if (Date.parse(input.before) > Date.parse(observedAt)) {
+        throw new StorageConflictError("Outbox delivery prune cutoff cannot be in the future");
+      }
+      const rows = (await client.query(`SELECT outbox_id,consumer_id FROM outbox_deliveries
+        WHERE state='delivered' AND delivered_at<$1 ORDER BY delivered_at,outbox_id,consumer_id
+        LIMIT $2 FOR UPDATE SKIP LOCKED`, [input.before, limit])).rows;
+      let deleted = 0;
+      for (const row of rows) {
+        const result = await client.query(`DELETE FROM outbox_deliveries
+          WHERE outbox_id=$1 AND consumer_id=$2 AND state='delivered'`, [row.outbox_id, row.consumer_id]);
+        deleted += result.rowCount ?? 0;
+      }
+      return deleted;
+    });
+  }
+
+  async requestExternalActionPlan(input: ExternalActionPlanRequestInput): Promise<ExternalActionPlanRequestResult> {
+    if (input.event.runId !== input.plan.runId) throw new StorageConflictError("External action request event must belong to the plan run");
+    return this.transaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext('external-action-plan'),hashtext($1))", [input.plan.id]);
+      if (input.idempotency) await client.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))", [input.idempotency.scope, input.idempotency.key]);
+      const observedAt = await this.observeApprovalClock(client);
+      const existingIdempotency = input.idempotency ? await this.getIdempotencyRow(client, input.idempotency.scope, input.idempotency.key) : null;
+      if (existingIdempotency) {
+        if (existingIdempotency.requestHash !== input.idempotency!.requestHash) throw new IdempotencyConflictError();
+        if (existingIdempotency.resourceType !== "external-action-plan" || existingIdempotency.resourceId !== input.plan.id) throw new IdempotencyConflictError("Idempotency key refers to another external action plan");
+        const stored = await this.getExternalActionPlanSync(client, input.plan.id);
+        if (!stored) throw new StorageConflictError("External action idempotency record refers to a missing plan");
+        this.assertExternalActionPlanCompatible(stored, input.plan);
+        const approval = await this.getApprovalRow(client, stored.approvalId);
+        if (!approval) throw new StorageConflictError("External action plan approval is missing");
+        this.assertApprovalRequestCompatible(approval, input.approval, true);
+        const eventId = String(existingIdempotency.response.eventId ?? input.event.id);
+        const eventRow = (await client.query("SELECT * FROM run_events WHERE id=$1", [eventId])).rows[0];
+        if (!eventRow) throw new StorageConflictError("External action request replay event is missing");
+        const event = this.mapEvent(eventRow);
+        this.assertEventCompatible(event, input.event);
+        const run = await this.getRunRow(client, stored.runId);
+        if (!run) throw new StorageConflictError("External action plan run is missing");
+        return { plan: stored, approval, event, replayed: true };
+      }
+      const existingRow = await this.getExternalActionPlanRow(client, input.plan.id);
+      if (existingRow) {
+        const stored = this.mapExternalActionPlan(existingRow);
+        this.assertExternalActionPlanCompatible(stored, input.plan);
+        const approval = await this.getApprovalRow(client, stored.approvalId);
+        const eventRow = (await client.query("SELECT * FROM run_events WHERE id=$1", [input.event.id])).rows[0];
+        if (!approval || !eventRow) throw new StorageConflictError("External action request replay is incomplete");
+        this.assertApprovalRequestCompatible(approval, input.approval, true);
+        const event = this.mapEvent(eventRow);
+        this.assertEventCompatible(event, input.event);
+        if (input.idempotency) await this.insertIdempotency(client, input.idempotency, "external-action-plan", stored.id, { planId: stored.id, approvalId: stored.approvalId, eventId: event.id });
+        const run = await this.getRunRow(client, stored.runId);
+        if (!run) throw new StorageConflictError("External action plan run is missing");
+        return { plan: stored, approval, event, replayed: true };
+      }
+      const runResult = await client.query("SELECT * FROM runs WHERE id=$1 FOR UPDATE", [input.plan.runId]);
+      const run = runResult.rows[0] ? this.mapRun(runResult.rows[0]) : null;
+      if (!run) throw new StorageConflictError("External action plan run not found");
+      validateExternalActionPlanRequest(input.plan, input.approval, run, observedAt);
+      if (await this.getApprovalRow(client, input.approval.id)) throw new StorageConflictError("External action approval ID is already used");
+      await this.insertApproval(client, input.approval);
+      await client.query(`INSERT INTO external_action_plans
+        (id,run_id,project_id,workflow,kind,provider,marker,target_json,spec_json,request_hash,evidence_digest,policy_hash,
+         approval_id,approval_action,exact_effect,expires_at,state,attempts,provider_receipt_json,result_json,last_error_code,
+         last_error_fingerprint,reconciliation_json,authorized_outbox_id,created_at,updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17,0,NULL,NULL,NULL,NULL,NULL,NULL,$18,$19)`, [
+        input.plan.id, input.plan.runId, input.plan.projectId, input.plan.workflow, input.plan.kind, input.plan.provider, input.plan.marker,
+        canonicalJson(input.plan.target), canonicalJson(input.plan.spec), input.plan.requestHash, input.plan.evidenceDigest, input.plan.policyHash,
+        input.plan.approvalId, input.plan.approvalAction, input.plan.exactEffect, input.plan.expiresAt, "pending_approval", input.plan.createdAt, observedAt,
+      ]);
+      await this.insertOutbox(client, "approval.requested", input.approval.id, { approvalId: input.approval.id, runId: input.approval.runId, action: input.approval.action }, input.approval.id);
+      await this.insertOutbox(client, "external.action.requested", input.plan.id, {
+        planId: input.plan.id, runId: input.plan.runId, projectId: input.plan.projectId, provider: input.plan.provider, kind: input.plan.kind, marker: input.plan.marker, approvalId: input.plan.approvalId,
+      }, input.plan.id);
+      const event = await this.insertEvent(client, input.event);
+      if (input.idempotency) await this.insertIdempotency(client, input.idempotency, "external-action-plan", input.plan.id, { planId: input.plan.id, approvalId: input.plan.approvalId, eventId: event.id });
+      const plan = await this.getExternalActionPlanSync(client, input.plan.id);
+      const approval = await this.getApprovalRow(client, input.approval.id);
+      if (!plan || !approval) throw new StorageConflictError("External action plan could not be persisted");
+      return { plan, approval, event, replayed: false };
+    });
+  }
+
+  async getExternalActionPlan(id: string): Promise<ExternalActionPlan | null> {
+    validateDeliveryIdentity(id, "External action plan ID", 128);
+    const row = await this.getExternalActionPlanRow(this.pool, id);
+    return row ? this.mapExternalActionPlan(row) : null;
+  }
+
+  async listExternalActionPlans(input: ExternalActionPlanListInput = {}): Promise<ExternalActionPlan[]> {
+    if (input.projectId !== undefined) validateDeliveryIdentity(input.projectId, "External action project ID", 128);
+    if (input.state !== undefined && !["pending_approval", "authorized", "executing", "ambiguous", "succeeded", "denied", "expired", "failed", "quarantined"].includes(input.state)) throw new StorageConflictError("External action plan state is invalid");
+    const limit = input.limit ?? 100;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new StorageConflictError("External action plan list limit must be between 1 and 1000");
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (input.projectId !== undefined) { conditions.push(`project_id=$${params.length + 1}`); params.push(input.projectId); }
+    if (input.state !== undefined) { conditions.push(`state=$${params.length + 1}`); params.push(input.state); }
+    params.push(limit);
+    const rows = (await this.pool.query(`SELECT * FROM external_action_plans ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""} ORDER BY created_at DESC,id LIMIT $${params.length}`, params)).rows;
+    return rows.map(this.mapExternalActionPlan);
+  }
+
+  async resolveExternalActionPlanApproval(input: ExternalActionApprovalInput): Promise<ExternalActionApprovalResult> {
+    validateDeliveryIdentity(input.planId, "External action plan ID", 128);
+    validateDeliveryIdentity(input.resolvedBy, "External action approval resolver ID", 256);
+    if (!["approved", "denied", "changes_requested"].includes(input.state)) throw new StorageConflictError("External action approval state is invalid");
+    if (!input.decision.trim() || input.decision.length > 2_048) throw new StorageConflictError("External action approval decision is invalid");
+    return this.transaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext('external-action-plan'),hashtext($1))", [input.planId]);
+      if (input.idempotency) await client.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))", [input.idempotency.scope, input.idempotency.key]);
+      const observedAt = await this.observeApprovalClock(client);
+      const existingIdempotency = input.idempotency ? await this.getIdempotencyRow(client, input.idempotency.scope, input.idempotency.key) : null;
+      if (existingIdempotency) {
+        if (existingIdempotency.requestHash !== input.idempotency!.requestHash) throw new IdempotencyConflictError();
+        if (existingIdempotency.resourceType !== "external-action-plan" || existingIdempotency.resourceId !== input.planId) throw new IdempotencyConflictError("Idempotency key refers to another external action plan");
+        const plan = await this.getExternalActionPlanSync(client, input.planId);
+        if (!plan) throw new StorageConflictError("External action plan is missing");
+        const approval = await this.getApprovalRow(client, plan.approvalId);
+        if (!approval) throw new StorageConflictError("External action approval is missing");
+        validateApprovalResolutionBinding(approval, input.expectedBinding, observedAt);
+        if (approval.state !== input.state || approval.decision !== input.decision) throw new StorageConflictError("External action approval replay differs from the stored decision");
+        const eventId = existingIdempotency.response.eventId;
+        const eventRow = input.event ? (await client.query("SELECT * FROM run_events WHERE id=$1", [input.event.id])).rows[0] : (eventId ? (await client.query("SELECT * FROM run_events WHERE id=$1", [String(eventId)])).rows[0] : null);
+        if (input.event && eventRow) this.assertEventCompatible(this.mapEvent(eventRow), input.event);
+        return { plan, approval, event: eventRow ? this.mapEvent(eventRow) : undefined, replayed: true };
+      }
+      const row = await this.getExternalActionPlanRow(client, input.planId, true);
+      if (!row) throw new StorageConflictError("External action plan not found");
+      const currentPlan = this.mapExternalActionPlan(row);
+      const approval = await this.getApprovalRow(client, currentPlan.approvalId, true);
+      if (!approval) throw new StorageConflictError("External action approval not found");
+      const run = await this.getRunRow(client, currentPlan.runId);
+      if (!run || run.status !== "completed") throw new StorageConflictError("External action evidence run is not terminal-complete");
+      if (input.event && input.event.runId !== currentPlan.runId) throw new StorageConflictError("External action approval event must belong to the evidence run");
+      validateApprovalResolutionBinding(approval, input.expectedBinding, observedAt);
+      const nextPlanState = input.state === "approved" ? "authorized" : "denied";
+      let replayed = false;
+      if (approval.state !== "pending") {
+        if (approval.state !== input.state || approval.decision !== input.decision) throw new StorageConflictError("External action approval has already been resolved differently");
+        if ((input.state === "approved" && currentPlan.state !== "authorized") || (input.state !== "approved" && currentPlan.state !== "denied")) throw new StorageConflictError("External action plan state disagrees with its approval");
+        replayed = true;
+      } else {
+        if (currentPlan.state !== "pending_approval") throw new StorageConflictError("External action plan is not awaiting approval");
+        const updatedApproval = await client.query(`UPDATE approvals SET state=$1,decision=$2,resolved_by=$3,resolved_at=$4 WHERE id=$5 AND state='pending' AND expires_at>$4`, [input.state, input.decision, input.resolvedBy, observedAt, approval.id]);
+        if (updatedApproval.rowCount !== 1) throw new StorageConflictError("External action approval expired or lost a concurrent resolution");
+        await this.insertOutbox(client, "approval.resolved", approval.id, { approvalId: approval.id, runId: approval.runId, state: input.state, decision: input.decision }, `${approval.id}:${input.state}`);
+        if (input.state === "approved") await this.insertOutbox(client, "external.action.authorized", currentPlan.id, { planId: currentPlan.id, projectId: currentPlan.projectId, provider: currentPlan.provider, kind: currentPlan.kind, marker: currentPlan.marker }, "authorized");
+        else await this.insertOutbox(client, "external.action.denied", currentPlan.id, { planId: currentPlan.id, projectId: currentPlan.projectId, provider: currentPlan.provider, kind: currentPlan.kind, marker: currentPlan.marker, decision: input.decision }, input.state);
+        await client.query(`UPDATE external_action_plans SET state=$1,authorized_outbox_id=$2,updated_at=$3 WHERE id=$4 AND state='pending_approval'`, [nextPlanState, input.state === "approved" ? externalActionAuthorizedOutboxId(currentPlan.id) : null, observedAt, currentPlan.id]);
+      }
+      const event = !replayed && input.event ? await this.insertEvent(client, input.event) : undefined;
+      if (input.idempotency) await this.insertIdempotency(client, input.idempotency, "external-action-plan", currentPlan.id, { planId: currentPlan.id, approvalId: approval.id, eventId: event?.id ?? null });
+      const plan = await this.getExternalActionPlanSync(client, currentPlan.id);
+      const resolved = await this.getApprovalRow(client, approval.id);
+      if (!plan || !resolved) throw new StorageConflictError("External action approval resolution disappeared");
+      return { plan, approval: resolved, event, replayed };
+    });
+  }
+
+  async expireExternalActionPlanApproval(input: ExternalActionPlanExpiryInput): Promise<ExternalActionApprovalResult> {
+    validateDeliveryIdentity(input.planId, "External action plan ID", 128);
+    return this.transaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext('external-action-plan'),hashtext($1))", [input.planId]);
+      if (input.idempotency) await client.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))", [input.idempotency.scope, input.idempotency.key]);
+      const observedAt = await this.observeApprovalClock(client);
+      const existingIdempotency = input.idempotency ? await this.getIdempotencyRow(client, input.idempotency.scope, input.idempotency.key) : null;
+      if (existingIdempotency) {
+        if (existingIdempotency.requestHash !== input.idempotency!.requestHash) throw new IdempotencyConflictError();
+        if (existingIdempotency.resourceType !== "external-action-plan" || existingIdempotency.resourceId !== input.planId) throw new IdempotencyConflictError("Idempotency key refers to another external action plan");
+        const plan = await this.getExternalActionPlanSync(client, input.planId);
+        if (!plan) throw new StorageConflictError("External action plan is missing");
+        const approval = await this.getApprovalRow(client, plan.approvalId);
+        if (!approval) throw new StorageConflictError("External action approval is missing");
+        const eventRow = existingIdempotency.response.eventId ? (await client.query("SELECT * FROM run_events WHERE id=$1", [String(existingIdempotency.response.eventId)])).rows[0] : null;
+        return { plan, approval, event: eventRow ? this.mapEvent(eventRow) : undefined, replayed: true };
+      }
+      const row = await this.getExternalActionPlanRow(client, input.planId, true);
+      if (!row) throw new StorageConflictError("External action plan not found");
+      const plan = this.mapExternalActionPlan(row);
+      const approval = await this.getApprovalRow(client, plan.approvalId, true);
+      if (!approval) throw new StorageConflictError("External action approval not found");
+      const run = await this.getRunRow(client, plan.runId);
+      if (!run || input.event.runId !== plan.runId) throw new StorageConflictError("External action expiry event must belong to the evidence run");
+      if (approval.state !== "pending") {
+        if (approval.decision !== "expired" || plan.state !== "expired") throw new StorageConflictError("External action approval has already been resolved differently");
+        return { plan, approval, replayed: true };
+      }
+      validateApprovalExpiry(approval, observedAt);
+      if (plan.state !== "pending_approval") throw new StorageConflictError("External action plan is not awaiting expiry");
+      const updatedApproval = await client.query("UPDATE approvals SET state='denied',decision='expired',resolved_by='store-expiry',resolved_at=$1 WHERE id=$2 AND state='pending' AND expires_at<=$1", [observedAt, approval.id]);
+      if (updatedApproval.rowCount !== 1) throw new StorageConflictError("External action approval expiry lost a concurrent resolution");
+      await client.query("UPDATE external_action_plans SET state='expired',updated_at=$1 WHERE id=$2 AND state='pending_approval'", [observedAt, plan.id]);
+      await this.insertOutbox(client, "approval.resolved", approval.id, { approvalId: approval.id, runId: approval.runId, state: "denied", decision: "expired" }, "expired");
+      await this.insertOutbox(client, "external.action.expired", plan.id, { planId: plan.id, projectId: plan.projectId, provider: plan.provider, kind: plan.kind, marker: plan.marker }, "expired");
+      const event = await this.insertEvent(client, input.event);
+      if (input.idempotency) await this.insertIdempotency(client, input.idempotency, "external-action-plan", plan.id, { planId: plan.id, approvalId: approval.id, eventId: event.id });
+      const updatedPlan = await this.getExternalActionPlanSync(client, plan.id);
+      const resolvedApproval = await this.getApprovalRow(client, approval.id);
+      if (!updatedPlan || !resolvedApproval) throw new StorageConflictError("External action expiry disappeared");
+      return { plan: updatedPlan, approval: resolvedApproval, event, replayed: false };
+    });
+  }
+
+  async beginExternalActionAttempt(input: BeginExternalActionAttemptInput): Promise<ExternalActionPlan> {
+    validateDeliveryIdentity(input.planId, "External action plan ID", 128);
+    validateExternalActionDeliveryFence(input.delivery);
+    return this.transaction(async (client) => {
+      const observedAt = await this.observeApprovalClock(client);
+      const row = await this.getExternalActionPlanRow(client, input.planId, true);
+      if (!row) throw new StorageConflictError("External action plan not found");
+      const plan = this.mapExternalActionPlan(row);
+      if (plan.authorizedOutboxId === null || plan.authorizedOutboxId !== input.delivery.outboxId) throw new StorageConflictError("External action delivery is not the authorized outbox event");
+      const delivery = await this.getOutboxDeliveryRow(client, input.delivery.outboxId, input.delivery.consumerId);
+      if (!delivery) throw new StorageConflictError("External action authorized delivery is missing");
+      this.assertExternalAuthorizedDelivery(plan, delivery, input.delivery, observedAt);
+      if (plan.state === "executing") return plan;
+      if (!["authorized", "failed"].includes(plan.state)) throw new StorageConflictError("External action plan is not authorized for execution");
+      if (plan.attempts >= MAX_OUTBOX_DELIVERY_ATTEMPTS) throw new StorageConflictError("External action attempt bound was exhausted");
+      const result = await client.query("UPDATE external_action_plans SET state='executing',attempts=attempts+1,last_error_code=NULL,last_error_fingerprint=NULL,updated_at=$1 WHERE id=$2 AND state IN ('authorized','failed')", [observedAt, plan.id]);
+      if (result.rowCount !== 1) throw new StorageConflictError("External action plan lost a concurrent begin race");
+      return (await this.getExternalActionPlanSync(client, plan.id))!;
+    });
+  }
+
+  async completeExternalActionAttempt(input: CompleteExternalActionAttemptInput): Promise<ExternalActionPlan> {
+    validateDeliveryIdentity(input.planId, "External action plan ID", 128);
+    validateExternalActionDeliveryFence(input.delivery);
+    if (!input.result || typeof input.result !== "object" || Array.isArray(input.result)) throw new StorageConflictError("External action result must be an object");
+    return this.transaction(async (client) => {
+      const observedAt = await this.observeApprovalClock(client);
+      const row = await this.getExternalActionPlanRow(client, input.planId, true);
+      if (!row) throw new StorageConflictError("External action plan not found");
+      const plan = this.mapExternalActionPlan(row);
+      validateExternalActionReceipt(input.providerReceipt, plan);
+      validateExternalActionPlan({ ...plan, result: input.result, providerReceipt: input.providerReceipt, updatedAt: observedAt });
+      if (plan.state === "succeeded") {
+        if (canonicalJson(plan.providerReceipt) !== canonicalJson(input.providerReceipt) || canonicalJson(plan.result) !== canonicalJson(input.result)) throw new StorageConflictError("External action success replay differs from the stored receipt");
+        return plan;
+      }
+      if (plan.state !== "executing") throw new StorageConflictError("External action plan is not executing");
+      if (plan.authorizedOutboxId !== input.delivery.outboxId) throw new StorageConflictError("External action completion is not for the authorized outbox event");
+      const delivery = await this.getOutboxDeliveryRow(client, input.delivery.outboxId, input.delivery.consumerId);
+      if (!delivery) throw new StorageConflictError("External action delivery is missing");
+      this.assertExternalAuthorizedDelivery(plan, delivery, input.delivery, observedAt);
+      const delivered = await client.query(`UPDATE outbox_deliveries SET state='delivered',delivered_at=$1,claim_owner_id=NULL,claim_token=NULL,claim_expires_at=NULL,next_attempt_at=NULL,last_error_code=NULL,last_error_fingerprint=NULL,receipt_external_id=$2,receipt_external_revision=$3,receipt_payload_hash=$4,receipt_observed_at=$5 WHERE outbox_id=$6 AND consumer_id=$7 AND state='claimed' AND claim_owner_id=$8 AND claim_token=$9 AND claim_expires_at>$1`, [observedAt, input.providerReceipt.externalId, input.providerReceipt.externalRevision, input.providerReceipt.payloadHash, input.providerReceipt.observedAt, input.delivery.outboxId, input.delivery.consumerId, input.delivery.ownerId, input.delivery.claimToken]);
+      if (delivered.rowCount !== 1) throw new StorageConflictError("External action delivery fence was lost before success");
+      const updated = await client.query("UPDATE external_action_plans SET state='succeeded',provider_receipt_json=$1::jsonb,result_json=$2::jsonb,last_error_code=NULL,last_error_fingerprint=NULL,updated_at=$3 WHERE id=$4 AND state='executing'", [canonicalJson(input.providerReceipt), canonicalJson(input.result), observedAt, plan.id]);
+      if (updated.rowCount !== 1) throw new StorageConflictError("External action plan success transition was lost");
+      await this.insertOutbox(client, "external.action.succeeded", plan.id, { planId: plan.id, projectId: plan.projectId, provider: plan.provider, kind: plan.kind, marker: plan.marker }, "succeeded");
+      return (await this.getExternalActionPlanSync(client, plan.id))!;
+    });
+  }
+
+  async failExternalActionAttempt(input: FailExternalActionAttemptInput): Promise<ExternalActionPlan> {
+    validateDeliveryIdentity(input.planId, "External action plan ID", 128);
+    return this.transaction(async (client) => {
+      const observedAt = await this.observeApprovalClock(client);
+      validateExternalActionError(input, observedAt);
+      const row = await this.getExternalActionPlanRow(client, input.planId, true);
+      if (!row) throw new StorageConflictError("External action plan not found");
+      const plan = this.mapExternalActionPlan(row);
+      if (plan.state !== "executing") throw new StorageConflictError("External action plan is not executing");
+      if (plan.authorizedOutboxId !== input.delivery.outboxId) throw new StorageConflictError("External action failure is not for the authorized outbox event");
+      const delivery = await this.getOutboxDeliveryRow(client, input.delivery.outboxId, input.delivery.consumerId);
+      if (!delivery) throw new StorageConflictError("External action delivery is missing");
+      this.assertExternalAuthorizedDelivery(plan, delivery, input.delivery, observedAt);
+      const attempts = Number(delivery.attempts);
+      const history = this.appendDeliveryHistory(this.deliveryHistory(delivery.attempt_history_json), { kind: "failure", attempt: attempts, observedAt, errorCode: input.errorCode, errorFingerprint: input.errorFingerprint });
+      const dead = Boolean(input.ambiguous) || attempts >= MAX_OUTBOX_DELIVERY_ATTEMPTS;
+      const deliveryResult = await client.query(`UPDATE outbox_deliveries SET state=$1,claim_owner_id=NULL,claim_token=NULL,claim_expires_at=NULL,next_attempt_at=$2,last_error_code=$3,last_error_fingerprint=$4,attempt_history_json=$5::jsonb WHERE outbox_id=$6 AND consumer_id=$7 AND state='claimed' AND claim_owner_id=$8 AND claim_token=$9 AND claim_expires_at>$10`, [dead ? "dead" : "pending", dead ? null : (input.nextAttemptAt ?? observedAt), input.errorCode, input.errorFingerprint, JSON.stringify(history), input.delivery.outboxId, input.delivery.consumerId, input.delivery.ownerId, input.delivery.claimToken, observedAt]);
+      if (deliveryResult.rowCount !== 1) throw new StorageConflictError("External action delivery fence was lost before failure");
+      const nextState = input.ambiguous ? "ambiguous" : "failed";
+      const planResult = await client.query("UPDATE external_action_plans SET state=$1,last_error_code=$2,last_error_fingerprint=$3,updated_at=$4 WHERE id=$5 AND state='executing'", [nextState, input.errorCode, input.errorFingerprint, observedAt, plan.id]);
+      if (planResult.rowCount !== 1) throw new StorageConflictError("External action failure transition was lost");
+      await this.insertOutbox(client, input.ambiguous ? "external.action.ambiguous" : "external.action.failed", plan.id, { planId: plan.id, projectId: plan.projectId, provider: plan.provider, kind: plan.kind, marker: plan.marker, attempts, errorCode: input.errorCode }, input.ambiguous ? "ambiguous" : `failed:${attempts}`);
+      return (await this.getExternalActionPlanSync(client, plan.id))!;
+    });
+  }
+
+  async reconcileExternalActionPlan(input: ReconcileExternalActionPlanInput): Promise<ExternalActionPlan> {
+    validateDeliveryIdentity(input.planId, "External action plan ID", 128);
+    validateDeliveryIdentity(input.deliveryConsumerId, "External action delivery consumer ID", 128);
+    validateDeliveryIdentity(input.operatorId, "External action reconciliation operator ID", 256);
+    return this.transaction(async (client) => {
+      const observedAt = await this.observeApprovalClock(client);
+      const row = await this.getExternalActionPlanRow(client, input.planId, true);
+      if (!row) throw new StorageConflictError("External action plan not found");
+      const plan = this.mapExternalActionPlan(row);
+      if (input.evidence.operatorId !== input.operatorId) throw new StorageConflictError("External action reconciliation operator identity does not match its evidence");
+      validateExternalActionReconciliation(input.evidence, plan);
+      if (plan.reconciliation && canonicalJson(plan.reconciliation) !== canonicalJson(input.evidence)
+          && !(plan.state === "ambiguous" && plan.reconciliation.outcome === "zero" && input.evidence.outcome !== "zero")) {
+        throw new StorageConflictError("External action reconciliation evidence conflicts with the stored evidence");
+      }
+      if (plan.state !== "ambiguous") throw new StorageConflictError("Only an ambiguous external action plan can be reconciled");
+      const delivery = await this.getOutboxDeliveryRow(client, plan.authorizedOutboxId ?? "", input.deliveryConsumerId);
+      if (!delivery || delivery.state !== "dead") throw new StorageConflictError("Ambiguous external action requires its dead delivery evidence");
+      const serializedEvidence = canonicalJson(input.evidence);
+      if (input.evidence.outcome === "zero") {
+        const result = await client.query("UPDATE external_action_plans SET reconciliation_json=$1::jsonb,updated_at=$2 WHERE id=$3 AND state='ambiguous'", [serializedEvidence, observedAt, plan.id]);
+        if (result.rowCount !== 1) throw new StorageConflictError("External action reconciliation lost a concurrent update");
+      } else if (input.evidence.outcome === "multiple") {
+        const result = await client.query("UPDATE external_action_plans SET state='quarantined',reconciliation_json=$1::jsonb,updated_at=$2 WHERE id=$3 AND state='ambiguous'", [serializedEvidence, observedAt, plan.id]);
+        if (result.rowCount !== 1) throw new StorageConflictError("External action quarantine lost a concurrent update");
+      } else {
+        const receipt = { externalId: input.evidence.externalId!, externalRevision: input.evidence.externalRevision!, payloadHash: input.evidence.payloadHash!, observedAt: input.evidence.observedAt, marker: plan.marker, targetHash: input.evidence.targetHash };
+        validateExternalActionReceipt(receipt, plan);
+        const delivered = await client.query("UPDATE outbox_deliveries SET state='delivered',delivered_at=$1,next_attempt_at=NULL,last_error_code=NULL,last_error_fingerprint=NULL,receipt_external_id=$2,receipt_external_revision=$3,receipt_payload_hash=$4,receipt_observed_at=$5 WHERE outbox_id=$6 AND consumer_id=$7 AND state='dead'", [observedAt, receipt.externalId, receipt.externalRevision, receipt.payloadHash, receipt.observedAt, plan.authorizedOutboxId, input.deliveryConsumerId]);
+        if (delivered.rowCount !== 1) throw new StorageConflictError("External action dead delivery could not be reconciled");
+        const result = await client.query("UPDATE external_action_plans SET state='succeeded',provider_receipt_json=$1::jsonb,result_json=$2::jsonb,reconciliation_json=$3::jsonb,last_error_code=NULL,last_error_fingerprint=NULL,updated_at=$4 WHERE id=$5 AND state='ambiguous'", [canonicalJson(receipt), canonicalJson({ reconciled: true, matchCount: 1 }), serializedEvidence, observedAt, plan.id]);
+        if (result.rowCount !== 1) throw new StorageConflictError("External action reconciliation success lost a concurrent update");
+      }
+      await this.insertOutbox(client, "external.action.reconciled", plan.id, { planId: plan.id, projectId: plan.projectId, provider: plan.provider, kind: plan.kind, marker: plan.marker, outcome: input.evidence.outcome }, `${input.evidence.outcome}:${input.evidence.targetHash}`);
+      return (await this.getExternalActionPlanSync(client, plan.id))!;
+    });
+  }
+
+  private async getExternalActionPlanRow(client: Queryable, id: string, lock = false): Promise<any | null> {
+    const row = (await client.query(`SELECT * FROM external_action_plans WHERE id=$1${lock ? " FOR UPDATE" : ""}`, [id])).rows[0];
+    return row ?? null;
+  }
+
+  private async getExternalActionPlanSync(client: Queryable, id: string): Promise<ExternalActionPlan | null> {
+    const row = await this.getExternalActionPlanRow(client, id);
+    return row ? this.mapExternalActionPlan(row) : null;
+  }
+
+  private assertExternalActionPlanCompatible(stored: ExternalActionPlan, requested: ExternalActionPlan): void {
+    if (stored.id !== requested.id || stored.runId !== requested.runId || stored.projectId !== requested.projectId || stored.workflow !== requested.workflow
+        || stored.kind !== requested.kind || stored.provider !== requested.provider || stored.marker !== requested.marker
+        || canonicalJson(stored.target) !== canonicalJson(requested.target) || canonicalJson(stored.spec) !== canonicalJson(requested.spec)
+        || stored.requestHash !== requested.requestHash || stored.evidenceDigest !== requested.evidenceDigest || stored.policyHash !== requested.policyHash
+        || stored.approvalId !== requested.approvalId || stored.approvalAction !== requested.approvalAction || stored.exactEffect !== requested.exactEffect || stored.expiresAt !== requested.expiresAt || stored.createdAt !== requested.createdAt) {
+      throw new StorageConflictError(`External action plan ${requested.id} was already used with different request content`);
+    }
+  }
+
+  private assertExternalAuthorizedDelivery(plan: ExternalActionPlan, row: any, input: { outboxId: string; consumerId: string; ownerId: string; claimToken: string }, observedAt: string): void {
+    if (row.topic !== "external.action.authorized" || row.aggregate_id !== plan.id) throw new StorageConflictError("External action delivery is not the authorized safe event");
+    const payload = decodeJson<Record<string, unknown>>(row.payload_json, {});
+    if (payload.planId !== plan.id || payload.provider !== plan.provider || payload.kind !== plan.kind || payload.marker !== plan.marker) throw new StorageConflictError("External action authorized event identity does not match the plan");
+    this.assertActiveDeliveryFence(row, input, observedAt);
+  }
+
+  private async persistAuthorityBinding(
+    client: Queryable,
+    binding: AuthorityBinding,
+    refresh: boolean,
+  ): Promise<AuthorityBinding> {
+    const refreshInput = refresh ? binding as AuthorityBindingRefreshInput : null;
+    const normalized: AuthorityBinding = {
+      provider: binding.provider, localKind: binding.localKind, localId: binding.localId,
+      externalKind: binding.externalKind ?? null, externalId: binding.externalId, revision: binding.revision,
+      observedAt: binding.observedAt, payloadHash: binding.payloadHash, freshUntil: binding.freshUntil,
+    };
+    const row = (await client.query(`SELECT * FROM authority_bindings
+      WHERE provider=$1 AND local_kind=$2 AND local_id=$3 FOR UPDATE`, [
+      normalized.provider, normalized.localKind, normalized.localId,
+    ])).rows[0];
+    if (!row) {
+      if (refresh) throw new StorageConflictError("Authority refresh requires an existing binding");
+      await client.query(`INSERT INTO authority_bindings
+        (provider,local_kind,local_id,external_kind,external_id,revision,observed_at,payload_hash,fresh_until)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [
+        normalized.provider, normalized.localKind, normalized.localId, normalized.externalKind,
+        normalized.externalId, normalized.revision, normalized.observedAt, normalized.payloadHash, normalized.freshUntil,
+      ]);
+      return normalized;
+    }
+    const current = this.mapAuthorityBinding(row);
+    if (!refresh) {
+      if (!this.authorityBindingsEqual(current, normalized)) {
+        throw new StorageConflictError("Authority identity or revision changed; use explicit refreshAuthorityBinding");
+      }
+      return current;
+    }
+    const expected = refreshInput!;
+    if (current.externalKind !== (expected.expectedExternalKind ?? null)
+        || current.externalId !== expected.expectedExternalId || current.revision !== expected.expectedRevision
+        || current.payloadHash !== expected.expectedPayloadHash) {
+      throw new StorageConflictError("Authority refresh compare-and-set evidence does not match the stored binding");
+    }
+    if (Date.parse(normalized.observedAt) < Date.parse(current.observedAt)) {
+      throw new StorageConflictError("Authority refresh observedAt cannot move backwards");
+    }
+    await client.query(`UPDATE authority_bindings SET external_kind=$1,external_id=$2,revision=$3,
+      observed_at=$4,payload_hash=$5,fresh_until=$6
+      WHERE provider=$7 AND local_kind=$8 AND local_id=$9`, [
+      normalized.externalKind, normalized.externalId, normalized.revision, normalized.observedAt,
+      normalized.payloadHash, normalized.freshUntil, normalized.provider, normalized.localKind, normalized.localId,
+    ]);
+    return normalized;
+  }
+
+  private authorityBindingsEqual(left: AuthorityBinding, right: AuthorityBinding): boolean {
+    return (left.externalKind ?? null) === (right.externalKind ?? null)
+      && left.provider === right.provider && left.localKind === right.localKind && left.localId === right.localId
+      && left.externalId === right.externalId && left.revision === right.revision
+      && left.observedAt === right.observedAt && left.payloadHash === right.payloadHash
+      && left.freshUntil === right.freshUntil;
+  }
+
+  private assertReceiptMatchesAuthority(receipt: OutboxDeliveryAckInput["providerReceipt"], binding: AuthorityBinding): void {
+    if (!receipt || receipt.externalId !== binding.externalId || receipt.externalRevision !== binding.revision
+        || receipt.payloadHash !== binding.payloadHash || receipt.observedAt !== binding.observedAt) {
+      throw new StorageConflictError("Provider receipt does not match the authority binding evidence");
+    }
+  }
+
+  private assertActiveDeliveryFence(
+    row: any,
+    input: Pick<OutboxDeliveryAckInput, "outboxId" | "consumerId" | "ownerId" | "claimToken">,
+    observedAt: string,
+  ): void {
+    if (row.state !== "claimed" || row.claim_owner_id !== input.ownerId || row.claim_token !== input.claimToken
+        || !row.claim_expires_at || this.rowTimestamp(row.claim_expires_at) <= observedAt) {
+      throw new StorageConflictError("Outbox delivery claim is missing, fenced, or expired");
+    }
+  }
+
+  private rowTimestamp(value: unknown): string {
+    return isoString(value);
+  }
+
+  private deliveryHistory(value: unknown): OutboxDeliveryAttemptEvidence[] {
+    const parsed = decodeJson<OutboxDeliveryAttemptEvidence[]>(value, []);
+    return Array.isArray(parsed) ? parsed : [];
+  }
+
+  private appendDeliveryHistory(
+    history: OutboxDeliveryAttemptEvidence[],
+    entry: OutboxDeliveryAttemptEvidence,
+  ): OutboxDeliveryAttemptEvidence[] {
+    return [...history, entry].slice(-256);
+  }
+
+  private async getOutboxDeliveryRow(client: Queryable, outboxId: string, consumerId: string): Promise<any | null> {
+    const row = (await client.query(`SELECT d.*,oe.id AS event_id,oe.topic,oe.aggregate_id,
+      oe.payload_json,oe.created_at AS event_created_at,oe.available_at,oe.published_at,
+      oe.attempts AS event_attempts,oe.last_error AS event_last_error
+      FROM outbox_deliveries d JOIN outbox_events oe ON oe.id=d.outbox_id
+      WHERE d.outbox_id=$1 AND d.consumer_id=$2`, [outboxId, consumerId])).rows[0];
+    return row ?? null;
+  }
+
   async listReconciliationCandidates(now: string, outboxLimit = 100): Promise<ReconciliationCandidates> {
     const [queued, strandedIds, terminal, expired, quarantined, pending] = await Promise.all([
       this.pool.query("SELECT * FROM runs WHERE status='queued' ORDER BY created_at"),
@@ -1829,6 +2554,57 @@ export class PostgresStore implements ControlPlaneStore {
     id: row.id, topic: row.topic, aggregateId: row.aggregate_id, payload: decodeJson(row.payload_json, {}),
     createdAt: isoString(row.created_at), availableAt: isoString(row.available_at),
     publishedAt: nullableIsoString(row.published_at), attempts: Number(row.attempts), lastError: row.last_error,
+  });
+
+  private mapAuthorityBinding = (row: any): AuthorityBinding => ({
+    provider: String(row.provider), localKind: String(row.local_kind), localId: String(row.local_id),
+    externalKind: row.external_kind === null || row.external_kind === undefined ? null : String(row.external_kind),
+    externalId: String(row.external_id), revision: String(row.revision), observedAt: isoString(row.observed_at),
+    payloadHash: String(row.payload_hash), freshUntil: isoString(row.fresh_until),
+  });
+
+  private mapOutboxDelivery = (row: any): OutboxDelivery => {
+    const outbox: OutboxEvent = {
+      id: String(row.event_id ?? row.outbox_id), topic: String(row.topic), aggregateId: String(row.aggregate_id),
+      payload: decodeJson(row.payload_json, {}), createdAt: isoString(row.event_created_at ?? row.created_at),
+      availableAt: isoString(row.available_at), publishedAt: nullableIsoString(row.published_at),
+      attempts: Number(row.event_attempts ?? 0), lastError: row.event_last_error ?? null,
+    };
+    const providerReceipt = row.receipt_external_id === null || row.receipt_external_id === undefined
+      ? null
+      : {
+        externalId: String(row.receipt_external_id), externalRevision: String(row.receipt_external_revision),
+        payloadHash: String(row.receipt_payload_hash), observedAt: isoString(row.receipt_observed_at),
+      };
+    return {
+      outboxId: String(row.outbox_id), consumerId: String(row.consumer_id), state: String(row.state) as OutboxDeliveryState,
+      claimOwnerId: row.claim_owner_id === null || row.claim_owner_id === undefined ? null : String(row.claim_owner_id),
+      claimToken: row.claim_token === null || row.claim_token === undefined ? null : String(row.claim_token),
+      claimExpiresAt: row.claim_expires_at === null || row.claim_expires_at === undefined ? null : isoString(row.claim_expires_at),
+      attempts: Number(row.attempts), nextAttemptAt: row.next_attempt_at === null || row.next_attempt_at === undefined ? null : isoString(row.next_attempt_at),
+      deliveredAt: row.delivered_at === null || row.delivered_at === undefined ? null : isoString(row.delivered_at),
+      lastErrorCode: row.last_error_code === null || row.last_error_code === undefined ? null : String(row.last_error_code),
+      lastErrorFingerprint: row.last_error_fingerprint === null || row.last_error_fingerprint === undefined ? null : String(row.last_error_fingerprint),
+      providerReceipt, attemptHistory: this.deliveryHistory(row.attempt_history_json), outbox,
+      topic: outbox.topic, aggregateId: outbox.aggregateId, payload: outbox.payload,
+      createdAt: outbox.createdAt, availableAt: outbox.availableAt,
+    };
+  };
+
+  private mapExternalActionPlan = (row: any): ExternalActionPlan => ({
+    id: String(row.id), runId: String(row.run_id), projectId: String(row.project_id), workflow: String(row.workflow),
+    kind: String(row.kind) as ExternalActionPlan["kind"], provider: String(row.provider) as ExternalActionPlan["provider"],
+    marker: String(row.marker), target: decodeJson(row.target_json, {}), spec: decodeJson(row.spec_json, {}),
+    requestHash: String(row.request_hash), evidenceDigest: String(row.evidence_digest), policyHash: String(row.policy_hash),
+    approvalId: String(row.approval_id), approvalAction: String(row.approval_action), exactEffect: String(row.exact_effect),
+    expiresAt: isoString(row.expires_at), state: String(row.state) as ExternalActionPlanState, attempts: Number(row.attempts),
+    providerReceipt: row.provider_receipt_json ? decodeJson(row.provider_receipt_json, null) : null,
+    result: row.result_json ? decodeJson(row.result_json, null) : null,
+    lastErrorCode: row.last_error_code === null || row.last_error_code === undefined ? null : String(row.last_error_code),
+    lastErrorFingerprint: row.last_error_fingerprint === null || row.last_error_fingerprint === undefined ? null : String(row.last_error_fingerprint),
+    reconciliation: row.reconciliation_json ? decodeJson(row.reconciliation_json, null) : null,
+    authorizedOutboxId: row.authorized_outbox_id === null || row.authorized_outbox_id === undefined ? null : String(row.authorized_outbox_id),
+    createdAt: isoString(row.created_at), updatedAt: isoString(row.updated_at),
   });
 
   private mapIdempotency = (row: any): StoredIdempotencyRecord => ({

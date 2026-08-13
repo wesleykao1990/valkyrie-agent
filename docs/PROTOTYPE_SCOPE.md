@@ -68,9 +68,12 @@ and Hermes. The browser walkthrough uses these fixtures and labels their
 events/evidence accordingly. The default requires no credential, PostgreSQL
 server, Atomic install, Codex/Claude provider, or Hermes login.
 
-Linear remains a seeded local task projection; no live roadmap read/write occurs.
-GitHub PR preparation in mock flows is evidence text only. Project Brain retrieval
-is local Markdown, not OpenViking.
+Linear remains a seeded local task projection by default; no live roadmap
+read/write occurs unless the default-off M7 connector and an accepted policy are
+configured. Even then ordinary task creation stays local: each issue/comment
+requires its own evidence-bound plan and approval. GitHub PR preparation in mock
+flows is evidence text only. Project Brain retrieval is local Markdown, not
+OpenViking.
 
 ## Opt-in native pilot behavior
 
@@ -98,7 +101,8 @@ implemented capability and live exercise are reported separately.
 - Bearer auth protects the pilot API but is not user/device identity, fine-grained
   authorization, expiry/rotation/revocation, or remote channel attestation.
 - PostgreSQL is contract-tested; production still needs deployment-specific roles,
-  TLS, backup/restore, monitoring, retention, and an outbox dispatcher.
+  TLS, backup/restore, monitoring, retention operations, and deployment of the
+  default-off connector dispatcher against accepted live policy.
 - The writer boundary has renewal, fencing, ownership-aware stop/quarantine,
   cleanup, live-engine evidence, and provider-aware restart recovery for the
   fixed fixture. It is not a general writer or production sandbox service.

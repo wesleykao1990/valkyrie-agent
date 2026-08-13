@@ -111,7 +111,11 @@ partial transactions accidentally:
 - workspace/lease acquisition, rotation, renewal, quarantine, and exact-fence
   release;
 - task/memory mutations plus outbox records;
-- all-or-nothing, exact-replay artifact batches plus deterministic outbox rows.
+- all-or-nothing, exact-replay artifact batches plus deterministic outbox rows;
+- authority binding creation/compare-and-swap refresh;
+- per-consumer outbox claim/ack/fail/dead-letter replay and bounded pruning; and
+- immutable external-action request/approval/begin/receipt/failure/reconciliation
+  transitions.
 
 Filesystem preparation is outside the database transaction. The service discards
 an unpersisted prepared workspace after a database failure or an idempotent race.
@@ -138,10 +142,23 @@ The outbox row commits in the same transaction as its business mutation. IDs are
 deterministic for an operation, and a reused ID must match exact topic, aggregate,
 and payload content.
 
-This version does **not** publish to Linear, GitHub, a broker, or any other external
-system. It exposes pending rows and retry bookkeeping for a future dispatcher.
-That dispatcher must provide at-least-once delivery, deduplicate stable IDs, bound
-attempts/backoff, redact logs, and retain raw failure evidence.
+Migration 012 preserves each original business outbox row and adds an independent
+delivery row per consumer. Ordinary `task.created` rows remain durable local
+business evidence but have no provider-write consumer. The composed
+`external-final-action` consumer accepts only `external.action.authorized` rows
+created by an immutable evidence/policy-bound plan and exact approval. Claims
+expire and are fenced by owner/token. Backoff begins at 15 seconds, is capped at
+15 minutes, and dead-letters after eight failed attempts. Safe error
+code/fingerprint and attempt evidence are retained; provider body, request, URL,
+and credential are not. Operator replay preserves the stable outbox/action
+identity. Delivered delivery rows may be pruned after 30 days in bounded pages;
+dead letters require an explicit operator decision.
+
+Migration 013 uses the same delivery boundary for separately approved Linear
+issue creation, Linear evidence comments, and GitHub draft PRs. The
+external-action plan records immutable target/revision/evidence/connector-policy/
+effect hashes and durable provider receipts. A crash after durable begin becomes
+ambiguous instead of retrying the provider.
 
 ## Startup and restart reconciliation
 
@@ -154,7 +171,9 @@ Startup inspects:
 - nonterminal durable sandbox instances plus exact provider engine inventory;
 - M5a cleaned evidence-ready runs and their pending, expired, or stranded
   evidence-bound approvals;
-- pending outbox rows.
+- pending outbox rows;
+- expired per-consumer claims and dead letters; and
+- external actions left `executing` or `ambiguous` without a complete receipt.
 
 An unconfirmed queued run is failed. Legacy/demo leases whose owner is the run may
 be released, but strict isolated-writer leases are quarantined for provider-aware
@@ -349,6 +368,30 @@ schema v10/v11. Rollback requires a verified pre-v10/pre-v11 backup, as
 appropriate, or a separate compatible SQLite data set; there is no destructive
 down migration. Before applying migration 011 to retained data, audit that no
 capability/role has multiple `reserved` requests, or migration must fail closed.
+
+### Migrations 012–013: connector authority, delivery, and final actions
+
+Migration 012 adds narrow `authority_bindings` plus `outbox_deliveries`. A binding
+is identified by provider/local-kind/local-ID and may advance only through an
+exact compare-and-swap expected revision. Delivery identity is the immutable
+business outbox ID plus consumer ID; concurrent workers use expiring claims and
+exact fencing tokens. Ack can atomically record a bounded provider receipt and
+authority binding. Retry, dead state, explicit replay, and retention pruning are
+shared SQLite/PostgreSQL contracts.
+
+Migration 013 adds immutable `external_action_plans`. Request and approval bind
+run/project/workflow, action/effect, evidence/policy/target/content hashes,
+provider, marker, and expiry. The store atomically emits authorization delivery,
+persists begin-before-spend, records a success receipt with delivery ack, or
+records safe failure/ambiguity evidence. Reconciliation requires an exact
+delivery consumer and operator evidence; it cannot mutate the completed evidence
+run.
+
+Both migrations are forward-only and checksummed. An older binary must reject
+schema v12/v13. Rollback requires a verified pre-v12/pre-v13 backup, as
+appropriate, or an independent compatible SQLite dataset. Disabling connectors
+does not delete pending/dead/ambiguous evidence and cannot undo an external
+object that a provider already created.
 
 The immutability and transition guarantees above are store-contract and database
 constraint guarantees, not protection from an administrator issuing arbitrary

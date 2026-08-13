@@ -832,6 +832,37 @@ export class AtomicFixturePilotCoordinator {
     }
   }
 
+  /**
+   * Re-open and revalidate a completed pilot's governed bytes before a later,
+   * separately approved external action is even planned.
+   */
+  async validateExternalActionEvidence(runId: string) {
+    const run = await this.store.getRun(runId);
+    if (!run || !this.isPilotRun(run) || run.status !== "completed") {
+      throw new Error("Atomic fixture external action requires a completed pilot run");
+    }
+    const approvals = (await this.store.listApprovals())
+      .filter((item) => item.runId === run.id && item.action === ATOMIC_FIXTURE_APPROVAL_ACTION && item.state === "approved");
+    if (approvals.length !== 1) throw new Error("Atomic fixture external action requires one accepted evidence gate");
+    const binding = approvalBindingOf(approvals[0]!);
+    if (!binding || binding.projectId !== run.projectId || binding.workflow !== ATOMIC_FIXTURE_WORKFLOW_NAME) {
+      throw new Error("Atomic fixture accepted evidence binding is incomplete");
+    }
+    const validated = await this.validateEvidenceSnapshot(run);
+    const evidenceDigest = artifactDigest(validated.artifacts);
+    if (binding.evidenceDigest !== evidenceDigest || binding.policyHash !== validated.instance.policyHash) {
+      throw new Error("Atomic fixture accepted evidence changed before external-action planning");
+    }
+    return {
+      runId: run.id,
+      projectId: run.projectId,
+      workflow: ATOMIC_FIXTURE_WORKFLOW_NAME,
+      evidenceDigest,
+      policyHash: validated.instance.policyHash,
+      artifacts: validated.artifacts,
+    };
+  }
+
   async reconcileStartup(): Promise<{ sandbox: Awaited<ReturnType<WriterSandboxBoundary["reconcileStartup"]>>; queuedScheduled: number; approvalsRecovered: number; expiredApprovals: number }> {
     const sandbox = await this.boundary.reconcileStartup();
     const observedAt = this.clock().toISOString();

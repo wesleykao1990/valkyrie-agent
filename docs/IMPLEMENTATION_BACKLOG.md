@@ -32,8 +32,10 @@
 
 ## P0
 
-- [ ] Linear project/issue read adapter
-- [ ] Linear idea creation with idempotency
+- [x] Linear project/issue read adapter, default-off and revision-bound
+- [x] Linear issue/idea write plan with stable provider idempotency, exact
+  approval, connector-policy binding, and adjacent target revalidation; ordinary
+  task creation remains local-only
 - [x] Compose a verified writer boundary into the first non-production Atomic
   pilot; keep the model path default-off behind its scoped egress/credential policy
 - [x] Authenticate the dedicated broker profile, run the fixed M5b pilot with the
@@ -43,19 +45,22 @@
   unexpired evidence gate; the recorded live smoke intentionally did not approve
 - [ ] Run the opt-in M6 Atomic/direct-Codex comparison after explicit approval to
   send the fixed fixture payload to the external ChatGPT subscription service
-- [ ] OpenViking read-only retrieval evaluation
+- [x] Read-only Project Brain provider/evaluation contract with an inert,
+  namespace-bound OpenViking candidate (no live transport composed)
 - [ ] Production audit log/retention policy (checksummed artifact registration is
   implemented for the fixture boundary)
-- [ ] External outbox dispatcher, retry worker, monitoring, and retention
-- [ ] Idempotency/outbox retention cleanup policy
+- [x] Approved external-action outbox dispatcher, fenced retry/dead-letter worker, bounded status,
+  explicit replay, and retention primitive
+- [x] Per-consumer delivered retention and dead-letter preservation policy
 
 ## P1
 
 - [x] Direct read-only Codex adapter
 - [x] Direct optional bare/API-key Claude Code adapter
 - [x] Simulated run comparison and reducer
-- [ ] GitHub PR creation after approval
-- [ ] Linear status/evidence projection
+- [x] GitHub draft-PR creation from a pre-existing revision-bound remote head
+  after exact evidence-bound approval; branch publication/merge remain absent
+- [x] Concise Linear evidence-comment projection after exact approval
 - [ ] Mobile approval cards with exact effects
 - [ ] Vault pull-request promotion flow
 - [ ] Context-pack snapshot retained with every run
@@ -64,9 +69,12 @@
   no run when the selected shape is unavailable
 - [x] Implement and contract-test package-local Atomic Lite with one retained implementer
   session, model-free checks, artifact/delta handoffs, conditional fresh review,
-  and forked repair continuity; runtime registration remains deferred to M7
-- [ ] Bind a fresh live Linear/Git context and accepted project execution policy
-  to an assessment before enabling general Direct/Lite/Full launch
+  and forked repair continuity; runtime registration remains a separate post-M7
+  reviewed change
+- [x] Bind configured fresh Linear/Git context and accepted project execution
+  policy to an assessment; live credential exercise remains opt-in
+- [ ] Register a trusted general project launcher after current authority is
+  bound; M7 assessments intentionally remain launch-unsupported
 - [ ] Re-benchmark Direct, Atomic Lite, and Atomic Full under one provider/model,
   cache posture, task contract, checks, and approval boundary
 

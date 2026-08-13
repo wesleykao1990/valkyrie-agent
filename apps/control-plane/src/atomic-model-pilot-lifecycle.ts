@@ -357,6 +357,34 @@ export class AtomicModelPilotLifecycleCoordinator {
     }
   }
 
+  /** Revalidate the exact accepted model-pilot evidence for a later external action. */
+  async validateExternalActionEvidence(runId: string) {
+    const run = await this.store.getRun(runId);
+    if (!run || !this.isPilotRun(run) || run.status !== "completed") {
+      throw new Error("Atomic model external action requires a completed pilot run");
+    }
+    const approvals = (await this.store.listApprovals())
+      .filter((item) => item.runId === run.id && item.action === ATOMIC_MODEL_PILOT_APPROVAL_ACTION && item.state === "approved");
+    if (approvals.length !== 1) throw new Error("Atomic model external action requires one accepted evidence gate");
+    const binding = approvalBindingOf(approvals[0]!);
+    if (!binding || binding.projectId !== run.projectId || binding.workflow !== ATOMIC_MODEL_PILOT_WORKFLOW) {
+      throw new Error("Atomic model accepted evidence binding is incomplete");
+    }
+    const validated = await this.validateEvidenceSnapshot(run);
+    const evidenceDigest = artifactDigest(validated.artifacts);
+    if (binding.evidenceDigest !== evidenceDigest || binding.policyHash !== validated.instance.policyHash) {
+      throw new Error("Atomic model accepted evidence changed before external-action planning");
+    }
+    return {
+      runId: run.id,
+      projectId: run.projectId,
+      workflow: ATOMIC_MODEL_PILOT_WORKFLOW,
+      evidenceDigest,
+      policyHash: validated.instance.policyHash,
+      artifacts: validated.artifacts,
+    };
+  }
+
   async reconcileStartup(): Promise<{
     sandbox: Awaited<ReturnType<WriterSandboxBoundary["reconcileStartup"]>>;
     queuedScheduled: number;

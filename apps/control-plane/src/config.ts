@@ -1,6 +1,12 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { isLoopbackHost, loadControlPlaneAuth } from "./auth.ts";
+import { isLoopbackHost, loadControlPlaneAuth, readPrivateSecretFile } from "./auth.ts";
+import {
+  loadConnectorPolicy,
+  type ConnectorPolicy,
+  type GithubConnectorMode,
+  type LinearConnectorMode,
+} from "./connector-policy.ts";
 
 export interface AppConfig {
   host: string;
@@ -35,6 +41,20 @@ export interface AppConfig {
   atomicFixtureModelPilot: AtomicFixtureModelPilotConfig;
   directCodexModelPilotEnabled: boolean;
   directClaudeModelPilotEnabled: boolean;
+  m7Connectors: M7ConnectorConfig;
+}
+
+export interface M7ConnectorConfig {
+  policy?: ConnectorPolicy;
+  linear: {
+    mode: LinearConnectorMode;
+    authMode: "personal-api-key" | "oauth-bearer";
+    token?: string;
+  };
+  github: {
+    mode: GithubConnectorMode;
+    token?: string;
+  };
 }
 
 export interface AtomicFixturePilotConfig {
@@ -135,6 +155,30 @@ function optionalSha256(name: string): string | undefined {
   return value;
 }
 
+function linearConnectorMode(name: string): LinearConnectorMode {
+  const value = (process.env[name] ?? "disabled").trim().toLowerCase();
+  if (value !== "disabled" && value !== "read-only" && value !== "read-write") {
+    throw new Error(`${name} must be disabled, read-only, or read-write`);
+  }
+  return value;
+}
+
+function githubConnectorMode(name: string): GithubConnectorMode {
+  const value = (process.env[name] ?? "disabled").trim().toLowerCase();
+  if (value !== "disabled" && value !== "read-only" && value !== "draft-pr") {
+    throw new Error(`${name} must be disabled, read-only, or draft-pr`);
+  }
+  return value;
+}
+
+function linearAuthMode(name: string): "personal-api-key" | "oauth-bearer" {
+  const value = (process.env[name] ?? "personal-api-key").trim().toLowerCase();
+  if (value !== "personal-api-key" && value !== "oauth-bearer") {
+    throw new Error(`${name} must be personal-api-key or oauth-bearer`);
+  }
+  return value;
+}
+
 function credentialHeader(name: string): "bearer" | "x-api-key" {
   const value = (process.env[name] ?? "bearer").trim().toLowerCase();
   if (value !== "bearer" && value !== "x-api-key") throw new Error(`${name} must be bearer or x-api-key`);
@@ -197,15 +241,53 @@ export function loadConfig(): AppConfig {
   const atomicFixtureModelPilotEnabled = booleanFlag("ATOMIC_FIXTURE_MODEL_PILOT_ENABLED", false);
   const directCodexModelPilotEnabled = booleanFlag("DIRECT_CODEX_MODEL_PILOT_ENABLED", false);
   const directClaudeModelPilotEnabled = booleanFlag("DIRECT_CLAUDE_MODEL_PILOT_ENABLED", false);
+  const linearMode = linearConnectorMode("LINEAR_CONNECTOR_MODE");
+  const githubMode = githubConnectorMode("GITHUB_CONNECTOR_MODE");
+  const connectorPolicyFile = optionalAbsolutePath("M7_CONNECTOR_POLICY_FILE");
+  const connectorPolicyDigest = optionalSha256("M7_CONNECTOR_POLICY_SHA256");
+  if ((connectorPolicyFile === undefined) !== (connectorPolicyDigest === undefined)) {
+    throw new Error("M7 connector policy file and accepted SHA-256 must be configured together");
+  }
+  const connectorPolicy = connectorPolicyFile && connectorPolicyDigest
+    ? loadConnectorPolicy({ path: connectorPolicyFile, acceptedSha256: connectorPolicyDigest })
+    : undefined;
+  const connectorsEnabled = linearMode !== "disabled" || githubMode !== "disabled" || connectorPolicy !== undefined;
   const operatorId = safeModelId("CONTROL_PLANE_OPERATOR_ID");
   const auth = loadControlPlaneAuth();
   if (!auth && (Object.values(runtimeAdapters).includes("native") || atomicFixturePilotEnabled || atomicFixtureModelPilotEnabled
-      || directCodexModelPilotEnabled || directClaudeModelPilotEnabled)) {
+      || directCodexModelPilotEnabled || directClaudeModelPilotEnabled || connectorsEnabled)) {
     throw new Error("Control-plane bearer authentication is required when a native runtime or the Atomic fixture pilot is enabled");
   }
   if (!auth && !isLoopbackHost(host)) {
     throw new Error("Control-plane bearer authentication is required for a non-loopback HOST binding");
   }
+  if ((linearMode !== "disabled" || githubMode !== "disabled") && !connectorPolicy) {
+    throw new Error("Live M7 connectors require an accepted connector policy file and digest");
+  }
+  if (connectorsEnabled && enableDemoReset) {
+    throw new Error("ENABLE_DEMO_RESET must be false when an M7 connector policy or live connector is enabled");
+  }
+  const linearTokenFile = optionalAbsolutePath("LINEAR_TOKEN_FILE");
+  const githubTokenFile = optionalAbsolutePath("GITHUB_TOKEN_FILE");
+  if (linearMode === "disabled" && linearTokenFile) throw new Error("LINEAR_TOKEN_FILE is forbidden while Linear is disabled");
+  if (githubMode === "disabled" && githubTokenFile) throw new Error("GITHUB_TOKEN_FILE is forbidden while GitHub is disabled");
+  if (linearMode !== "disabled" && !linearTokenFile) throw new Error("LINEAR_TOKEN_FILE is required when Linear is enabled");
+  if (githubMode !== "disabled" && !githubTokenFile) throw new Error("GITHUB_TOKEN_FILE is required when GitHub is enabled");
+  if ((linearMode === "read-write" || githubMode === "draft-pr") && !operatorId) {
+    throw new Error("CONTROL_PLANE_OPERATOR_ID is required for external connector writes");
+  }
+  const m7Connectors: M7ConnectorConfig = {
+    ...(connectorPolicy ? { policy: connectorPolicy } : {}),
+    linear: {
+      mode: linearMode,
+      authMode: linearAuthMode("LINEAR_AUTH_MODE"),
+      ...(linearTokenFile ? { token: readPrivateSecretFile(linearTokenFile, "LINEAR_TOKEN_FILE", 8) } : {}),
+    },
+    github: {
+      mode: githubMode,
+      ...(githubTokenFile ? { token: readPrivateSecretFile(githubTokenFile, "GITHUB_TOKEN_FILE", 8) } : {}),
+    },
+  };
 
   const atomicFixturePilot: AtomicFixturePilotConfig = {
     enabled: atomicFixturePilotEnabled,
@@ -345,6 +427,7 @@ export function loadConfig(): AppConfig {
     atomicFixtureModelPilot,
     directCodexModelPilotEnabled,
     directClaudeModelPilotEnabled,
+    m7Connectors,
   };
 }
 

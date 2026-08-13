@@ -20,6 +20,203 @@ const ATOMIC_MODEL_FIXTURE_ARTIFACT_READ_ERROR =
 const DIRECT_CODEX_FIXTURE_ARTIFACT_READ_ERROR =
   "Direct Codex fixture artifact evidence is unavailable or no longer matches the pending approval";
 
+const SAFE_CONTROL_PLANE_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;
+const EXTERNAL_ACTION_STATES = new Set([
+  "pending_approval", "authorized", "executing", "ambiguous", "succeeded",
+  "denied", "expired", "failed", "quarantined",
+]);
+const MAX_CONNECTOR_LIST_LIMIT = 1_000;
+const MAX_EXTERNAL_ACTION_TEXT_BYTES = 4 * 1024;
+const MAX_EXTERNAL_ACTION_EXPIRY_BYTES = 128;
+
+function asObject(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
+  return value as Record<string, unknown>;
+}
+
+function exactObjectKeys(
+  value: Record<string, unknown>,
+  keys: readonly string[],
+  label: string,
+  required: readonly string[] = [],
+): void {
+  const allowed = new Set(keys);
+  const unsupported = Object.keys(value).filter((key) => !allowed.has(key));
+  if (unsupported.length > 0 || required.some((key) => !(key in value))) {
+    throw new Error(`${label} accepts exactly the supported fields: ${keys.join(", ") || "no fields"}`);
+  }
+}
+
+function safeControlPlaneId(value: unknown, field: string): string {
+  if (typeof value !== "string" || !SAFE_CONTROL_PLANE_ID.test(value)) {
+    throw new Error(`${field} must be a safe control-plane ID of at most 128 characters`);
+  }
+  return value;
+}
+
+function boundedUtf8String(value: unknown, field: string, maximumBytes: number): string {
+  if (typeof value !== "string" || value.length < 1 || value !== value.trim()
+      || /[\u0000-\u001f\u007f\r]/u.test(value) || Buffer.byteLength(value, "utf8") > maximumBytes) {
+    throw new Error(`${field} must be a bounded UTF-8 string of at most ${maximumBytes} bytes`);
+  }
+  return value;
+}
+
+function optionalTimestamp(value: unknown, field: string): string | undefined {
+  if (value === undefined) return undefined;
+  const timestamp = boundedUtf8String(value, field, MAX_EXTERNAL_ACTION_EXPIRY_BYTES);
+  if (!Number.isFinite(Date.parse(timestamp))) throw new Error(`${field} must be an ISO-compatible timestamp`);
+  return timestamp;
+}
+
+function optionalExpiry(value: unknown): string | undefined {
+  return optionalTimestamp(value, "expiresAt");
+}
+
+function boundedLimit(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > MAX_CONNECTOR_LIST_LIMIT) {
+    throw new Error(`${field} must be an integer between 1 and ${MAX_CONNECTOR_LIST_LIMIT}`);
+  }
+  return value;
+}
+
+function queryLimit(url: URL, field: string): number | undefined {
+  const values = url.searchParams.getAll("limit");
+  if (values.length > 1) throw new Error(`${field} limit must be provided once`);
+  if (values.length === 0) return undefined;
+  if (values[0] === "") throw new Error(`${field} limit must be an integer between 1 and ${MAX_CONNECTOR_LIST_LIMIT}`);
+  if (!/^[0-9]+$/u.test(values[0])) throw new Error(`${field} limit must be an integer between 1 and ${MAX_CONNECTOR_LIST_LIMIT}`);
+  return boundedLimit(Number(values[0]), `${field} limit`);
+}
+
+function queryValue(url: URL, name: string, label: string): string | undefined {
+  const values = url.searchParams.getAll(name);
+  if (values.length > 1) throw new Error(`${label} must be provided once`);
+  if (values.length === 0) return undefined;
+  if (values[0] === "") throw new Error(`${label} must not be empty`);
+  return values[0];
+}
+
+function rejectUnknownQuery(url: URL, allowed: readonly string[], label: string): void {
+  const accepted = new Set(allowed);
+  for (const key of url.searchParams.keys()) {
+    if (!accepted.has(key)) throw new Error(`${label} contains an unsupported query field`);
+  }
+}
+
+function requireOperator(operatorId: string | undefined, label: string): string {
+  if (!operatorId) throw new Error(`${label} requires a configured operator principal`);
+  return safeControlPlaneId(operatorId, "Operator principal");
+}
+
+function decodeSafePathId(value: string, field: string): string {
+  return safeControlPlaneId(decodeURIComponent(value), field);
+}
+
+function prepareGithubDraftPrInput(value: unknown): {
+  runId: string; title: string; body: string; idempotencyKey?: string; expiresAt?: string;
+} {
+  const body = asObject(value, "GitHub draft PR preparation");
+  exactObjectKeys(body, ["runId", "title", "body", "idempotencyKey", "expiresAt"], "GitHub draft PR preparation", ["runId", "title", "body"]);
+  return {
+    runId: safeControlPlaneId(body.runId, "runId"),
+    title: boundedUtf8String(body.title, "title", MAX_EXTERNAL_ACTION_TEXT_BYTES),
+    body: boundedUtf8String(body.body, "body", MAX_EXTERNAL_ACTION_TEXT_BYTES),
+    ...(body.idempotencyKey === undefined ? {} : { idempotencyKey: safeControlPlaneId(body.idempotencyKey, "idempotencyKey") }),
+    ...(body.expiresAt === undefined ? {} : { expiresAt: optionalExpiry(body.expiresAt)! }),
+  };
+}
+
+function prepareLinearEvidenceCommentInput(value: unknown): {
+  runId: string; body: string; idempotencyKey?: string; expiresAt?: string;
+} {
+  const body = asObject(value, "Linear evidence comment preparation");
+  exactObjectKeys(body, ["runId", "body", "idempotencyKey", "expiresAt"], "Linear evidence comment preparation", ["runId", "body"]);
+  return {
+    runId: safeControlPlaneId(body.runId, "runId"),
+    body: boundedUtf8String(body.body, "body", MAX_EXTERNAL_ACTION_TEXT_BYTES),
+    ...(body.idempotencyKey === undefined ? {} : { idempotencyKey: safeControlPlaneId(body.idempotencyKey, "idempotencyKey") }),
+    ...(body.expiresAt === undefined ? {} : { expiresAt: optionalExpiry(body.expiresAt)! }),
+  };
+}
+
+function prepareLinearIssueInput(value: unknown): {
+  runId: string; title: string; description: string; idempotencyKey?: string; expiresAt?: string;
+} {
+  const body = asObject(value, "Linear issue preparation");
+  exactObjectKeys(
+    body,
+    ["runId", "title", "description", "idempotencyKey", "expiresAt"],
+    "Linear issue preparation",
+    ["runId", "title", "description"],
+  );
+  return {
+    runId: safeControlPlaneId(body.runId, "runId"),
+    title: boundedUtf8String(body.title, "title", MAX_EXTERNAL_ACTION_TEXT_BYTES),
+    description: boundedUtf8String(body.description, "description", MAX_EXTERNAL_ACTION_TEXT_BYTES),
+    ...(body.idempotencyKey === undefined ? {} : { idempotencyKey: safeControlPlaneId(body.idempotencyKey, "idempotencyKey") }),
+    ...(body.expiresAt === undefined ? {} : { expiresAt: optionalExpiry(body.expiresAt)! }),
+  };
+}
+
+function resolveExternalActionInput(value: unknown): {
+  decision: "approve" | "deny" | "request_changes"; idempotencyKey?: string;
+} {
+  const body = asObject(value, "External action resolution");
+  exactObjectKeys(body, ["decision", "idempotencyKey"], "External action resolution", ["decision"]);
+  if (body.decision !== "approve" && body.decision !== "deny" && body.decision !== "request_changes") {
+    throw new Error("External action resolution decision is invalid");
+  }
+  return {
+    decision: body.decision,
+    ...(body.idempotencyKey === undefined ? {} : { idempotencyKey: safeControlPlaneId(body.idempotencyKey, "idempotencyKey") }),
+  };
+}
+
+function reconcileExternalActionInput(value: unknown): {
+  outcome: "zero" | "one" | "multiple";
+  matchCount?: number;
+  externalId?: string;
+  externalRevision?: string;
+  payloadHash?: string;
+  observedAt?: string;
+} {
+  const body = asObject(value, "External action reconciliation");
+  exactObjectKeys(
+    body,
+    ["outcome", "matchCount", "externalId", "externalRevision", "payloadHash", "observedAt"],
+    "External action reconciliation",
+    ["outcome"],
+  );
+  if (body.outcome !== "zero" && body.outcome !== "one" && body.outcome !== "multiple") {
+    throw new Error("External action reconciliation outcome is invalid");
+  }
+  if (body.matchCount !== undefined
+      && (!Number.isSafeInteger(body.matchCount) || (body.matchCount as number) < 0 || (body.matchCount as number) > 100)) {
+    throw new Error("External action reconciliation matchCount is invalid");
+  }
+  if (body.outcome === "one"
+      && (body.externalId === undefined || body.externalRevision === undefined || body.payloadHash === undefined)) {
+    throw new Error("One-match reconciliation requires complete provider identity");
+  }
+  if (body.outcome !== "one"
+      && (body.externalId !== undefined || body.externalRevision !== undefined || body.payloadHash !== undefined)) {
+    throw new Error("Only one-match reconciliation may include provider identity");
+  }
+  if (body.payloadHash !== undefined
+      && (typeof body.payloadHash !== "string" || !/^[a-f0-9]{64}$/u.test(body.payloadHash))) {
+    throw new Error("External action reconciliation payloadHash is invalid");
+  }
+  return {
+    outcome: body.outcome,
+    ...(body.matchCount === undefined ? {} : { matchCount: body.matchCount as number }),
+    ...(body.externalId === undefined ? {} : { externalId: safeControlPlaneId(body.externalId, "externalId") }),
+    ...(body.externalRevision === undefined ? {} : { externalRevision: safeControlPlaneId(body.externalRevision, "externalRevision") }),
+    ...(body.payloadHash === undefined ? {} : { payloadHash: body.payloadHash }),
+    ...(body.observedAt === undefined ? {} : { observedAt: optionalTimestamp(body.observedAt, "observedAt")! }),
+  };
+}
+
 export function createControlPlaneServer(
   service: ControlPlaneService,
   store: ControlPlaneStore,
@@ -71,6 +268,94 @@ async function route(
       return res.end(JSON.stringify({ error: "Unauthorized" }));
     }
   }
+  let match: RegExpMatchArray | null;
+  const productionConnectorRoute = path === "/api/connectors/status"
+    || path === "/api/connectors/outbox/dead"
+    || path.startsWith("/api/connectors/outbox/dead/")
+    || path === "/api/external-actions"
+    || path.startsWith("/api/external-actions/");
+  if (productionConnectorRoute && !authToken) {
+    return sendJson(res, 403, { error: "Production connector API requires configured bearer authentication" });
+  }
+
+  if (method === "GET" && path === "/api/connectors/status") {
+    return sendJson(res, 200, await service.connectorStatus());
+  }
+
+  if (method === "GET" && path === "/api/connectors/outbox/dead") {
+    rejectUnknownQuery(url, ["limit"], "Dead-letter list query");
+    const limit = queryLimit(url, "Dead-letter list");
+    return sendJson(res, 200, limit === undefined
+      ? await service.listConnectorDeadLetters()
+      : await service.listConnectorDeadLetters(limit));
+  }
+
+  match = path.match(/^\/api\/connectors\/outbox\/dead\/([^/]+)$/);
+  if (method === "POST" && match) {
+    const resolvedBy = requireOperator(operatorId, "Dead-letter replay");
+    const body = asObject(await readJson(req), "Dead-letter replay");
+    exactObjectKeys(body, [], "Dead-letter replay");
+    return sendJson(res, 200, await service.replayConnectorDeadLetter(
+      decodeSafePathId(match[1], "outboxId"), resolvedBy,
+    ));
+  }
+
+  if (method === "POST" && path === "/api/external-actions/github-draft-pr") {
+    requireOperator(operatorId, "GitHub draft PR preparation");
+    return sendJson(res, 201, await service.prepareGithubDraftPr(prepareGithubDraftPrInput(await readJson(req))));
+  }
+
+  if (method === "POST" && path === "/api/external-actions/linear-evidence-comment") {
+    requireOperator(operatorId, "Linear evidence comment preparation");
+    return sendJson(res, 201, await service.prepareLinearEvidenceComment(prepareLinearEvidenceCommentInput(await readJson(req))));
+  }
+
+  if (method === "POST" && path === "/api/external-actions/linear-issue") {
+    requireOperator(operatorId, "Linear issue preparation");
+    return sendJson(res, 201, await service.prepareLinearIssue(prepareLinearIssueInput(await readJson(req))));
+  }
+
+  if (method === "GET" && path === "/api/external-actions") {
+    rejectUnknownQuery(url, ["projectId", "state", "limit"], "External action list query");
+    const projectId = queryValue(url, "projectId", "External action projectId");
+    const state = queryValue(url, "state", "External action state");
+    const limit = queryLimit(url, "External action list");
+    if (projectId !== undefined) safeControlPlaneId(projectId, "projectId");
+    if (state !== undefined && !EXTERNAL_ACTION_STATES.has(state)) {
+      throw new Error("External action state is invalid");
+    }
+    return sendJson(res, 200, await service.listExternalActionPlans({
+      ...(projectId !== undefined ? { projectId } : {}),
+      ...(state !== undefined ? { state: state as "pending_approval" | "authorized" | "executing" | "ambiguous" | "succeeded" | "denied" | "expired" | "failed" | "quarantined" } : {}),
+      ...(limit !== undefined ? { limit } : {}),
+    }));
+  }
+
+  match = path.match(/^\/api\/external-actions\/([^/]+)\/resolve$/);
+  if (method === "POST" && match) {
+    const resolvedBy = requireOperator(operatorId, "External action approval resolution");
+    const planId = decodeSafePathId(match[1], "planId");
+    const input = resolveExternalActionInput(await readJson(req));
+    return sendJson(res, 200, await service.resolveExternalActionPlan(
+      planId, input.decision, resolvedBy, input.idempotencyKey,
+    ));
+  }
+
+  match = path.match(/^\/api\/external-actions\/([^/]+)\/reconcile$/);
+  if (method === "POST" && match) {
+    const operator = requireOperator(operatorId, "External action reconciliation");
+    return sendJson(res, 200, await service.reconcileExternalActionPlan(
+      decodeSafePathId(match[1], "planId"),
+      reconcileExternalActionInput(await readJson(req)),
+      operator,
+    ));
+  }
+
+  match = path.match(/^\/api\/external-actions\/([^/]+)$/);
+  if (method === "GET" && match) {
+    return sendJson(res, 200, await service.getExternalActionPlan(decodeSafePathId(match[1], "planId")));
+  }
+
   if (method === "GET" && path === "/api/portfolio") return sendJson(res, 200, await service.portfolio());
   if (method === "GET" && path === "/api/runtimes") return sendJson(res, 200, await service.runtimeStatus());
   if (method === "GET" && path === "/api/projects") return sendJson(res, 200, await service.listProjects());
@@ -79,7 +364,7 @@ async function route(
   if (method === "GET" && path === "/api/approvals") return sendJson(res, 200, await service.listApprovals());
   if (method === "GET" && path === "/api/memory/proposals") return sendJson(res, 200, await service.listMemoryProposals());
 
-  let match = path.match(/^\/api\/engineering\/assessments\/([^/]+)$/);
+  match = path.match(/^\/api\/engineering\/assessments\/([^/]+)$/);
   if (method === "GET" && match) {
     if (!authToken) return sendJson(res, 403, { error: "Engineering intake requires configured bearer authentication" });
     return sendJson(res, 200, await service.getEngineeringRoutingAssessment(decodeURIComponent(match[1])));

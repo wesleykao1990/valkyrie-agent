@@ -331,11 +331,40 @@ names, or workflow names. Storage verifies same-project task ownership, score
 totals, hashes, timestamps, replay, and bounded metadata. The literal request is
 retained in the protected assessment row but omitted from its outbox event.
 
-Current source provenance explicitly says Linear is a prototype projection and
-Git is unavailable. Therefore every assessment is execution-unsupported and no
-route creates a run/workspace/lease/container. Fixed pilots are never substituted.
-M7 may enable launch only after live authority freshness and a reviewed project
-execution allowlist are bound to the assessment.
+Without an accepted M7 connector policy, source provenance explicitly says
+Linear is a prototype projection and Git is unavailable. With the default-off
+read connectors configured, the assessment binds bounded current Linear and Git
+revisions plus the accepted policy digest. General launch still remains
+execution-unsupported: no assessment route creates a run/workspace/lease/
+container, and fixed pilots are never substituted.
+
+## Production connector and external-action boundary
+
+M7 credentials remain in the host control plane and are loaded only from private
+regular non-symlink files. Provider origins, local repositories, refs, Linear
+team/project/issue IDs, GitHub owner/repository, and deterministic checks come
+from one exact digest-pinned policy file. HTTP/MCP callers cannot supply or
+override a credential, URL, path, ref, command, issue target, or provider body.
+
+Linear authority reads retain only bounded project/issue fields, provider
+revision, observation time, and canonical payload hash. Git authority invokes
+only reviewed absolute executables/argv with hooks and fsmonitor disabled. The
+local database remains a narrow projection; it is not a second roadmap.
+
+External writes use a per-consumer fenced outbox delivery or an immutable
+external-action plan. Every final-action plan binds exact run/project/workflow,
+governed evidence digest, policy hash, effect, expiry, and current provider/Git
+target. Approval authorizes that plan only. Evidence and authority are rechecked
+immediately before the provider call. GitHub can create a draft from a
+pre-existing remote head; it cannot publish the head, merge, deploy, or write
+repository contents.
+
+A durable `executing` plan with no receipt becomes `ambiguous` after restart and
+is never resent automatically. Operator reconciliation is an authenticated,
+bounded HTTP-only operation with exact zero/one/multiple match evidence. It is
+not exposed to the default Hermes MCP allowlist. The static bearer identifies one
+configured local operator context, not multi-user human presence or actor
+attestation; production remote use needs per-actor authorization and audit.
 
 ## Storage and retained command data
 
@@ -385,7 +414,15 @@ execution allowlist are bound to the assessment.
 - The server now sets a POSIX `077` umask for new SQLite/runtime/artifact state.
   Files created by an older checkout retain their previous mode and Windows needs
   an equivalent private ACL; harden or recreate that state before shared-host use.
-- The durable outbox has no external publisher yet.
+- Migration 012 adds narrow authority bindings and per-consumer, expiring fenced
+  outbox deliveries with eight-attempt dead lettering, explicit operator replay,
+  and bounded delivered-row pruning. Migration 013 adds immutable external-action
+  plans, provider receipts, and ambiguous-effect reconciliation. Both are
+  forward-only; older binaries require verified pre-v12/pre-v13 backups.
+- The only composed external-effect consumer handles exact
+  `external.action.authorized` deliveries after an immutable plan and bound
+  approval. Ordinary `task.created` rows have no provider-write consumer, even
+  while Linear is in `read-write` mode; no generic publisher exists.
 
 ## Dependency and source trust
 

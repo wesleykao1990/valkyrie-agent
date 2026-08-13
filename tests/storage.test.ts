@@ -10,9 +10,15 @@ import { PostgresStore } from "../apps/control-plane/src/postgres-store.ts";
 import { loadMigrationFiles } from "../apps/control-plane/src/migrations.ts";
 import {
   deterministicOutboxId,
+  externalActionTargetHash,
   IdempotencyConflictError,
   StorageConflictError,
   type ControlPlaneStore,
+  type AuthorityBinding,
+  type OutboxEvent,
+  type ExternalActionPlan,
+  type ExternalActionPlanRequestInput,
+  type ExternalActionProviderReceipt,
   type WriterLeaseRequest,
   type WorkspaceRecord,
 } from "../apps/control-plane/src/store.ts";
@@ -1282,13 +1288,561 @@ async function exerciseArtifactBatchContract(store: ControlPlaneStore, prefix: s
   ).length, 2);
 }
 
+async function exerciseAuthorityOutboxContract(
+  initialStore: ControlPlaneStore,
+  prefix: string,
+  clock: MutableStoreClock,
+  reopen?: () => Promise<ControlPlaneStore>,
+): Promise<{ store: ControlPlaneStore; durableOutboxId: string; durableConsumerId: string }> {
+  let store = initialStore;
+  const now = (): string => new Date(clock.current()).toISOString();
+  const later = (milliseconds: number): string => new Date(clock.current() + milliseconds).toISOString();
+  const claim = async (
+    consumerId: string,
+    ownerId: string,
+    topics: string[],
+    limit = 100,
+    claimUntil = later(10_000),
+  ) => store.claimOutboxDeliveries({ consumerId, ownerId, topics, claimUntil, limit });
+  const claimTarget = async (
+    event: OutboxEvent,
+    consumerId: string,
+    ownerId: string,
+    topics: string[],
+    claimUntil = later(10_000),
+  ) => {
+    const claimed = await claim(consumerId, ownerId, topics, 100, claimUntil);
+    const target = claimed.find((item) => item.outboxId === event.id);
+    assert.ok(target, `consumer ${consumerId} claimed target ${event.id}`);
+    for (const other of claimed) {
+      if (other.outboxId !== event.id) {
+        assert.ok(other.claimToken);
+        await store.ackOutboxDelivery({
+          outboxId: other.outboxId, consumerId, ownerId, claimToken: other.claimToken!,
+        });
+      }
+    }
+    assert.ok(target.claimToken);
+    return target;
+  };
+  const findEvent = async (topic: string, aggregateId: string) => {
+    const event = (await store.listPendingOutbox(10_000)).find((item) => item.topic === topic && item.aggregateId === aggregateId);
+    assert.ok(event, `expected pending ${topic} event for ${aggregateId}`);
+    return event!;
+  };
+
+  const createdAt = now();
+  const topicTask = {
+    id: `${prefix}_authority_task`, projectId: "ovalo", source: "fixture", sourceId: `${prefix}_authority_source`,
+    title: "Authority/outbox contract task", objective: "Exercise M7 storage", status: "planned", priority: "normal", createdAt,
+  };
+  await store.createTask(topicTask);
+  const taskEvent = await findEvent("task.created", topicTask.id);
+  const topicRun = run(`${prefix}_authority_run`);
+  await store.createRun(topicRun);
+  const runEvent = await findEvent("run.created", topicRun.id);
+  // Outbox creation uses the adapter's wall clock while claims use the
+  // injected store clock; move the deterministic clock just beyond both rows.
+  clock.set(clock.current() + 1_000);
+
+  // Claims are topic-allowlisted and never create rows for unrelated events.
+  const filtered = await claim(`${prefix}_filtered`, `${prefix}_filtered_owner`, ["task.created"]);
+  assert.ok(filtered.some((item) => item.outboxId === taskEvent.id));
+  assert.equal(filtered.some((item) => item.outboxId === runEvent.id), false);
+  assert.equal((await store.getOutboxDelivery(runEvent.id, `${prefix}_filtered`)), null);
+  const filteredTarget = filtered.find((item) => item.outboxId === taskEvent.id)!;
+  await store.ackOutboxDelivery({
+    outboxId: filteredTarget.outboxId, consumerId: `${prefix}_filtered`, ownerId: `${prefix}_filtered_owner`,
+    claimToken: filteredTarget.claimToken!,
+  });
+  await assert.rejects(
+    store.claimOutboxDeliveries({
+      consumerId: `${prefix}_invalid_topics`, ownerId: `${prefix}_owner`, topics: [], claimUntil: later(1_000),
+    }), /topics/i,
+  );
+  await assert.rejects(
+    store.claimOutboxDeliveries({
+      consumerId: `${prefix}_invalid_topics`, ownerId: `${prefix}_owner`, topics: ["task.created", "task.created"], claimUntil: later(1_000),
+    }), /topics/i,
+  );
+
+  // Two workers racing for one consumer/topic can produce only one exact claim.
+  const concurrent = await Promise.all([
+    claim(`${prefix}_concurrent`, `${prefix}_worker_a`, ["run.created"], 100),
+    claim(`${prefix}_concurrent`, `${prefix}_worker_b`, ["run.created"], 100),
+  ]);
+  const allConcurrentClaims = concurrent.flat();
+  assert.equal(new Set(allConcurrentClaims.map((item) => item.outboxId)).size, allConcurrentClaims.length);
+  const exactTargetClaims = allConcurrentClaims.filter((item) => item.outboxId === runEvent.id);
+  assert.equal(exactTargetClaims.length, 1);
+  for (const [index, items] of concurrent.entries()) {
+    const ownerId = index === 0 ? `${prefix}_worker_a` : `${prefix}_worker_b`;
+    for (const item of items) {
+      await store.ackOutboxDelivery({
+        outboxId: item.outboxId, consumerId: `${prefix}_concurrent`, ownerId, claimToken: item.claimToken!,
+      });
+    }
+  }
+
+  // Bindings replay exactly, reject ordinary identity/revision changes, and
+  // support only an explicit compare-and-set refresh.  External IDs are
+  // unique per provider so two local objects cannot silently own one authority.
+  const authority: AuthorityBinding = {
+    provider: "linear", localKind: "task", localId: topicTask.id, externalKind: "issue",
+    externalId: `${prefix}_linear_issue_1`, revision: "updated-1", observedAt: now(),
+    payloadHash: "a".repeat(64), freshUntil: later(60_000),
+  };
+  assert.deepEqual(await store.bindAuthority(authority), authority);
+  assert.deepEqual(await store.createAuthorityBinding(authority), authority);
+  await assert.rejects(
+    store.bindAuthority({ ...authority, revision: "updated-2" }), /identity|revision|changed/i,
+  );
+  await assert.rejects(
+    store.bindAuthority({ ...authority, localId: `${prefix}_other_local`, externalId: authority.externalId }), /unique|identity|constraint/i,
+  );
+  await assert.rejects(
+    store.bindAuthority({ ...authority, freshUntil: authority.observedAt }), /fresh|after/i,
+  );
+  await assert.rejects(
+    store.bindAuthority({ ...authority, localId: ` ${prefix}_unsafe` }), /safe|whitespace|invalid/i,
+  );
+  const refreshed: AuthorityBinding = {
+    ...authority, externalId: `${prefix}_linear_issue_2`, revision: "updated-2", observedAt: later(1_000),
+    payloadHash: "b".repeat(64), freshUntil: later(61_000),
+  };
+  assert.deepEqual(await store.refreshAuthorityBinding({
+    ...refreshed, expectedExternalKind: authority.externalKind, expectedExternalId: authority.externalId,
+    expectedRevision: authority.revision, expectedPayloadHash: authority.payloadHash,
+  }), refreshed);
+  await assert.rejects(
+    store.refreshAuthorityBinding({
+      ...refreshed, externalId: `${prefix}_linear_issue_3`, expectedExternalId: authority.externalId,
+      expectedRevision: authority.revision, expectedPayloadHash: authority.payloadHash,
+    }), /compare|match|stored/i,
+  );
+
+  // Expired claims can be taken over, but the old owner/token is fenced out.
+  const expiryTask = {
+    ...topicTask, id: `${prefix}_expiry_task`, sourceId: `${prefix}_expiry_source`, createdAt: now(),
+  };
+  await store.createTask(expiryTask);
+  const expiryEvent = await findEvent("task.created", expiryTask.id);
+  const expiredClaim = await claimTarget(expiryEvent, `${prefix}_expiry`, `${prefix}_old_owner`, ["task.created"], later(5_000));
+  clock.set(clock.current() + 6_000);
+  const takeover = await claimTarget(expiryEvent, `${prefix}_expiry`, `${prefix}_new_owner`, ["task.created"], later(5_000));
+  assert.equal(takeover.attempts, expiredClaim.attempts + 1);
+  await assert.rejects(
+    store.ackOutboxDelivery({
+      outboxId: expiryEvent.id, consumerId: `${prefix}_expiry`, ownerId: `${prefix}_old_owner`, claimToken: expiredClaim.claimToken!,
+    }), /fenced|expired|claim/i,
+  );
+  await assert.rejects(
+    store.failOutboxDelivery({
+      outboxId: expiryEvent.id, consumerId: `${prefix}_expiry`, ownerId: `${prefix}_old_owner`, claimToken: expiredClaim.claimToken!,
+      errorCode: "STALE", errorFingerprint: "c".repeat(64),
+    }), /fenced|expired|claim/i,
+  );
+  await store.ackOutboxDelivery({
+    outboxId: takeover.outboxId, consumerId: `${prefix}_expiry`, ownerId: `${prefix}_new_owner`, claimToken: takeover.claimToken!,
+  });
+
+  // A receipt and first authority binding commit atomically with the ack.
+  const receiptTask = { ...topicTask, id: `${prefix}_receipt_task`, sourceId: `${prefix}_receipt_source`, createdAt: now() };
+  await store.createTask(receiptTask);
+  const receiptEvent = await findEvent("task.created", receiptTask.id);
+  const receipt = {
+    externalId: `${prefix}_external_receipt`, externalRevision: "rev-1", payloadHash: "d".repeat(64), observedAt: now(),
+  };
+  const receiptBinding = {
+    provider: "linear", localKind: "task", localId: receiptTask.id, externalKind: "issue",
+    externalId: receipt.externalId, revision: receipt.externalRevision, observedAt: receipt.observedAt,
+    payloadHash: receipt.payloadHash, freshUntil: later(60_000),
+  };
+  const receiptClaim = await claimTarget(receiptEvent, `${prefix}_receipt`, `${prefix}_receipt_owner`, ["task.created"]);
+  const deliveredWithReceipt = await store.ackOutboxDelivery({
+    outboxId: receiptClaim.outboxId, consumerId: `${prefix}_receipt`, ownerId: `${prefix}_receipt_owner`,
+    claimToken: receiptClaim.claimToken!, providerReceipt: receipt, authorityBinding: receiptBinding,
+  });
+  assert.equal(deliveredWithReceipt.state, "delivered");
+  assert.deepEqual(await store.getAuthorityBinding("linear", "task", receiptTask.id), receiptBinding);
+
+  const mismatchTask = { ...topicTask, id: `${prefix}_mismatch_task`, sourceId: `${prefix}_mismatch_source`, createdAt: now() };
+  await store.createTask(mismatchTask);
+  const mismatchEvent = await findEvent("task.created", mismatchTask.id);
+  const mismatchClaim = await claimTarget(mismatchEvent, `${prefix}_mismatch`, `${prefix}_mismatch_owner`, ["task.created"]);
+  const mismatchReceipt = { ...receipt, externalId: `${prefix}_receipt_external`, observedAt: now() };
+  const mismatchBinding = { ...receiptBinding, localId: mismatchTask.id, externalId: `${prefix}_binding_external` };
+  await assert.rejects(store.ackOutboxDelivery({
+    outboxId: mismatchClaim.outboxId, consumerId: `${prefix}_mismatch`, ownerId: `${prefix}_mismatch_owner`,
+    claimToken: mismatchClaim.claimToken!, providerReceipt: mismatchReceipt, authorityBinding: mismatchBinding,
+  }), /receipt|match|evidence/i);
+  assert.equal((await store.getOutboxDelivery(mismatchEvent.id, `${prefix}_mismatch`))?.state, "claimed");
+  assert.equal(await store.getAuthorityBinding("linear", "task", mismatchTask.id), null);
+  await store.ackOutboxDelivery({
+    outboxId: mismatchClaim.outboxId, consumerId: `${prefix}_mismatch`, ownerId: `${prefix}_mismatch_owner`, claimToken: mismatchClaim.claimToken!,
+  });
+
+  const conflictTask = { ...topicTask, id: `${prefix}_conflict_task`, sourceId: `${prefix}_conflict_source`, createdAt: now() };
+  await store.createTask(conflictTask);
+  const conflictEvent = await findEvent("task.created", conflictTask.id);
+  const conflictOld = {
+    ...receiptBinding, localId: conflictTask.id, externalId: `${prefix}_conflict_old`, revision: "old", payloadHash: "e".repeat(64),
+    observedAt: now(), freshUntil: later(60_000),
+  };
+  await store.bindAuthority(conflictOld);
+  const conflictClaim = await claimTarget(conflictEvent, `${prefix}_conflict`, `${prefix}_conflict_owner`, ["task.created"]);
+  const conflictNew = { ...conflictOld, externalId: `${prefix}_conflict_new`, revision: "new", payloadHash: "f".repeat(64), observedAt: now() };
+  const conflictReceipt = {
+    externalId: conflictNew.externalId, externalRevision: conflictNew.revision, payloadHash: conflictNew.payloadHash, observedAt: conflictNew.observedAt,
+  };
+  await assert.rejects(store.ackOutboxDelivery({
+    outboxId: conflictClaim.outboxId, consumerId: `${prefix}_conflict`, ownerId: `${prefix}_conflict_owner`,
+    claimToken: conflictClaim.claimToken!, providerReceipt: conflictReceipt, authorityBinding: conflictNew,
+  }), /identity|revision|changed|refresh/i);
+  assert.equal((await store.getOutboxDelivery(conflictEvent.id, `${prefix}_conflict`))?.state, "claimed");
+  assert.deepEqual(await store.getAuthorityBinding("linear", "task", conflictTask.id), conflictOld);
+  await store.ackOutboxDelivery({
+    outboxId: conflictClaim.outboxId, consumerId: `${prefix}_conflict`, ownerId: `${prefix}_conflict_owner`, claimToken: conflictClaim.claimToken!,
+  });
+
+  // Caller-supplied retry times are accepted only inside the 15-minute bound;
+  // the eighth failed attempt is retained as a dead letter.
+  const retryTask = { ...topicTask, id: `${prefix}_retry_task`, sourceId: `${prefix}_retry_source`, createdAt: now() };
+  await store.createTask(retryTask);
+  const retryEvent = await findEvent("task.created", retryTask.id);
+  const retryConsumer = `${prefix}_retry`;
+  let retryDelivery;
+  for (let attempt = 1; attempt <= 8; attempt += 1) {
+    retryDelivery = await claimTarget(retryEvent, retryConsumer, `${prefix}_retry_owner_${attempt}`, ["task.created"]);
+    const nextAttemptAt = attempt === 1 ? later(15 * 60_000) : now();
+    const failed = await store.failOutboxDelivery({
+      outboxId: retryDelivery.outboxId, consumerId: retryConsumer, ownerId: `${prefix}_retry_owner_${attempt}`,
+      claimToken: retryDelivery.claimToken!, errorCode: "TEMPORARY_PROVIDER", errorFingerprint: "1".repeat(64), nextAttemptAt,
+    });
+    assert.equal(failed.attempts, attempt);
+    assert.equal(failed.state, attempt === 8 ? "dead" : "pending");
+    if (attempt === 1) clock.set(clock.current() + 15 * 60_000);
+  }
+  assert.equal((await store.getOutboxDelivery(retryEvent.id, retryConsumer))?.state, "dead");
+  const deadBeforePrune = await store.getOutboxDelivery(retryEvent.id, retryConsumer);
+  assert.equal(deadBeforePrune?.attemptHistory.length, 8);
+
+  // One outbox event may be delivered independently to multiple consumers.
+  const independentTask = { ...topicTask, id: `${prefix}_independent_task`, sourceId: `${prefix}_independent_source`, createdAt: now() };
+  await store.createTask(independentTask);
+  const independentEvent = await findEvent("task.created", independentTask.id);
+  const consumerOne = `${prefix}_consumer_one`;
+  const consumerTwo = `${prefix}_consumer_two`;
+  const firstIndependent = await claimTarget(independentEvent, consumerOne, `${prefix}_consumer_one_owner`, ["task.created"]);
+  await store.ackOutboxDelivery({
+    outboxId: independentEvent.id, consumerId: consumerOne, ownerId: `${prefix}_consumer_one_owner`, claimToken: firstIndependent.claimToken!,
+  });
+  const secondIndependent = await claimTarget(independentEvent, consumerTwo, `${prefix}_consumer_two_owner`, ["task.created"]);
+  await store.ackOutboxDelivery({
+    outboxId: independentEvent.id, consumerId: consumerTwo, ownerId: `${prefix}_consumer_two_owner`, claimToken: secondIndependent.claimToken!,
+  });
+  assert.equal((await store.getOutboxDelivery(independentEvent.id, consumerOne))?.state, "delivered");
+  assert.equal((await store.getOutboxDelivery(independentEvent.id, consumerTwo))?.state, "delivered");
+  assert.equal((await store.listPendingOutbox(10_000)).some((item) => item.id === independentEvent.id), true,
+    "per-consumer ack does not mutate legacy global publishedAt");
+
+  // Pruning is bounded and delivered-only; dead-letter evidence survives.
+  clock.set(clock.current() + 1_000);
+  let pruneCalls = 0;
+  while ((await store.getOutboxDelivery(independentEvent.id, consumerOne))
+      && (await store.getOutboxDelivery(independentEvent.id, consumerTwo)) && pruneCalls < 100) {
+    const pruned = await store.pruneOutboxDeliveries({ before: now(), limit: 1 });
+    assert.ok(pruned <= 1);
+    pruneCalls += 1;
+  }
+  assert.ok(pruneCalls >= 1);
+  assert.equal((await store.getOutboxDelivery(retryEvent.id, retryConsumer))?.state, "dead");
+  const independentAfterPrune = await Promise.all([
+    store.getOutboxDelivery(independentEvent.id, consumerOne),
+    store.getOutboxDelivery(independentEvent.id, consumerTwo),
+  ]);
+  assert.equal(independentAfterPrune.filter((item) => item === null).length, 1);
+  assert.equal(independentAfterPrune.filter((item) => item?.state === "delivered").length, 1);
+
+  const replayed = await store.replayOutboxDelivery({ outboxId: retryEvent.id, consumerId: retryConsumer, operatorId: `${prefix}_operator` });
+  assert.equal(replayed.state, "pending");
+  assert.equal(replayed.attempts, 0);
+  assert.equal(replayed.attemptHistory.at(-1)?.kind, "replay");
+  const replayClaim = await claimTarget(retryEvent, retryConsumer, `${prefix}_replay_owner`, ["task.created"]);
+  await store.ackOutboxDelivery({
+    outboxId: replayClaim.outboxId, consumerId: retryConsumer, ownerId: `${prefix}_replay_owner`, claimToken: replayClaim.claimToken!,
+  });
+
+  const durableTask = { ...topicTask, id: `${prefix}_durable_task`, sourceId: `${prefix}_durable_source`, createdAt: now() };
+  await store.createTask(durableTask);
+  const durableEvent = await findEvent("task.created", durableTask.id);
+  const durableConsumerId = `${prefix}_durable_consumer`;
+  const durableClaim = await claimTarget(durableEvent, durableConsumerId, `${prefix}_durable_owner`, ["task.created"]);
+  await store.ackOutboxDelivery({
+    outboxId: durableClaim.outboxId, consumerId: durableConsumerId, ownerId: `${prefix}_durable_owner`, claimToken: durableClaim.claimToken!,
+  });
+  if (reopen) {
+    await store.close();
+    store = await reopen();
+    assert.equal((await store.getOutboxDelivery(durableEvent.id, durableConsumerId))?.state, "delivered");
+    assert.deepEqual(await store.getAuthorityBinding("linear", "task", receiptTask.id), receiptBinding);
+  }
+  return { store, durableOutboxId: durableEvent.id, durableConsumerId };
+}
+
+async function exerciseExternalFinalActionContract(
+  initialStore: ControlPlaneStore,
+  prefix: string,
+  clock: MutableStoreClock,
+  reopen?: () => Promise<ControlPlaneStore>,
+): Promise<ControlPlaneStore> {
+  let store = initialStore;
+  const now = (): string => new Date(clock.current()).toISOString();
+  const later = (milliseconds: number): string => new Date(clock.current() + milliseconds).toISOString();
+  const digest = (letter: string): string => letter.repeat(64);
+  const makeAction = async (suffix: string, expiryMs = 60_000) => {
+    const createdAt = now();
+    const evidenceDigest = digest("a");
+    const policyHash = digest("b");
+    const runId = `${prefix}_${suffix}_run`;
+    const completedRun = { ...run(runId, "completed"), createdAt, completedAt: createdAt, stage: "evidence" };
+    await store.createRun(completedRun);
+    const planId = `${prefix}_${suffix}_plan`;
+    const approvalId = `${prefix}_${suffix}_approval`;
+    const expiresAt = later(expiryMs);
+    const approval: Approval = {
+      id: approvalId, runId, action: "external_action", exactEffect: `Perform ${suffix} external action`, state: "pending", evidence: ["completed-run"],
+      requestedAt: createdAt, projectId: "ovalo", workflow: "test", evidenceDigest, policyHash, expiresAt,
+    };
+    const target = { remoteProject: "remote-project-1", title: `M7 ${suffix}`, marker: `${prefix}:${suffix}` };
+    const plan: ExternalActionPlan = {
+      id: planId, runId, projectId: "ovalo", workflow: "test", kind: "linear_create_issue", provider: "linear",
+      marker: `${prefix}:${suffix}`, target, spec: { body: "bounded evidence", labels: ["m7"] },
+      requestHash: digest("c"), evidenceDigest, policyHash, approvalId, approvalAction: approval.action,
+      exactEffect: approval.exactEffect, expiresAt, state: "pending_approval", attempts: 0,
+      providerReceipt: null, result: null, lastErrorCode: null, lastErrorFingerprint: null,
+      reconciliation: null, authorizedOutboxId: null, createdAt, updatedAt: createdAt,
+    };
+    const event = {
+      id: `${prefix}_${suffix}_request_event`, runId, type: "external.action.requested",
+      message: "External action requested", payload: { planId, approvalId }, createdAt,
+    };
+    const request = {
+      plan, approval, event,
+      idempotency: { scope: "external-action.request", key: `${prefix}_${suffix}`, requestHash: `${prefix}_${suffix}_request_hash` },
+    };
+    const requested = await store.requestExternalActionPlan(request);
+    assert.equal(requested.replayed, false);
+    assert.equal((await store.getRun(runId))?.status, "completed");
+    const replayed = await store.requestExternalActionPlan(request);
+    assert.equal(replayed.replayed, true);
+    await assert.rejects(store.requestExternalActionPlan({ ...request, plan: { ...plan, target: { ...target, title: "changed" } } }), /different|conflict|used/i);
+    return { plan, approval, request };
+  };
+  const approve = async (action: { plan: ExternalActionPlan; approval: Approval; request: ExternalActionPlanRequestInput }, suffix: string) => {
+    const binding = {
+      action: action.plan.approvalAction, exactEffect: action.plan.exactEffect, projectId: action.plan.projectId,
+      workflow: action.plan.workflow, evidenceDigest: action.plan.evidenceDigest, policyHash: action.plan.policyHash,
+      expiresAt: action.plan.expiresAt,
+    };
+    const resolved = await store.resolveExternalActionPlanApproval({
+      planId: action.plan.id, state: "approved", decision: "approve", resolvedBy: `${prefix}_operator`, expectedBinding: binding,
+      event: {
+        id: `${prefix}_${suffix}_approved_event`, runId: action.plan.runId, type: "external.action.approved",
+        message: "External action approved", payload: { planId: action.plan.id }, createdAt: now(),
+      }, idempotency: { scope: "external-action.resolve", key: `${prefix}_${suffix}`, requestHash: `${prefix}_${suffix}_approval_hash` },
+    });
+    assert.equal(resolved.plan.state, "authorized");
+    assert.equal((await store.getRun(action.plan.runId))?.status, "completed");
+    return resolved;
+  };
+  const authorized = await makeAction("success");
+  const approved = await approve(authorized, "success");
+  const authorizedOutbox = (await store.listPendingOutbox(10_000)).find((item) => item.topic === "external.action.authorized" && item.aggregateId === authorized.plan.id);
+  assert.ok(authorizedOutbox);
+  const targetHash = externalActionTargetHash(authorized.plan.target);
+  clock.set(clock.current() + 1_000);
+  const competingClaims = await Promise.all([
+    store.claimOutboxDeliveries({ consumerId: `${prefix}_external_dispatch`, ownerId: `${prefix}_dispatch_a`, topics: ["external.action.authorized"], claimUntil: later(20_000) }),
+    store.claimOutboxDeliveries({ consumerId: `${prefix}_external_dispatch`, ownerId: `${prefix}_dispatch_b`, topics: ["external.action.authorized"], claimUntil: later(20_000) }),
+  ]);
+  const winnerClaims = competingClaims.flat().filter((item) => item.outboxId === authorizedOutbox!.id);
+  assert.equal(winnerClaims.length, 1, "one consumer has one concurrent authorized claimant");
+  const winnerIndex = competingClaims.findIndex((items) => items.some((item) => item.outboxId === authorizedOutbox!.id));
+  const winnerOwner = winnerIndex === 0 ? `${prefix}_dispatch_a` : `${prefix}_dispatch_b`;
+  const delivery = winnerClaims[0];
+  assert.equal((await store.getOutboxDelivery(authorizedOutbox!.id, `${prefix}_external_dispatch`))?.state, "claimed");
+  const began = await store.beginExternalActionAttempt({
+    planId: authorized.plan.id, delivery: { outboxId: delivery.outboxId, consumerId: delivery.consumerId, ownerId: winnerOwner, claimToken: delivery.claimToken! },
+  });
+  assert.equal(began.state, "executing");
+  const providerReceipt: ExternalActionProviderReceipt = {
+    externalId: `${prefix}_issue_1`, externalRevision: "rev-1", payloadHash: digest("d"), observedAt: now(),
+    marker: authorized.plan.marker, targetHash,
+  };
+  const completionInput = {
+    planId: authorized.plan.id,
+    delivery: { outboxId: delivery.outboxId, consumerId: delivery.consumerId, ownerId: winnerOwner, claimToken: delivery.claimToken! },
+    providerReceipt, result: { externalId: providerReceipt.externalId, created: true },
+  };
+  await assert.rejects(store.completeExternalActionAttempt({
+    ...completionInput, providerReceipt: { ...providerReceipt, targetHash: digest("e") },
+  }), /target hash|receipt|plan/i);
+  assert.equal((await store.getExternalActionPlan(authorized.plan.id))?.state, "executing");
+  assert.equal((await store.getOutboxDelivery(delivery.outboxId, delivery.consumerId))?.state, "claimed");
+  const completed = await store.completeExternalActionAttempt(completionInput);
+  assert.equal(completed.state, "succeeded");
+  assert.equal((await store.getOutboxDelivery(delivery.outboxId, delivery.consumerId))?.state, "delivered");
+  assert.equal((await store.completeExternalActionAttempt(completionInput)).state, "succeeded");
+  await assert.rejects(store.completeExternalActionAttempt({ ...completionInput, providerReceipt: { ...providerReceipt, externalRevision: "changed" } }), /receipt|replay|different/i);
+  assert.equal((await store.getRun(authorized.plan.runId))?.status, "completed");
+  assert.equal(approved.plan.state, "authorized");
+
+  const concurrent = await makeAction("concurrent");
+  const concurrentBinding = {
+    action: concurrent.plan.approvalAction, exactEffect: concurrent.plan.exactEffect, projectId: concurrent.plan.projectId,
+    workflow: concurrent.plan.workflow, evidenceDigest: concurrent.plan.evidenceDigest, policyHash: concurrent.plan.policyHash,
+    expiresAt: concurrent.plan.expiresAt,
+  };
+  const concurrentResolutions = await Promise.all([
+    store.resolveExternalActionPlanApproval({
+      planId: concurrent.plan.id, state: "approved", decision: "approve", resolvedBy: `${prefix}_operator_a`, expectedBinding: concurrentBinding,
+      event: { id: `${prefix}_concurrent_approved_a`, runId: concurrent.plan.runId, type: "external.action.approved", message: "Approved", payload: { planId: concurrent.plan.id }, createdAt: now() },
+    }),
+    store.resolveExternalActionPlanApproval({
+      planId: concurrent.plan.id, state: "approved", decision: "approve", resolvedBy: `${prefix}_operator_b`, expectedBinding: concurrentBinding,
+      event: { id: `${prefix}_concurrent_approved_b`, runId: concurrent.plan.runId, type: "external.action.approved", message: "Approved", payload: { planId: concurrent.plan.id }, createdAt: now() },
+    }),
+  ]);
+  assert.equal(concurrentResolutions.filter((item) => !item.replayed).length, 1);
+  assert.equal(concurrentResolutions.every((item) => item.plan.state === "authorized"), true);
+  assert.equal((await store.listPendingOutbox(10_000)).filter((item) => item.topic === "external.action.authorized" && item.aggregateId === concurrent.plan.id).length, 1);
+
+  const bindingMismatch = await makeAction("binding_mismatch");
+  await assert.rejects(store.resolveExternalActionPlanApproval({
+    planId: bindingMismatch.plan.id, state: "approved", decision: "approve", resolvedBy: `${prefix}_operator`, expectedBinding: {
+      action: bindingMismatch.plan.approvalAction, exactEffect: bindingMismatch.plan.exactEffect, projectId: bindingMismatch.plan.projectId,
+      workflow: bindingMismatch.plan.workflow, evidenceDigest: digest("z"), policyHash: bindingMismatch.plan.policyHash, expiresAt: bindingMismatch.plan.expiresAt,
+    },
+  }), /binding|evidence|policy|match/i);
+  assert.equal((await store.getExternalActionPlan(bindingMismatch.plan.id))?.state, "pending_approval");
+
+  const denied = await makeAction("denied");
+  const deniedBinding = {
+    action: denied.plan.approvalAction, exactEffect: denied.plan.exactEffect, projectId: denied.plan.projectId, workflow: denied.plan.workflow,
+    evidenceDigest: denied.plan.evidenceDigest, policyHash: denied.plan.policyHash, expiresAt: denied.plan.expiresAt,
+  };
+  const deniedResult = await store.resolveExternalActionPlanApproval({
+    planId: denied.plan.id, state: "changes_requested", decision: "needs_review", resolvedBy: `${prefix}_operator`, expectedBinding: deniedBinding,
+    event: { id: `${prefix}_denied_event`, runId: denied.plan.runId, type: "external.action.changes_requested", message: "Changes requested", payload: { planId: denied.plan.id }, createdAt: now() },
+  });
+  assert.equal(deniedResult.plan.state, "denied");
+  assert.equal((await store.listPendingOutbox(10_000)).some((item) => item.topic === "external.action.authorized" && item.aggregateId === denied.plan.id), false);
+  assert.equal((await store.getRun(denied.plan.runId))?.status, "completed");
+
+  const explicitlyDenied = await makeAction("denied_state");
+  const explicitlyDeniedBinding = {
+    action: explicitlyDenied.plan.approvalAction, exactEffect: explicitlyDenied.plan.exactEffect, projectId: explicitlyDenied.plan.projectId,
+    workflow: explicitlyDenied.plan.workflow, evidenceDigest: explicitlyDenied.plan.evidenceDigest, policyHash: explicitlyDenied.plan.policyHash, expiresAt: explicitlyDenied.plan.expiresAt,
+  };
+  assert.equal((await store.resolveExternalActionPlanApproval({
+    planId: explicitlyDenied.plan.id, state: "denied", decision: "reject", resolvedBy: `${prefix}_operator`, expectedBinding: explicitlyDeniedBinding,
+  })).plan.state, "denied");
+
+  const expiry = await makeAction("expiry", 1_000);
+  clock.set(clock.current() + 2_000);
+  const expired = await store.expireExternalActionPlanApproval({
+    planId: expiry.plan.id,
+    event: { id: `${prefix}_expiry_event`, runId: expiry.plan.runId, type: "external.action.expired", message: "External action expired", payload: { planId: expiry.plan.id }, createdAt: now() },
+  });
+  assert.equal(expired.plan.state, "expired");
+  assert.equal(expired.approval.decision, "expired");
+  assert.equal((await store.getRun(expiry.plan.runId))?.status, "completed");
+
+  const retry = await makeAction("ambiguous");
+  await approve(retry, "ambiguous");
+  const retryEvent = (await store.listPendingOutbox(10_000)).find((item) => item.topic === "external.action.authorized" && item.aggregateId === retry.plan.id)!;
+  clock.set(clock.current() + 1_000);
+  const firstClaim = (await store.claimOutboxDeliveries({ consumerId: `${prefix}_ambiguous_dispatch`, ownerId: `${prefix}_ambiguous_owner`, topics: ["external.action.authorized"], claimUntil: later(20_000) })).find((item) => item.outboxId === retryEvent.id)!;
+  const firstFence = { outboxId: firstClaim.outboxId, consumerId: firstClaim.consumerId, ownerId: `${prefix}_ambiguous_owner`, claimToken: firstClaim.claimToken! };
+  await store.beginExternalActionAttempt({ planId: retry.plan.id, delivery: firstFence });
+  const deterministicFailure = await store.failExternalActionAttempt({ planId: retry.plan.id, delivery: firstFence, errorCode: "TEMP_PROVIDER", errorFingerprint: digest("e"), nextAttemptAt: later(1_000) });
+  assert.equal(deterministicFailure.state, "failed");
+  clock.set(clock.current() + 1_000);
+  const secondClaim = (await store.claimOutboxDeliveries({ consumerId: firstClaim.consumerId, ownerId: `${prefix}_ambiguous_owner_2`, topics: ["external.action.authorized"], claimUntil: later(20_000) })).find((item) => item.outboxId === retryEvent.id)!;
+  const secondFence = { outboxId: secondClaim.outboxId, consumerId: secondClaim.consumerId, ownerId: `${prefix}_ambiguous_owner_2`, claimToken: secondClaim.claimToken! };
+  await store.beginExternalActionAttempt({ planId: retry.plan.id, delivery: secondFence });
+  const ambiguous = await store.failExternalActionAttempt({ planId: retry.plan.id, delivery: secondFence, errorCode: "AMBIGUOUS_TIMEOUT", errorFingerprint: digest("f"), ambiguous: true });
+  assert.equal(ambiguous.state, "ambiguous");
+  assert.equal((await store.getOutboxDelivery(retryEvent.id, firstClaim.consumerId))?.state, "dead");
+  const zeroEvidence = { outcome: "zero" as const, marker: retry.plan.marker, targetHash: externalActionTargetHash(retry.plan.target), operatorId: `${prefix}_reconciler`, observedAt: now(), matchCount: 0 };
+  assert.equal((await store.reconcileExternalActionPlan({ planId: retry.plan.id, deliveryConsumerId: firstClaim.consumerId, operatorId: zeroEvidence.operatorId, evidence: zeroEvidence })).state, "ambiguous");
+  const oneEvidence = { outcome: "one" as const, marker: retry.plan.marker, targetHash: zeroEvidence.targetHash, operatorId: `${prefix}_reconciler`, observedAt: now(), matchCount: 1, externalId: `${prefix}_reconciled`, externalRevision: "rev-r", payloadHash: digest("a") };
+  const reconciled = await store.reconcileExternalActionPlan({ planId: retry.plan.id, deliveryConsumerId: firstClaim.consumerId, operatorId: oneEvidence.operatorId, evidence: oneEvidence });
+  assert.equal(reconciled.state, "succeeded");
+  assert.equal((await store.getOutboxDelivery(retryEvent.id, firstClaim.consumerId))?.state, "delivered");
+
+  const multiple = await makeAction("multiple");
+  await approve(multiple, "multiple");
+  const multipleEvent = (await store.listPendingOutbox(10_000)).find((item) => item.topic === "external.action.authorized" && item.aggregateId === multiple.plan.id)!;
+  clock.set(clock.current() + 1_000);
+  const multipleClaim = (await store.claimOutboxDeliveries({ consumerId: `${prefix}_multiple_dispatch`, ownerId: `${prefix}_multiple_owner`, topics: ["external.action.authorized"], claimUntil: later(20_000) })).find((item) => item.outboxId === multipleEvent.id)!;
+  const multipleFence = { outboxId: multipleClaim.outboxId, consumerId: multipleClaim.consumerId, ownerId: `${prefix}_multiple_owner`, claimToken: multipleClaim.claimToken! };
+  await store.beginExternalActionAttempt({ planId: multiple.plan.id, delivery: multipleFence });
+  await store.failExternalActionAttempt({ planId: multiple.plan.id, delivery: multipleFence, errorCode: "AMBIGUOUS_TIMEOUT", errorFingerprint: digest("a"), ambiguous: true });
+  const multipleEvidence = { outcome: "multiple" as const, marker: multiple.plan.marker, targetHash: externalActionTargetHash(multiple.plan.target), operatorId: `${prefix}_reconciler`, observedAt: now(), matchCount: 2 };
+  const quarantined = await store.reconcileExternalActionPlan({ planId: multiple.plan.id, deliveryConsumerId: multipleClaim.consumerId, operatorId: multipleEvidence.operatorId, evidence: multipleEvidence });
+  assert.equal(quarantined.state, "quarantined");
+  assert.equal((await store.getOutboxDelivery(multipleEvent.id, multipleClaim.consumerId))?.state, "dead");
+
+  const maxAttempt = await makeAction("max_attempt");
+  await approve(maxAttempt, "max_attempt");
+  const maxAttemptEvent = (await store.listPendingOutbox(10_000)).find((item) => item.topic === "external.action.authorized" && item.aggregateId === maxAttempt.plan.id)!;
+  clock.set(clock.current() + 1_000);
+  for (let attempt = 1; attempt <= 8; attempt += 1) {
+    const owner = `${prefix}_max_attempt_owner_${attempt}`;
+    const claimed = (await store.claimOutboxDeliveries({ consumerId: `${prefix}_max_attempt_dispatch`, ownerId: owner, topics: ["external.action.authorized"], claimUntil: later(20_000) })).find((item) => item.outboxId === maxAttemptEvent.id)!;
+    const fence = { outboxId: claimed.outboxId, consumerId: claimed.consumerId, ownerId: owner, claimToken: claimed.claimToken! };
+    await store.beginExternalActionAttempt({ planId: maxAttempt.plan.id, delivery: fence });
+    const failed = await store.failExternalActionAttempt({ planId: maxAttempt.plan.id, delivery: fence, errorCode: "TEMP_PROVIDER", errorFingerprint: digest("b") });
+    assert.equal(failed.attempts, attempt);
+  }
+  assert.equal((await store.getExternalActionPlan(maxAttempt.plan.id))?.state, "failed");
+  assert.equal((await store.getExternalActionPlan(maxAttempt.plan.id))?.attempts, 8);
+  assert.equal((await store.getOutboxDelivery(maxAttemptEvent.id, `${prefix}_max_attempt_dispatch`))?.state, "dead");
+
+  const multibyte = await makeAction("multibyte");
+  const oversizedTarget = Object.fromEntries(Array.from({ length: 100 }, (_, index) => [`field${index}`, "界".repeat(100)]));
+  await assert.rejects(store.requestExternalActionPlan({
+    ...multibyte.request,
+    plan: { ...multibyte.plan, id: `${prefix}_multibyte_oversized_plan`, approvalId: `${prefix}_multibyte_oversized_approval`, target: oversizedTarget },
+    approval: { ...multibyte.approval, id: `${prefix}_multibyte_oversized_approval` },
+    event: { ...multibyte.request.event, id: `${prefix}_multibyte_oversized_event` },
+    idempotency: { scope: "external-action.request", key: `${prefix}_multibyte_oversized`, requestHash: `${prefix}_multibyte_oversized_hash` },
+  }), /UTF-8|bytes|exceeds/i);
+
+  if (reopen) {
+    await store.close();
+    store = await reopen();
+    assert.equal((await store.getExternalActionPlan(authorized.plan.id))?.state, "succeeded");
+    assert.equal((await store.getExternalActionPlan(retry.plan.id))?.state, "succeeded");
+    assert.equal((await store.getExternalActionPlan(multiple.plan.id))?.state, "quarantined");
+    assert.equal((await store.getRun(authorized.plan.runId))?.status, "completed");
+  }
+  return store;
+}
+
 test("SQLite migrations are explicit, repeatable, and current", async () => {
   const store = new SqliteStore(":memory:");
   try {
     const first = await store.migrate();
     assert.deepEqual(first.map((item) => [item.version, item.status]), loadMigrationFiles("sqlite").map((item) => [item.version, "applied"]));
+    assert.equal(first.find((item) => item.version === 12)?.status, "applied");
+    assert.equal(first.find((item) => item.version === 13)?.status, "applied");
     const second = await store.migrate();
     assert.deepEqual(second.map((item) => item.status), loadMigrationFiles("sqlite").map(() => "already_applied"));
+    assert.equal(second.find((item) => item.version === 12)?.status, "already_applied");
+    assert.equal(second.find((item) => item.version === 13)?.status, "already_applied");
     assert.deepEqual(await store.healthCheck(), { ok: true, backend: "sqlite", migrationsCurrent: true });
   } finally {
     await store.close();
@@ -1795,6 +2349,23 @@ test("restart reconciliation identifies queued runs, terminal and expired leases
   }
 });
 
+test("SQLite authority bindings and per-consumer outbox delivery are fenced, replayable, and durable", async () => {
+  const root = mkdtempSync(join(tmpdir(), "valkyrie-m7-authority-outbox-"));
+  const path = join(root, "storage.sqlite");
+  const clock = mutableStoreClock();
+  let store = new SqliteStore(path, { now: clock.now });
+  try {
+    await seed(store);
+    const result = await exerciseAuthorityOutboxContract(store, "sqlite_m7", clock, async () => new SqliteStore(path, { now: clock.now }));
+    store = result.store as SqliteStore;
+    assert.equal((await store.getOutboxDelivery(result.durableOutboxId, result.durableConsumerId))?.state, "delivered");
+    store = await exerciseExternalFinalActionContract(store, "sqlite_m13", clock, async () => new SqliteStore(path, { now: clock.now })) as SqliteStore;
+  } finally {
+    await store.close().catch(() => undefined);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 const postgresContractEnabled = process.env.RUN_POSTGRES_STORAGE_CONTRACT_TESTS === "1";
 const postgresUrl = postgresContractEnabled ? process.env.TEST_DATABASE_URL : undefined;
 if (postgresContractEnabled && !postgresUrl) {
@@ -2038,6 +2609,19 @@ test("PostgreSQL storage contract smoke", { skip: !postgresUrl }, async () => {
     assert.ok(reconciliation.terminalLeases.some((item) => item.runId === "pg_terminal"));
     assert.ok(reconciliation.expiredLeases.some((item) => item.runId === "pg_expired"));
     assert.ok(reconciliation.pendingOutbox.length > 0);
+
+    const authorityOutboxResult = await exerciseAuthorityOutboxContract(
+      store, "postgres_m7", clock,
+      async () => PostgresStore.connect({ databaseUrl: postgresUrl!, autoMigrate: false, maxConnections: 8, now: clock.now }),
+    );
+    store = authorityOutboxResult.store as PostgresStore;
+    assert.equal((await store.getOutboxDelivery(
+      authorityOutboxResult.durableOutboxId, authorityOutboxResult.durableConsumerId,
+    ))?.state, "delivered");
+    store = await exerciseExternalFinalActionContract(
+      store, "postgres_m13", clock,
+      async () => PostgresStore.connect({ databaseUrl: postgresUrl!, autoMigrate: false, maxConnections: 8, now: clock.now }),
+    ) as PostgresStore;
 
     await store.close();
     const ledgerPool = new Pool({ connectionString: postgresUrl! });

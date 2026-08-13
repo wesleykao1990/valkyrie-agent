@@ -32,6 +32,13 @@ const blockedNames = new Set([
   "DEMO_STAGE_DELAY_MS",
   "ENABLE_DEMO_RESET",
   "HOST",
+  "GITHUB_CONNECTOR_MODE",
+  "GITHUB_TOKEN_FILE",
+  "LINEAR_AUTH_MODE",
+  "LINEAR_CONNECTOR_MODE",
+  "LINEAR_TOKEN_FILE",
+  "M7_CONNECTOR_POLICY_FILE",
+  "M7_CONNECTOR_POLICY_SHA256",
   "OPENVIKING_MODE",
   "OPENVIKING_URL",
   "PORT",
@@ -64,6 +71,7 @@ export function buildIsolatedSmokeEnvironment(
       && !name.startsWith("DIRECT_CODEX_MODEL_")
       && !name.startsWith("DIRECT_CLAUDE_MODEL_")
       && !name.startsWith("VALKYRIE_M6_")
+      && !name.startsWith("M7_LIVE_")
       && !name.startsWith("REPOSITORY_PATH_")
     ),
   );

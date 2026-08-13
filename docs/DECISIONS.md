@@ -127,6 +127,20 @@ ledger and reusable package-level Lite contract are implemented, but general
 execution remains fail-closed until live Linear/Git authority and a trusted
 project launcher exist.
 
+### D-24 — Revision-bound production connectors and separate final actions
+
+Linear/Git/GitHub credentials remain host-side and every project mapping is an
+exact digest-pinned policy. Linear and Git reads create narrow revision bindings,
+not a second roadmap or caller-controlled repository surface. External writes use
+fenced per-consumer outbox delivery or an immutable evidence/policy/expiry-bound
+action plan with a stable marker and durable receipt. Ambiguous outcomes are
+reconciled rather than blindly retried. GitHub may create only a draft PR from a
+pre-existing configured remote head; branch publication, merge, deployment,
+credential expansion, and memory promotion remain separate actions. See
+`docs/adr/ADR-P010-production-connector-boundary.md`. This remains proposed until
+Wesley accepts or amends the live operational policy and actor-authentication
+boundary.
+
 ## Deferred
 
 - Prime Agent until long-horizon benchmark tasks show incremental value.

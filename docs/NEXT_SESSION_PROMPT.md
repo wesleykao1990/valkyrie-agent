@@ -1,86 +1,86 @@
-# Continuation prompt — begin Milestone 7 production connectors
+# Continuation prompt — M7 live authority acceptance and general-launch design
 
 Continue the existing public `valkyrie-agent` repository and draft PR #1. Do not
-create a new repository, substitute another agent framework, expose a generic
-writer, or redesign the accepted architecture.
+create a new repository, substitute another framework, expose generic network/
+filesystem/process tools, or redesign the accepted architecture.
 
 Read `START_HERE.md`, `AGENTS.md`, `.project-context.yaml`, `CLAUDE.md`,
 `docs/DECISIONS.md`, `docs/ARCHITECTURE.md`, `SECURITY.md`,
 `docs/CONTINUATION_PLAN.md`, `docs/VERIFICATION.md`,
-`docs/SESSION_HANDOFF_v0.3.0.md`, `docs/IMPLEMENTATION_PLAN_M6.md`, and proposed
-ADR-P008 and ADR-P009. Also read
-`docs/IMPLEMENTATION_PLAN_POST_M6_GAPS.md`. Run `npm run verify` before changing
-code.
+`docs/SESSION_HANDOFF_v0.3.0.md`, `docs/IMPLEMENTATION_PLAN_M7.md`,
+`docs/adr/ADR-P010-production-connector-boundary.md`, and
+`docs/M7_CONNECTOR_SETUP.md`. Run `npm run verify` before changing code.
 
 ## Current state
 
-Milestones 0–6 are complete for their documented default-off local scope. The
-fixed live M6 comparison is `compare_493a626ad2e583bff275ffc343bb495e`:
+Milestones 0–7 are deterministically implemented for their documented default-
+off scope. M7 adds:
 
-- Atomic run `run_2592e612-7f6d-46ab-bf7d-b786de72e62f` and direct Codex run
-  `run_ee9b00bd-52af-4006-bd81-a00c9b6aa5b2` both passed the same checks and a
-  fresh verifier without repair;
-- each used a separate worktree, container, fenced lease, capability, evidence
-  set, and approval, and all writer resources were cleaned;
-- Atomic used 134,670 input/934 output tokens in 83,188 ms; direct Codex used
-  34,933 input/349 output tokens in 27,267 ms; subscription cost is unknown and
-  recorded as zero;
-- both approvals remain pending, no candidate is accepted, and no default runtime
-  is selected; and
-- Claude Code remains a separately gated unavailable candidate.
+- digest-pinned per-project Linear/Git/GitHub authority policy;
+- bounded Linear project/issue reads and idempotent task/evidence writes;
+- read-only Git commit/tree/patch/check-policy evidence;
+- migration 012 authority bindings and fenced per-consumer outbox delivery with
+  retry, dead letters, replay, retention, and status;
+- migration 013 immutable evidence-bound external-action plans, approvals,
+  receipts, and ambiguous-effect reconciliation;
+- GitHub draft-PR creation from a pre-existing remote head only;
+- deterministic local Project Brain evaluation and an inert, namespace-bound
+  OpenViking candidate provider;
+- authenticated bounded HTTP/MCP operations and a read-only live smoke.
 
-The latest pre-M7 verification recorded in `docs/VERIFICATION.md` reported 264
-general tests / 261 passed / 3 honest skips, disposable PostgreSQL storage 22/22
-plus M5b lifecycle 7/7, Atomic package verification with 38 required files and 6
-workflows, and HTTP/MCP smokes. Rerun it before relying on the count.
+Normal verification uses deterministic fakes and no connector credential. No
+live Linear or GitHub request may be claimed until the opt-in record is run.
+General Direct/Atomic Lite/Atomic Full assessment remains launch-unsupported;
+fixed pilots must not be substituted. Branch publication, merge, deploy,
+canonical-memory promotion, and multi-user actor attestation remain absent.
 
-ADR-P009 now defines Direct, Atomic Lite, and Atomic Full. Hermes supplies the
-literal request and optional preference; the control plane owns the structured
-six-dimension decision and hard-signal escalation. The authenticated assessment
-surface and migration 010 now persist that decision, but truthfully return
-execution unsupported because Linear remains a prototype projection, Git is not
-connected, and no accepted project execution policy exists. No general launch
-operation is exposed and fixed pilots are never substituted.
+## Next objective
 
-The package-local `atomic-lite-writer` contract is independently testable: one
-retained implementer, model-free checks, at most one forked repair, and a fresh
-reviewer only when policy requires a distinct surface. It is not runtime
-registered. Its admitted Git commit/tree/index, descriptor writes, and full
-Git-visible worktree gates reject ordinary and committed undeclared mutations;
-an external sandbox is still mandatory for a real writer. Migration 011 and the subscription broker now retain one
-process-local Codex provider thread per capability/role and send appended message
-deltas; different roles remain isolated and restart resume fails closed.
+1. Review and accept/amend ADR-P010 and one exact project connector policy.
+2. Obtain only the credential needed for the next exercise. Start with a
+   dedicated Linear read credential and `LINEAR_CONNECTOR_MODE=read-only`; do not
+   reuse Hermes ambient tool state.
+3. Run `npm run smoke:m7-read`, record the exact authority revisions/digests, and
+   verify it launched no runtime and made no external write.
+4. If Wesley separately authorizes a disposable write, exercise exactly one
+   approved Linear issue/comment action or one GitHub draft PR from a pre-existing disposable
+   remote head. Stop before merge/deploy/status changes and retain the provider
+   receipt.
+5. Design the next separate change: a trusted general project launcher that
+   consumes an unexpired assessment and rechecks authority, but cannot broaden
+   project/command/credential/final-action policy. Do not implement it by mapping
+   arbitrary requests onto fixed M5/M6 fixtures.
+6. Before any shared/mobile deployment, replace the static operator bearer with
+   authenticated actor provenance and scoped authorization.
 
-## Milestone 7 objective
+## Non-negotiable checks
 
-Implement production connectors only after a new inventory/plan and one coherent
-connector slice at a time:
+- Linear remains roadmap/status authority; never mirror its full roadmap.
+- Git/GitHub and executable checks remain implementation/delivery authority.
+- Credentials stay host-side in private regular files and never enter Hermes,
+  model context, writer mounts, artifacts, events, or logs.
+- Callers never choose provider URL, repository path, ref, command, issue target,
+  or raw request body.
+- External writes require a separate exact evidence/policy/expiry-bound plan and
+  approval. Ambiguous effects reconcile by stable marker and are never blindly
+  retried.
+- GitHub is draft-only from a pre-existing matching head. Branch publication,
+  merge, deploy, destructive database changes, expanded secret access, and memory
+  promotion remain separate approvals/actions.
+- Local accepted Markdown remains active Project Brain authority; OpenViking is
+  evaluation-only until an accepted live retrieval result exists.
 
-1. Add least-privilege Linear reads and idempotent issue/idea/evidence writes
-   behind a provider interface. Linear remains authoritative; never mirror its
-   full roadmap or depend on preview AgentSession APIs. Wesley already has a
-   Linear gateway configured for Hermes, but that is not evidence of a
-   control-plane connector or credential boundary.
-   First replace the assessment's `prototype` Linear and `unavailable` Git source
-   labels with revision-bound provider evidence; do not enable assessment launch
-   until the selected project also has an accepted repository/check/write policy.
-2. Keep deterministic local-Markdown Project Brain retrieval first. Add an
-   evaluation harness for cross-project leakage, accepted-decision ranking,
-   stale/superseded suppression, deletion, latency, and token cost before any
-   OpenViking default. OpenViking remains read-only and feature-flagged.
-3. Add GitHub draft-PR creation only after an exact evidence-bound approval,
-   secret scan, deterministic checks, and artifact revalidation. PR creation,
-   merge, deployment, and memory promotion remain separate actions.
-4. Implement the external outbox dispatcher, retry/dead-letter/retention policy,
-   operational observability, and recovery runbooks before relying on connector
-   writes.
-5. Emit concise Linear milestone/evidence updates without flooding issue
-   comments. Every mutation must be idempotent and auditable.
+## Exact starting commands
 
-Start with read-only inventory of the existing Linear/Hermes setup, connector
-interfaces, outbox schema, auth configuration, and tests. Write a short M7 plan
-covering files, migrations, rollback, failure behavior, least privilege, feature
-flags, deterministic fake gateways, opt-in live tests, and decisions requiring
-Wesley. Do not request or copy credentials until the exact connector and minimum
-scope are defined. Do not resolve either M6 candidate approval or select a default
-runtime as part of M7.
+```bash
+npm ci
+npm run verify
+cp config/m7-connectors.example.json /absolute/private/accepted-m7-connectors.json
+# Review and edit outside the repository, then compute:
+shasum -a 256 /absolute/private/accepted-m7-connectors.json
+```
+
+Follow `docs/M7_CONNECTOR_SETUP.md` for private token files and the read-only
+server/smoke commands. Do not request a GitHub write token for the Linear read
+exercise, and do not enable `read-write`/`draft-pr` until Wesley authorizes that
+specific external effect.

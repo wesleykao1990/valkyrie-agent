@@ -6,11 +6,17 @@ import type { Approval, Artifact, MemoryProposal, Project, Run, RuntimeName, Run
 import {
   canonicalJson,
   IdempotencyConflictError,
+  type AuthorityBinding,
   type ControlPlaneStore,
+  type ExternalActionPlanListInput,
   type EngineeringRoutingAssessmentRecord,
   type RunBundleResult,
 } from "./store.ts";
 import { contextPackChecksum, type LocalProjectBrain, type PromotionPreview } from "./project-brain.ts";
+import {
+  LocalProjectBrainProvider,
+  type ProjectBrainReadProvider,
+} from "./project-brain-provider.ts";
 import type { WorkspaceManager } from "./workspace.ts";
 import { id, nowIso } from "./ids.ts";
 import {
@@ -36,6 +42,13 @@ import {
   DIRECT_CLAUDE_MODEL_WORKFLOW,
   type DirectModelPilotCoordinator,
 } from "./direct-model-pilot.ts";
+import type { ProductionConnectorRegistry } from "./production-connectors.ts";
+import type {
+  ExternalFinalActionCoordinator,
+  PrepareGithubDraftPrInput,
+  PrepareLinearEvidenceCommentInput,
+  PrepareLinearIssueInput,
+} from "./external-final-action.ts";
 
 function requestHash(value: unknown): string {
   const normalized = JSON.parse(JSON.stringify(value)) as unknown;
@@ -50,15 +63,19 @@ export const ENGINEERING_ROUTING_ASSESSMENT_TTL_MS = 15 * 60 * 1_000;
 
 interface ControlPlaneServiceOptions {
   now?: () => Date;
+  projectBrainReadProvider?: ProjectBrainReadProvider;
   atomicFixturePilot?: AtomicFixturePilotCoordinator;
   atomicModelPilot?: AtomicModelPilotLifecycleCoordinator;
   directModelPilot?: DirectModelPilotCoordinator;
   directClaudeModelPilotEnabled?: boolean;
+  connectors?: ProductionConnectorRegistry;
+  externalFinalActions?: ExternalFinalActionCoordinator;
 }
 
 export class ControlPlaneService {
   private store: ControlPlaneStore;
   private brain: LocalProjectBrain;
+  private readonly brainReads: ProjectBrainReadProvider;
   private workspaces: WorkspaceManager;
   private adapters: Map<RuntimeName, RuntimeAdapter>;
   private readonly workerId = id("worker");
@@ -67,6 +84,8 @@ export class ControlPlaneService {
   private readonly atomicModelPilot?: AtomicModelPilotLifecycleCoordinator;
   private readonly directModelPilot?: DirectModelPilotCoordinator;
   private readonly directClaudeModelPilotEnabled: boolean;
+  private readonly connectors?: ProductionConnectorRegistry;
+  private readonly externalFinalActions?: ExternalFinalActionCoordinator;
   private currentTick: Promise<void> | null = null;
   private approvalQueue = new Map<string, Promise<unknown>>();
 
@@ -79,6 +98,7 @@ export class ControlPlaneService {
   ) {
     this.store = store;
     this.brain = brain;
+    this.brainReads = options.projectBrainReadProvider ?? new LocalProjectBrainProvider(brain);
     this.workspaces = workspaces;
     this.adapters = adapters;
     this.now = options.now ?? (() => new Date());
@@ -86,6 +106,8 @@ export class ControlPlaneService {
     this.atomicModelPilot = options.atomicModelPilot;
     this.directModelPilot = options.directModelPilot;
     this.directClaudeModelPilotEnabled = options.directClaudeModelPilotEnabled ?? false;
+    this.connectors = options.connectors;
+    this.externalFinalActions = options.externalFinalActions;
   }
 
   listProjects(): Promise<Project[]> { return this.store.listProjects(); }
@@ -93,6 +115,98 @@ export class ControlPlaneService {
   listRuns(): Promise<Run[]> { return this.store.listRuns(); }
   listApprovals(): Promise<Approval[]> { return this.store.listApprovals(); }
   listMemoryProposals(): Promise<MemoryProposal[]> { return this.store.listMemoryProposals(); }
+
+  async connectorStatus() {
+    const registry = this.connectors?.status() ?? {
+      enabled: false,
+      policyDigest: null,
+      linear: { mode: "disabled" as const, configuredProjects: [], credentialLoaded: false },
+      github: { mode: "disabled" as const, configuredProjects: [], credentialLoaded: false },
+      git: { configuredProjects: [] },
+      externalEffects: {
+        linearIssueCreation: false,
+        linearEvidenceComment: false,
+        githubDraftPr: false,
+        branchPublication: false as const,
+        merge: false as const,
+        deployment: false as const,
+      },
+    };
+    return {
+      ...registry,
+      outbox: this.externalFinalActions ? await this.externalFinalActions.deliveryStatus() : null,
+      externalActions: this.externalFinalActions ? {
+        pendingApproval: (await this.externalFinalActions.listPlans({ state: "pending_approval", limit: 100 })).length,
+        ambiguous: (await this.externalFinalActions.listPlans({ state: "ambiguous", limit: 100 })).length,
+        executing: (await this.externalFinalActions.listPlans({ state: "executing", limit: 100 })).length,
+      } : null,
+    };
+  }
+
+  listConnectorDeadLetters(limit = 100) {
+    return this.requireExternalFinalActions().listDeadDeliveries(limit);
+  }
+
+  replayConnectorDeadLetter(outboxId: string, resolvedBy: string) {
+    return this.requireExternalFinalActions().replayDeadDelivery(outboxId, resolvedBy);
+  }
+
+  prepareGithubDraftPr(input: PrepareGithubDraftPrInput) {
+    return this.requireExternalFinalActions().prepareGithubDraftPr(input);
+  }
+
+  prepareLinearEvidenceComment(input: PrepareLinearEvidenceCommentInput) {
+    return this.requireExternalFinalActions().prepareLinearEvidenceComment(input);
+  }
+
+  prepareLinearIssue(input: PrepareLinearIssueInput) {
+    return this.requireExternalFinalActions().prepareLinearIssue(input);
+  }
+
+  listExternalActionPlans(input: ExternalActionPlanListInput = {}) {
+    return this.requireExternalFinalActions().listPlans(input);
+  }
+
+  async getExternalActionPlan(planId: string) {
+    const plan = await this.requireExternalFinalActions().getPlan(planId);
+    if (!plan) throw new Error("External action plan not found");
+    return plan;
+  }
+
+  resolveExternalActionPlan(
+    planId: string,
+    decision: "approve" | "deny" | "request_changes",
+    resolvedBy: string,
+    idempotencyKey?: string,
+  ) {
+    const state = decision === "approve" ? "approved" : decision === "deny" ? "denied" : "changes_requested";
+    return this.requireExternalFinalActions().resolveApproval({
+      planId,
+      state,
+      decision,
+      resolvedBy,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    });
+  }
+
+  reconcileExternalActionPlan(
+    planId: string,
+    input: {
+      outcome: "zero" | "one" | "multiple";
+      matchCount?: number;
+      externalId?: string;
+      externalRevision?: string;
+      payloadHash?: string;
+      observedAt?: string;
+    },
+    operatorId: string,
+  ) {
+    return this.requireExternalFinalActions().reconcileAmbiguousPlan({
+      planId,
+      operatorId,
+      ...input,
+    });
+  }
 
   async assessEngineeringRequest(input: EngineeringIntakeInput) {
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Engineering intake must be an object");
@@ -150,23 +264,19 @@ export class ControlPlaneService {
       }
     }
     const assessmentId = id("route");
-    const contextPack = this.brain.buildContextPack(project, input.request, {
+    const contextPack = await this.brainReads.buildContextPack(project, input.request, {
       runId: assessmentId,
       ...(task ? { taskId: task.id } : {}),
     });
+    const connectorContext = await this.readConnectorAuthority(project, task);
     const contextSources: EngineeringRoutingAssessmentRecord["contextSources"] = {
-      linear: {
-        status: "prototype",
-        taskSource: task?.source ?? "none",
-        note: "Current task data is a local projection; production Linear freshness is unavailable.",
-      },
-      git: {
-        status: "unavailable",
-        repository: project.repository,
-        note: "No live Git revision or deterministic project check policy is bound to general intake.",
-      },
+      linear: connectorContext.linear,
+      git: connectorContext.git,
       projectBrain: {
-        status: "accepted-local",
+        status: this.brainReads.mode === "local-markdown-readonly" ? "accepted-local" : "candidate-read-only",
+        providerId: this.brainReads.providerId,
+        providerMode: this.brainReads.mode,
+        revision: this.brainReads.revision,
         checksum: contextPackChecksum(contextPack),
         acceptedEntries: contextPack.entries.length,
       },
@@ -191,9 +301,9 @@ export class ControlPlaneService {
       contextSources,
     });
     const unsupportedReasons = [
-      "live-linear-authority-unavailable",
-      "live-git-authority-unavailable",
-      "trusted-project-execution-policy-unavailable",
+      ...(connectorContext.linear.status === "revision-bound" ? [] : ["live-linear-authority-unavailable"]),
+      ...(connectorContext.git.status === "revision-bound" ? [] : ["live-git-authority-unavailable"]),
+      ...(connectorContext.git.status === "revision-bound" ? [] : ["trusted-project-execution-policy-unavailable"]),
       `general-${derived.decision.shape}-launch-unavailable`,
     ];
     const observedAt = this.now();
@@ -398,28 +508,41 @@ export class ControlPlaneService {
 
   async projectBrief(projectId: string) {
     const project = await this.requireProject(projectId);
-    const [tasks, allRuns, pendingApprovals, proposedMemory] = await Promise.all([
+    const [tasks, allRuns, pendingApprovals, proposedMemory, authority] = await Promise.all([
       this.store.listTasks(projectId),
       this.store.listRuns(),
       this.store.listApprovals("pending"),
       this.store.listMemoryProposals("proposed"),
+      this.readConnectorAuthority(project, null),
     ]);
     const runs = allRuns.filter((r) => r.projectId === projectId);
-    const decisions = this.brain.acceptedDecisions(project);
+    const decisions = await this.brainReads.acceptedDecisions(project);
     return {
       project,
       linearProjection: {
-        prototype: true,
+        prototype: authority.linear.status !== "revision-bound",
         ideas: tasks.filter((t) => t.status === "idea"),
         planned: tasks.filter((t) => t.status === "planned"),
-        note: "Production will query Linear live."
+        authority: authority.linear,
+        note: authority.linear.status === "revision-bound"
+          ? "Current Linear project authority is revision-bound; task lists remain a narrow local projection, not a roadmap mirror."
+          : "Task lists are a local projection because current Linear authority is unavailable.",
       },
       activeRuns: runs.filter((r) => ["running", "awaiting_approval"].includes(r.status)),
       recentRuns: runs.slice(0, 10),
       acceptedDecisions: decisions,
       pendingApprovals: pendingApprovals.filter((a) => runs.some((r) => r.id === a.runId)),
       memoryProposals: proposedMemory.filter((m) => m.projectId === projectId),
-      freshness: { linear: "prototype projection", git: "not connected", vault: nowIso() }
+      freshness: {
+        linear: authority.linear,
+        git: authority.git,
+        projectBrain: {
+          providerId: this.brainReads.providerId,
+          mode: this.brainReads.mode,
+          revision: this.brainReads.revision,
+          observedAt: nowIso(),
+        },
+      }
     };
   }
 
@@ -428,14 +551,19 @@ export class ControlPlaneService {
     const title = input.title.trim();
     if (title.length < 5) throw new Error("Idea title must contain at least 5 characters");
     const duplicate = await this.store.findTaskBySimilarTitle(project.id, title);
-    const memoryMatches = this.brain.search(project, title, 3);
+    const memoryMatches = await this.brainReads.search(project, title, 3);
     if (duplicate) return { status: "duplicate", duplicate, relatedMemory: memoryMatches };
     const task: Task = {
       id: id("task"), projectId: project.id, source: "hermes-prototype", sourceId: null,
       title, objective: title, status: "idea", priority: "normal", createdAt: nowIso()
     };
     await this.store.createTask(task);
-    return { status: "created", task, relatedMemory: memoryMatches, linearAction: "Would create or update a Linear idea in production" };
+    return {
+      status: "created",
+      task,
+      relatedMemory: memoryMatches,
+      linearAction: "Retained locally; any Linear issue requires a separate evidence-bound external-action plan and approval",
+    };
   }
 
   async startRun(input: StartRunInput) {
@@ -1074,7 +1202,14 @@ export class ControlPlaneService {
 
   async searchMemory(projectId: string, query: string) {
     const project = await this.requireProject(projectId);
-    return { projectId, query, mode: "read-only-local-vault-prototype", results: this.brain.search(project, query) };
+    return {
+      projectId,
+      query,
+      provider: this.brainReads.metadata,
+      mode: this.brainReads.mode,
+      results: await this.brainReads.search(project, query),
+      usage: this.brainReads.usage,
+    };
   }
 
   async proposeMemory(input: { projectId: string; claim: string; evidence?: string[]; runId?: string }) {
@@ -1415,6 +1550,19 @@ export class ControlPlaneService {
     } catch (error) {
       firstError ??= error;
     }
+    if (this.externalFinalActions) {
+      try {
+        const pending = await this.externalFinalActions.listPlans({ state: "pending_approval", limit: 100 });
+        for (const plan of pending) {
+          if (Date.parse(plan.expiresAt) <= this.now().getTime()) {
+            await this.externalFinalActions.expireApproval({ planId: plan.id });
+          }
+        }
+        await this.externalFinalActions.processOneAuthorizedDelivery();
+      } catch (error) {
+        firstError ??= error;
+      }
+    }
     const now = this.now();
     let runs: Run[] = [];
     try {
@@ -1440,6 +1588,161 @@ export class ControlPlaneService {
       }
     }
     if (firstError) throw firstError;
+  }
+
+  private requireExternalFinalActions(): ExternalFinalActionCoordinator {
+    if (!this.externalFinalActions) throw new Error("External final actions are disabled");
+    return this.externalFinalActions;
+  }
+
+  private async readConnectorAuthority(project: Project, task: Task | null): Promise<{
+    linear: { status: string; [key: string]: unknown };
+    git: { status: string; [key: string]: unknown };
+  }> {
+    const policy = this.connectors?.policyForProject(project.id);
+    const linearGateway = this.connectors?.linearForProject(project.id);
+    let linear: { status: string; [key: string]: unknown } = {
+      status: policy?.linear ? "unavailable" : "prototype",
+      taskSource: task?.source ?? "none",
+      note: policy?.linear
+        ? "An accepted Linear mapping exists, but its live authority gateway is unavailable."
+        : "Current task data is a local projection; no accepted production Linear mapping is configured.",
+    };
+    if (policy?.linear && linearGateway) {
+      try {
+        const projectSnapshot = await linearGateway.readProject();
+        await this.persistAuthorityBinding({
+          provider: "linear",
+          localKind: "project",
+          localId: project.id,
+          externalKind: "project",
+          externalId: projectSnapshot.externalId,
+          revision: projectSnapshot.revision,
+          observedAt: projectSnapshot.observedAt,
+          payloadHash: projectSnapshot.payloadHash,
+          freshUntil: new Date(Date.parse(projectSnapshot.observedAt) + 5 * 60_000).toISOString(),
+        });
+        let taskRevision: string | null = null;
+        let taskExternalId: string | null = null;
+        if (task?.sourceId) {
+          const taskSnapshot = await linearGateway.readIssue(task.sourceId);
+          taskRevision = taskSnapshot.revision;
+          taskExternalId = taskSnapshot.externalId;
+          await this.persistAuthorityBinding({
+            provider: "linear",
+            localKind: "task",
+            localId: task.id,
+            externalKind: "issue",
+            externalId: taskSnapshot.externalId,
+            revision: taskSnapshot.revision,
+            observedAt: taskSnapshot.observedAt,
+            payloadHash: taskSnapshot.payloadHash,
+            freshUntil: new Date(Date.parse(taskSnapshot.observedAt) + 5 * 60_000).toISOString(),
+          });
+        }
+        linear = {
+          status: "revision-bound",
+          taskSource: task?.source ?? "none",
+          projectExternalId: projectSnapshot.externalId,
+          projectRevision: projectSnapshot.revision,
+          taskExternalId,
+          taskRevision,
+          observedAt: projectSnapshot.observedAt,
+          freshUntil: new Date(Date.parse(projectSnapshot.observedAt) + 5 * 60_000).toISOString(),
+          payloadHash: projectSnapshot.payloadHash,
+        };
+      } catch (error) {
+        linear = {
+          status: "unavailable",
+          taskSource: task?.source ?? "none",
+          errorCode: this.safeConnectorErrorCode(error, "LINEAR_AUTHORITY_UNAVAILABLE"),
+          note: "Linear authority could not be verified; no provider payload was retained.",
+        };
+      }
+    }
+
+    const gitAuthority = this.connectors?.gitForProject(project.id);
+    let git: { status: string; [key: string]: unknown } = {
+      status: policy?.git ? "unavailable" : "unavailable",
+      repository: project.repository,
+      note: policy?.git
+        ? "An accepted Git policy exists, but its revision could not be inspected."
+        : "No accepted deterministic Git execution policy is configured.",
+    };
+    if (policy?.git && gitAuthority) {
+      try {
+        const snapshot = await gitAuthority.read();
+        const payloadHash = requestHash({
+          repositoryIdentity: snapshot.repositoryIdentity,
+          baseRef: snapshot.baseRef,
+          baseCommit: snapshot.baseCommit,
+          baseTree: snapshot.baseTree,
+          headRef: snapshot.headRef,
+          headCommit: snapshot.headCommit,
+          headTree: snapshot.headTree,
+          patchDigest: snapshot.patchDigest,
+          checkPolicyDigest: snapshot.checkPolicyDigest,
+          policyDigest: snapshot.policyDigest,
+        });
+        await this.persistAuthorityBinding({
+          provider: "git",
+          localKind: "project",
+          localId: project.id,
+          externalKind: "repository",
+          externalId: snapshot.repositoryIdentity,
+          revision: snapshot.headCommit,
+          observedAt: snapshot.observedAt,
+          payloadHash,
+          freshUntil: new Date(Date.parse(snapshot.observedAt) + 5 * 60_000).toISOString(),
+        });
+        git = {
+          status: "revision-bound",
+          repository: snapshot.repositoryIdentity,
+          baseRef: snapshot.baseRef,
+          baseCommit: snapshot.baseCommit,
+          headRef: snapshot.headRef,
+          headCommit: snapshot.headCommit,
+          patchDigest: snapshot.patchDigest,
+          checkPolicyDigest: snapshot.checkPolicyDigest,
+          policyDigest: snapshot.policyDigest,
+          observedAt: snapshot.observedAt,
+          freshUntil: new Date(Date.parse(snapshot.observedAt) + 5 * 60_000).toISOString(),
+          payloadHash,
+        };
+      } catch (error) {
+        git = {
+          status: "unavailable",
+          repository: project.repository,
+          errorCode: this.safeConnectorErrorCode(error, "GIT_AUTHORITY_UNAVAILABLE"),
+          note: "Git authority could not be verified; no command output or filesystem path was retained.",
+        };
+      }
+    }
+    return { linear, git };
+  }
+
+  private async persistAuthorityBinding(binding: AuthorityBinding): Promise<void> {
+    const existing = await this.store.getAuthorityBinding(binding.provider, binding.localKind, binding.localId);
+    if (!existing) {
+      await this.store.createAuthorityBinding(binding);
+      return;
+    }
+    if (canonicalJson(existing) === canonicalJson(binding)) return;
+    if (existing.externalKind !== (binding.externalKind ?? null) || existing.externalId !== binding.externalId) {
+      throw new Error("External authority identity changed and requires explicit operator reconciliation");
+    }
+    await this.store.refreshAuthorityBinding({
+      ...binding,
+      expectedExternalKind: existing.externalKind,
+      expectedExternalId: existing.externalId,
+      expectedRevision: existing.revision,
+      expectedPayloadHash: existing.payloadHash,
+    });
+  }
+
+  private safeConnectorErrorCode(error: unknown, fallback: string): string {
+    const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
+    return typeof code === "string" && /^[A-Z][A-Z0-9_.:-]{0,127}$/u.test(code) ? code : fallback;
   }
 
   private async flagApprovalReconciliation(run: Run, approvalId: string, reason: string): Promise<void> {
@@ -1510,7 +1813,7 @@ export class ControlPlaneService {
       throw new Error("Native runtime context directory realpath escaped the owned workspace");
     }
 
-    const pack = this.brain.buildContextPack(project, objective, { runId: run.id, ...(task ? { taskId: task.id } : {}) });
+    const pack = await this.brainReads.buildContextPack(project, objective, { runId: run.id, ...(task ? { taskId: task.id } : {}) });
     const contextBody = canonicalJson(pack);
     const contextChecksum = contextPackChecksum(pack);
     const contextPath = join(directory, "context-pack.json");

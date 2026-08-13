@@ -694,6 +694,46 @@ transport continuity, not token savings: the provider reported more/cumulative
 input on the resumed turn, dollar cost stayed zero/unknown, and restart resume
 remains disabled.
 
+## Milestone 7 deterministic connector evidence
+
+On 13 August 2026, the complete deterministic M7 connector slice passed:
+
+```bash
+npm run verify
+```
+
+- strict root TypeScript passed;
+- the general suite reported 311 total: 308 passed, 0 failed, and 3 honest
+  opt-in skips;
+- disposable PostgreSQL passed 23/23 storage and 7/7 model-lifecycle tests;
+- the Atomic package verified 38 required files, 6 workflows, 16 routing cases,
+  5 prompt templates, and 11 invalid launch manifests;
+- authenticated HTTP smoke passed with 3 projects, 3 candidates, 3 approvals,
+  artifacts 5/4/4, and one disposable exact-preview memory promotion; and
+- authenticated MCP smoke passed with its 7 test-allowlisted tools, runtime and
+  governed-memory operations, portfolio calls, and idempotent run replay.
+
+Focused M7 coverage exercised migration 012/013 parity, revision-bound authority,
+connector-policy digest/target drift refusal, approval-gated Linear issue
+creation, the absence of an ordinary `task.created` provider consumer, fenced
+per-consumer delivery, concurrent claims,
+retry/dead-letter/replay/retention, deterministic Project Brain evaluation,
+external-action approval and receipt transitions, stable-marker ambiguity
+reconciliation, repository/ref/evidence drift refusal, authenticated operator
+routes, and deterministic fake Linear/GitHub gateways. The final independent
+five-suite repair review passed 25/25. The first release-candidate PostgreSQL run
+exposed a stale-snapshot double-claim race; the claim path was repaired with an
+exact locked delivery reread plus primary-key conflict-safe insert, then the full
+verification and independent concurrency review both passed. The separate
+disposable PostgreSQL phase above is authoritative for PostgreSQL.
+
+No live Linear, GitHub, or OpenViking credential was loaded. `npm run
+smoke:m7-read` remains opt-in and was not run. No Linear issue/comment, GitHub
+draft PR, branch publication, merge, deployment, external project status change,
+or canonical-memory promotion occurred. Official Linear GraphQL/OAuth and GitHub
+pull-request/reference documentation was reviewed for the implemented fixed
+wire contracts; this is documentation verification, not live integration proof.
+
 ## Reproduction commands
 
 ```bash

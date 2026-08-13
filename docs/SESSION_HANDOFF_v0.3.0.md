@@ -1,4 +1,4 @@
-# Session handoff — v0.3.0 through live-verified Milestone 6 and pre-M7 gaps
+# Session handoff — v0.3.0 through deterministic Milestone 7
 
 Date: 2026-08-13
 
@@ -39,6 +39,12 @@ Date: 2026-08-13
   the package-local Atomic Lite contract implements retained implementer/forked
   repair/conditional review with deterministic integrity gates; and Codex
   subscription lineages reuse one process-local thread per capability/role.
+- Milestone 7 is deterministically implemented and default-off. It adds a
+  digest-pinned project connector policy; bounded Linear and Git authority
+  snapshots; fenced, retryable per-consumer external outbox delivery; a
+  deterministic Project Brain retrieval evaluation/provider boundary; and
+  approval/evidence/revision-bound Linear and GitHub draft-PR final actions with
+  ambiguous-effect reconciliation. No live connector credential was exercised.
 
 The M5a implementation, deterministic contracts, and live no-model runner smoke
 are complete. Exact immutable-image and native-run evidence is recorded in
@@ -56,6 +62,12 @@ The control plane does not orchestrate Atomic stages through Codex or Claude Cod
 and it does not create another workflow engine. Every writer receives one private
 worktree and exact writer lease. Automatic episodic capture and silent canonical
 promotion stay disabled. Raw Atomic records remain alongside normalized events.
+
+M7 preserves those authorities: Linear snapshots are narrow revision bindings,
+not a roadmap mirror; Git/GitHub and executable checks remain delivery truth;
+provider targets and commands come only from an accepted project policy; and
+external writes remain separate exact approvals rather than consequences of a
+completed run or comparison.
 
 ## 3. Files changed
 
@@ -105,6 +117,14 @@ engineering assessment HTTP/MCP operations, the package-local
 lineage evidence. The final Atomic Lite hardening binds admitted Git commit/tree/
 index, pre-creates exact output inodes, uses descriptor/path identity checks, and
 rejects ordinary or committed undeclared check mutations before evidence.
+
+The M7 slice adds SQLite/PostgreSQL migrations 012–013; bounded Linear, Git, and
+GitHub gateways; connector-policy validation and composition; the external
+final-action outbox dispatcher (with no ordinary `task.created` provider
+consumer); immutable connector-policy-bound external-action plans and receipts; deterministic
+Project Brain provider evaluation; authenticated HTTP/MCP operator operations;
+the opt-in read-only live smoke; deterministic fake-gateway tests; proposed
+ADR-P010; and `docs/M7_CONNECTOR_SETUP.md`.
 
 ## 4. Tests and verification evidence
 
@@ -171,6 +191,19 @@ The final two-turn subscription continuity smoke reused native Codex thread
 same-thread transport and append-only broker request path, not token savings or
 cross-process resume.
 
+Final deterministic M7 `npm run verify` passed on 13 August 2026: strict
+TypeScript; 311 general tests with 308 passed, 0 failed, and 3 honest opt-in
+skips; disposable PostgreSQL storage 23/23 and model lifecycle 7/7; Atomic
+package verification with 38 required files and 6 workflows; authenticated HTTP
+smoke; and the 7-tool authenticated MCP smoke. The M7 live-read smoke remained
+opt-in and was not run because no Linear/GitHub credential was supplied.
+
+The first release-candidate PostgreSQL run caught a real concurrent delivery
+claim race. The final implementation re-reads and locks the exact
+`(outbox_id,consumer_id)` identity and uses a conflict-safe primary-key insert,
+so a stale candidate snapshot cannot return another worker's fence. The repaired
+PostgreSQL contract, full verifier, and independent concurrency review passed.
+
 ## 5. Live integrations actually exercised
 
 Previously and still valid:
@@ -200,6 +233,15 @@ Exercised after M6: two bounded ChatGPT-subscription marker turns on one native
 Codex thread. The durable engineering-assessment HTTP/MCP paths were exercised
 only against current prototype/unavailable authority and correctly launched
 nothing. Atomic Lite itself remains contract-tested rather than live-model run.
+
+Exercised for M7: SQLite and disposable PostgreSQL migrations/contracts,
+deterministic fake Linear/GitHub gateways, local disposable Git authority,
+Project Brain retrieval evaluation, authenticated HTTP/MCP operations, external
+final-action outbox retry/dead-letter/replay, approval-gated Linear issue/comment
+paths, and approval/receipt/reconciliation paths. Ordinary `task.created` events
+have no provider-write consumer. No
+live Linear, GitHub, or OpenViking request was made; no issue, comment, branch,
+PR, merge, deployment, or external project status was created or changed.
 
 ## 6. Known limitations and risks
 
@@ -241,6 +283,14 @@ nothing. Atomic Lite itself remains contract-tested rather than live-model run.
   resume rather than trusting a stored native ID it no longer owns.
 - The nested Atomic module remains `UNLICENSED` despite public repository
   visibility.
+- M7 live connectors remain disabled and unexercised. Static bearer auth is not
+  multi-user actor attestation, branch publication is absent, and GitHub draft
+  PR creation requires an already-existing remote head whose revision matches
+  the approved plan.
+- General Direct / Atomic Lite / Atomic Full launch remains fail-closed after an
+  assessment; fixed M5/M6 pilots are not substituted for arbitrary work.
+- The OpenViking provider is evaluation-only. Local accepted Markdown remains
+  the active Project Brain provider.
 
 ## 7. Manual setup still required
 
@@ -270,6 +320,11 @@ nothing. Atomic Lite itself remains contract-tested rather than live-model run.
   test/candidate/check/verifier payload to the external ChatGPT subscription
   service, so an explicit operator acknowledgment remains required for each new
   external run. The smoke stops before either candidate approval.
+- To exercise M7, review and digest a private copy of
+  `config/m7-connectors.example.json`, create only the necessary private `0600`
+  credential file, and follow `docs/M7_CONNECTOR_SETUP.md`. Start with
+  `LINEAR_CONNECTOR_MODE=read-only` and `npm run smoke:m7-read`. GitHub write
+  credentials are not needed for the first read-only exercise.
 
 ## 8. ADRs or decisions requiring Wesley
 
@@ -285,8 +340,18 @@ nothing. Atomic Lite itself remains contract-tested rather than live-model run.
 - Accept/amend/reject proposed ADR-P008's separate direct-root lifecycle and
   evidence-derived comparison rubric. It does not select a default runtime.
 - Accept/amend/reject proposed ADR-P009's risk-based Direct / Atomic Lite /
-  Atomic Full rubric. Current assessment is advisory/fail-closed until M7 binds
-  live authority and accepted project execution policy.
+  Atomic Full rubric. M7 can now bind live authority and accepted project
+  execution policy, but the assessment remains advisory/fail-closed until a
+  separate trusted general launcher is reviewed and registered.
+- Accept/amend/reject proposed ADR-P010's digest-pinned connector policy,
+  revision-bound authority snapshots, per-consumer external outbox, and separate
+  external-action plan/approval/receipt boundary.
+- Choose the first accepted M7 project policy and credential posture: dedicated
+  Linear read-only key/OAuth first; only later authorize one disposable Linear
+  write or GitHub draft PR. Decide whether a GitHub App installation token or a
+  fine-grained repository token is the long-term host credential.
+- A general project launcher and multi-user authenticated actor provenance remain
+  separate decisions; neither should be inferred from connector availability.
 - Decide whether a remote micro-VM is mandatory before confidential/high-risk
   writing and choose the future Hermes mobile identity/authorization ingress.
 
@@ -301,6 +366,16 @@ Default demo and repository verification:
 npm ci
 npm run verify
 npm start
+```
+
+M7 deterministic verification and read-only live preparation:
+
+```bash
+npm run verify
+cp config/m7-connectors.example.json /absolute/private/accepted-m7-connectors.json
+# Review/edit the private copy, then:
+shasum -a 256 /absolute/private/accepted-m7-connectors.json
+# Follow docs/M7_CONNECTOR_SETUP.md before enabling LINEAR_CONNECTOR_MODE=read-only.
 ```
 
 Prepare the dedicated ChatGPT subscription profile and test only the broker:
@@ -369,6 +444,6 @@ unless the explicit safe-mock test-client override is supplied.
 
 ## 10. Copy-paste continuation prompt
 
-Use `docs/NEXT_SESSION_PROMPT.md`. It starts from the live-verified M6 boundary,
-keeps both candidates unselected, and scopes the next work to Milestone 7
-production connectors and operations.
+Use `docs/NEXT_SESSION_PROMPT.md`. It starts from deterministic M7, keeps every
+live connector default-off, and scopes the next work to read-only authority
+acceptance followed by the separately reviewed general-launch design.

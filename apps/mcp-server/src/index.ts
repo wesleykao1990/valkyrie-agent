@@ -3,6 +3,12 @@ import { loadControlPlaneAuth, validateLoopbackControlPlaneApi } from "../../con
 const apiBase = validateLoopbackControlPlaneApi(process.env.CONTROL_PLANE_API ?? "http://127.0.0.1:8787");
 const authToken = loadControlPlaneAuth()?.token;
 const safeControlPlaneId = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
+const externalActionStates = [
+  "pending_approval", "authorized", "executing", "ambiguous", "succeeded",
+  "denied", "expired", "failed", "quarantined",
+] as const;
+const maxListLimit = 1_000;
+const maxExternalActionTextBytes = 4 * 1024;
 
 interface RpcRequest { jsonrpc: "2.0"; id?: string | number | null; method: string; params?: any }
 
@@ -10,6 +16,40 @@ const allTools = [
   tool("projects_list", "List all registered projects and portfolio health.", {}),
   tool("project_get_brief", "Get current roadmap, runs, accepted decisions, approvals, and freshness for one project.", { projectId: stringProp("Project ID") }, ["projectId"]),
   tool("runtimes_status", "Inspect configured runtime adapters, verified availability, authentication, and supported capabilities.", {}),
+  tool("connectors_status", "Inspect bounded production connector modes, policy identity, outbox counts, and permitted external effects.", {}),
+  tool("connector_dead_letters_list", "List bounded dead-letter evidence for the fixed production connector consumer.", { limit: integerProp("Maximum dead-letter records") }),
+  tool("connector_dead_letter_replay", "Replay one fixed-consumer dead-letter delivery using the configured operator principal.", { outboxId: controlPlaneIdProp("Dead-letter outbox ID") }, ["outboxId"]),
+  tool("external_action_github_draft_pr_prepare", "Prepare an evidence-bound GitHub draft PR action; repository, refs, and credentials come only from accepted server policy.", {
+    runId: controlPlaneIdProp("Completed evidence run ID"),
+    title: boundedStringProp("Draft PR title", 1, maxExternalActionTextBytes),
+    body: boundedStringProp("Draft PR body", 1, maxExternalActionTextBytes),
+    idempotencyKey: controlPlaneIdProp("Optional safe retry key"),
+    expiresAt: boundedStringProp("Optional canonical UTC expiry", 1, 128),
+  }, ["runId", "title", "body"]),
+  tool("external_action_linear_evidence_comment_prepare", "Prepare an evidence-bound Linear comment on the policy-fixed issue; callers cannot choose an issue or provider target.", {
+    runId: controlPlaneIdProp("Completed evidence run ID"),
+    body: boundedStringProp("Evidence comment body", 1, maxExternalActionTextBytes),
+    idempotencyKey: controlPlaneIdProp("Optional safe retry key"),
+    expiresAt: boundedStringProp("Optional canonical UTC expiry", 1, 128),
+  }, ["runId", "body"]),
+  tool("external_action_linear_issue_prepare", "Prepare an evidence-bound Linear issue in the policy-fixed team/project; creation requires a separate exact approval.", {
+    runId: controlPlaneIdProp("Completed evidence run ID"),
+    title: boundedStringProp("Linear issue title", 1, maxExternalActionTextBytes),
+    description: boundedStringProp("Linear issue description", 1, maxExternalActionTextBytes),
+    idempotencyKey: controlPlaneIdProp("Optional safe retry key"),
+    expiresAt: boundedStringProp("Optional canonical UTC expiry", 1, 128),
+  }, ["runId", "title", "description"]),
+  tool("external_action_plans_list", "List bounded evidence-bound external action plans with optional project and state filters.", {
+    projectId: controlPlaneIdProp("Optional local project ID"),
+    state: enumProp([...externalActionStates]),
+    limit: integerProp("Maximum plans to return"),
+  }),
+  tool("external_action_plan_get", "Get one evidence-bound external action plan by safe plan ID.", { planId: controlPlaneIdProp("External action plan ID") }, ["planId"]),
+  tool("external_action_plan_resolve", "Approve, deny, or request changes for one evidence-bound external action plan using the configured operator principal.", {
+    planId: controlPlaneIdProp("External action plan ID"),
+    decision: enumProp(["approve", "deny", "request_changes"]),
+    idempotencyKey: controlPlaneIdProp("Optional safe retry key"),
+  }, ["planId", "decision"]),
   tool("engineering_assess", "Persist an explainable control-plane routing assessment for a literal engineering request. Hermes may state an upward-only preference but cannot supply scores or launch a fixed pilot through this tool.", {
     projectId: controlPlaneIdProp("Project ID"),
     taskId: controlPlaneIdProp("Optional current task ID"),
@@ -74,6 +114,7 @@ function controlPlaneIdProp(description: string) {
   };
 }
 function numberProp(description: string) { return { type: "number", description }; }
+function integerProp(description: string) { return { type: "integer", minimum: 1, maximum: maxListLimit, description }; }
 function enumProp(values: string[]) { return { type: "string", enum: values }; }
 function boundedStringProp(description: string, minLength: number, maxLength: number) {
   return { type: "string", description, minLength, maxLength };
@@ -120,6 +161,47 @@ async function callTool(name: string, args: any): Promise<unknown> {
     case "projects_list": return api("/api/portfolio");
     case "project_get_brief": return api(`/api/projects/${encodeURIComponent(args.projectId)}/brief`);
     case "runtimes_status": return api("/api/runtimes");
+    case "connectors_status": return api("/api/connectors/status");
+    case "connector_dead_letters_list": {
+      const input = requireDeadLetterListArguments(args);
+      return api(`/api/connectors/outbox/dead${input.limit === undefined ? "" : `?limit=${input.limit}`}`);
+    }
+    case "connector_dead_letter_replay": {
+      const input = requireDeadLetterReplayArguments(args);
+      return api(`/api/connectors/outbox/dead/${encodeURIComponent(input.outboxId)}`, { method: "POST", body: {} });
+    }
+    case "external_action_github_draft_pr_prepare": {
+      const input = requireGithubDraftPrArguments(args);
+      return api("/api/external-actions/github-draft-pr", { method: "POST", body: input });
+    }
+    case "external_action_linear_evidence_comment_prepare": {
+      const input = requireLinearEvidenceCommentArguments(args);
+      return api("/api/external-actions/linear-evidence-comment", { method: "POST", body: input });
+    }
+    case "external_action_linear_issue_prepare": {
+      const input = requireLinearIssueArguments(args);
+      return api("/api/external-actions/linear-issue", { method: "POST", body: input });
+    }
+    case "external_action_plans_list": {
+      const input = requireExternalActionPlansListArguments(args);
+      const query = new URLSearchParams();
+      if (input.projectId !== undefined) query.set("projectId", input.projectId);
+      if (input.state !== undefined) query.set("state", input.state);
+      if (input.limit !== undefined) query.set("limit", String(input.limit));
+      const suffix = query.toString();
+      return api(`/api/external-actions${suffix ? `?${suffix}` : ""}`);
+    }
+    case "external_action_plan_get": {
+      const input = requireExactIdArgument(args, "planId");
+      return api(`/api/external-actions/${encodeURIComponent(input)}`);
+    }
+    case "external_action_plan_resolve": {
+      const input = requireExternalActionResolveArguments(args);
+      return api(`/api/external-actions/${encodeURIComponent(input.planId)}/resolve`, {
+        method: "POST",
+        body: { decision: input.decision, ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}) },
+      });
+    }
     case "engineering_assess": return api("/api/engineering/assessments", {
       method: "POST", body: requireEngineeringAssessmentArguments(args),
     });
@@ -164,6 +246,132 @@ async function callTool(name: string, args: any): Promise<unknown> {
     case "memory_reject": return api(`/api/memory/proposals/${encodeURIComponent(args.proposalId)}/resolve`, { method: "POST", body: { decision: "reject" } });
     default: throw new Error(`Unknown tool ${name}`);
   }
+}
+
+function requireRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} arguments must be an object`);
+  return value as Record<string, unknown>;
+}
+
+function requireAllowedKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+  required: readonly string[],
+  label: string,
+): void {
+  const accepted = new Set(allowed);
+  if (Object.keys(value).some((key) => !accepted.has(key)) || required.some((key) => !(key in value))) {
+    throw new Error(`${label} received an unsupported or missing field`);
+  }
+}
+
+function requireBoundedUtf8(value: unknown, field: string, maximumBytes: number): string {
+  if (typeof value !== "string" || value.length < 1 || value !== value.trim()
+      || /[\u0000-\u001f\u007f\r]/u.test(value) || Buffer.byteLength(value, "utf8") > maximumBytes) {
+    throw new Error(`${field} must be a bounded UTF-8 string of at most ${maximumBytes} bytes`);
+  }
+  return value;
+}
+
+function requireOptionalExpiry(value: unknown): string | undefined {
+  return value === undefined ? undefined : requireBoundedUtf8(value, "expiresAt", 128);
+}
+
+function requireBoundedLimit(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > maxListLimit) {
+    throw new Error(`${field} must be an integer between 1 and ${maxListLimit}`);
+  }
+  return value;
+}
+
+function requireDeadLetterListArguments(value: unknown): { limit?: number } {
+  const record = requireRecord(value, "Dead-letter list");
+  requireAllowedKeys(record, ["limit"], [], "Dead-letter list");
+  return record.limit === undefined ? {} : { limit: requireBoundedLimit(record.limit, "limit") };
+}
+
+function requireDeadLetterReplayArguments(value: unknown): { outboxId: string } {
+  const record = requireRecord(value, "Dead-letter replay");
+  requireAllowedKeys(record, ["outboxId"], ["outboxId"], "Dead-letter replay");
+  return { outboxId: requireControlPlaneId(record.outboxId, "outboxId") };
+}
+
+function requireGithubDraftPrArguments(value: unknown): {
+  runId: string; title: string; body: string; idempotencyKey?: string; expiresAt?: string;
+} {
+  const record = requireRecord(value, "GitHub draft PR preparation");
+  requireAllowedKeys(record, ["runId", "title", "body", "idempotencyKey", "expiresAt"], ["runId", "title", "body"], "GitHub draft PR preparation");
+  return {
+    runId: requireControlPlaneId(record.runId, "runId"),
+    title: requireBoundedUtf8(record.title, "title", maxExternalActionTextBytes),
+    body: requireBoundedUtf8(record.body, "body", maxExternalActionTextBytes),
+    ...(record.idempotencyKey === undefined ? {} : { idempotencyKey: requireControlPlaneId(record.idempotencyKey, "idempotencyKey") }),
+    ...(record.expiresAt === undefined ? {} : { expiresAt: requireOptionalExpiry(record.expiresAt)! }),
+  };
+}
+
+function requireLinearEvidenceCommentArguments(value: unknown): {
+  runId: string; body: string; idempotencyKey?: string; expiresAt?: string;
+} {
+  const record = requireRecord(value, "Linear evidence comment preparation");
+  requireAllowedKeys(record, ["runId", "body", "idempotencyKey", "expiresAt"], ["runId", "body"], "Linear evidence comment preparation");
+  return {
+    runId: requireControlPlaneId(record.runId, "runId"),
+    body: requireBoundedUtf8(record.body, "body", maxExternalActionTextBytes),
+    ...(record.idempotencyKey === undefined ? {} : { idempotencyKey: requireControlPlaneId(record.idempotencyKey, "idempotencyKey") }),
+    ...(record.expiresAt === undefined ? {} : { expiresAt: requireOptionalExpiry(record.expiresAt)! }),
+  };
+}
+
+function requireLinearIssueArguments(value: unknown): {
+  runId: string; title: string; description: string; idempotencyKey?: string; expiresAt?: string;
+} {
+  const record = requireRecord(value, "Linear issue preparation");
+  requireAllowedKeys(
+    record,
+    ["runId", "title", "description", "idempotencyKey", "expiresAt"],
+    ["runId", "title", "description"],
+    "Linear issue preparation",
+  );
+  return {
+    runId: requireControlPlaneId(record.runId, "runId"),
+    title: requireBoundedUtf8(record.title, "title", maxExternalActionTextBytes),
+    description: requireBoundedUtf8(record.description, "description", maxExternalActionTextBytes),
+    ...(record.idempotencyKey === undefined ? {} : { idempotencyKey: requireControlPlaneId(record.idempotencyKey, "idempotencyKey") }),
+    ...(record.expiresAt === undefined ? {} : { expiresAt: requireOptionalExpiry(record.expiresAt)! }),
+  };
+}
+
+type ExternalActionState = typeof externalActionStates[number];
+
+function requireExternalActionPlansListArguments(value: unknown): {
+  projectId?: string; state?: ExternalActionState; limit?: number;
+} {
+  const record = requireRecord(value, "External action plan list");
+  requireAllowedKeys(record, ["projectId", "state", "limit"], [], "External action plan list");
+  if (record.state !== undefined && !externalActionStates.includes(record.state as ExternalActionState)) {
+    throw new Error("External action plan state is invalid");
+  }
+  return {
+    ...(record.projectId === undefined ? {} : { projectId: requireControlPlaneId(record.projectId, "projectId") }),
+    ...(record.state === undefined ? {} : { state: record.state as ExternalActionState }),
+    ...(record.limit === undefined ? {} : { limit: requireBoundedLimit(record.limit, "limit") }),
+  };
+}
+
+function requireExternalActionResolveArguments(value: unknown): {
+  planId: string; decision: "approve" | "deny" | "request_changes"; idempotencyKey?: string;
+} {
+  const record = requireRecord(value, "External action resolution");
+  requireAllowedKeys(record, ["planId", "decision", "idempotencyKey"], ["planId", "decision"], "External action resolution");
+  if (record.decision !== "approve" && record.decision !== "deny" && record.decision !== "request_changes") {
+    throw new Error("External action resolution decision is invalid");
+  }
+  return {
+    planId: requireControlPlaneId(record.planId, "planId"),
+    decision: record.decision,
+    ...(record.idempotencyKey === undefined ? {} : { idempotencyKey: requireControlPlaneId(record.idempotencyKey, "idempotencyKey") }),
+  };
 }
 
 function requireArtifactReadArguments(value: unknown): { runId: string; artifactId: string } {

@@ -207,3 +207,132 @@ test("general engineering intake remains unavailable on an unauthenticated loopb
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("authenticated production connector routes expose only bounded service operations", async () => {
+  const root = mkdtempSync(join(tmpdir(), "control-plane-production-api-"));
+  const publicDir = join(root, "public");
+  mkdirSync(publicDir);
+  const calls: Record<string, unknown[]> = {
+    deadList: [], deadReplay: [], github: [], linear: [], linearIssue: [], plans: [], gets: [], resolves: [], reconciles: [],
+  };
+  const service = {
+    connectorStatus: async () => ({ enabled: false, externalEffects: { branchPublication: false, merge: false, deployment: false } }),
+    listConnectorDeadLetters: async (limit?: number) => { calls.deadList.push(limit); return [{ outboxId: "outbox_1", state: "dead" }]; },
+    replayConnectorDeadLetter: async (outboxId: string, resolvedBy: string) => { calls.deadReplay.push({ outboxId, resolvedBy }); return { outboxId, state: "pending" }; },
+    prepareGithubDraftPr: async (input: unknown) => { calls.github.push(input); return { id: "plan_github" }; },
+    prepareLinearEvidenceComment: async (input: unknown) => { calls.linear.push(input); return { id: "plan_linear" }; },
+    prepareLinearIssue: async (input: unknown) => { calls.linearIssue.push(input); return { id: "plan_linear_issue" }; },
+    listExternalActionPlans: async (input: unknown) => { calls.plans.push(input); return [{ id: "plan_github" }]; },
+    getExternalActionPlan: async (planId: string) => { calls.gets.push(planId); return { id: planId }; },
+    resolveExternalActionPlan: async (planId: string, decision: string, resolvedBy: string, idempotencyKey?: string) => {
+      calls.resolves.push({ planId, decision, resolvedBy, idempotencyKey });
+      return { id: planId, state: decision === "approve" ? "authorized" : "denied" };
+    },
+    reconcileExternalActionPlan: async (planId: string, input: unknown, operatorId: string) => {
+      calls.reconciles.push({ planId, input, operatorId });
+      return { id: planId, state: "succeeded" };
+    },
+  } as unknown as ControlPlaneService;
+  const store = {
+    backend: "sqlite",
+    healthCheck: async () => ({ ok: true, backend: "sqlite", migrationsCurrent: true }),
+  } as unknown as ControlPlaneStore;
+  const server = createControlPlaneServer(service, store, publicDir, {
+    authToken: token,
+    operatorId: "wesley-local-operator",
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const port = (server.address() as AddressInfo).port;
+  const base = `http://127.0.0.1:${port}`;
+  const auth = { authorization: `Bearer ${token}` };
+  const json = () => ({ ...auth, "content-type": "application/json", });
+  try {
+    assert.equal((await fetch(`${base}/api/connectors/status`)).status, 401);
+    assert.equal((await fetch(`${base}/api/connectors/status`, { headers: auth })).status, 200);
+
+    const dead = await fetch(`${base}/api/connectors/outbox/dead?limit=2`, { headers: auth });
+    assert.equal(dead.status, 200);
+    assert.deepEqual(calls.deadList, [2]);
+    const replay = await fetch(`${base}/api/connectors/outbox/dead/outbox_1`, {
+      method: "POST", headers: json(), body: "{}",
+    });
+    assert.equal(replay.status, 200);
+    assert.deepEqual(calls.deadReplay, [{ outboxId: "outbox_1", resolvedBy: "wesley-local-operator" }]);
+
+    const github = await fetch(`${base}/api/external-actions/github-draft-pr`, {
+      method: "POST", headers: json(),
+      body: JSON.stringify({ runId: "run_1", title: "Title", body: "Body", idempotencyKey: "retry_1" }),
+    });
+    assert.equal(github.status, 201);
+    assert.deepEqual(calls.github, [{ runId: "run_1", title: "Title", body: "Body", idempotencyKey: "retry_1" }]);
+    const targetInjection = await fetch(`${base}/api/external-actions/github-draft-pr`, {
+      method: "POST", headers: json(),
+      body: JSON.stringify({ runId: "run_1", title: "Title", body: "Body", owner: "attacker" }),
+    });
+    assert.equal(targetInjection.status, 400);
+    assert.equal(calls.github.length, 1);
+
+    const linear = await fetch(`${base}/api/external-actions/linear-evidence-comment`, {
+      method: "POST", headers: json(), body: JSON.stringify({ runId: "run_1", body: "Evidence" }),
+    });
+    assert.equal(linear.status, 201);
+    assert.deepEqual(calls.linear, [{ runId: "run_1", body: "Evidence" }]);
+    const linearIssue = await fetch(`${base}/api/external-actions/linear-issue`, {
+      method: "POST", headers: json(),
+      body: JSON.stringify({ runId: "run_1", title: "Bounded issue", description: "Evidence-bound description", idempotencyKey: "issue_retry_1" }),
+    });
+    assert.equal(linearIssue.status, 201);
+    assert.deepEqual(calls.linearIssue, [{
+      runId: "run_1", title: "Bounded issue", description: "Evidence-bound description", idempotencyKey: "issue_retry_1",
+    }]);
+    const linearTargetInjection = await fetch(`${base}/api/external-actions/linear-issue`, {
+      method: "POST", headers: json(),
+      body: JSON.stringify({ runId: "run_1", title: "Bounded issue", description: "Evidence", teamId: "attacker" }),
+    });
+    assert.equal(linearTargetInjection.status, 400);
+    assert.equal(calls.linearIssue.length, 1);
+    const plans = await fetch(`${base}/api/external-actions?projectId=project_1&state=pending_approval&limit=3`, { headers: auth });
+    assert.equal(plans.status, 200);
+    assert.deepEqual(calls.plans, [{ projectId: "project_1", state: "pending_approval", limit: 3 }]);
+    const plan = await fetch(`${base}/api/external-actions/plan_github`, { headers: auth });
+    assert.equal(plan.status, 200);
+    const resolved = await fetch(`${base}/api/external-actions/plan_github/resolve`, {
+      method: "POST", headers: json(), body: JSON.stringify({ decision: "approve", idempotencyKey: "resolve_1" }),
+    });
+    assert.equal(resolved.status, 200);
+    const reconciled = await fetch(`${base}/api/external-actions/plan_github/reconcile`, {
+      method: "POST", headers: json(), body: JSON.stringify({
+        outcome: "one",
+        matchCount: 1,
+        externalId: "pr_42",
+        externalRevision: "revision_42",
+        payloadHash: "a".repeat(64),
+        observedAt: "2026-08-13T10:00:00.000Z",
+      }),
+    });
+    assert.equal(reconciled.status, 200);
+    const targetInjectionReconcile = await fetch(`${base}/api/external-actions/plan_github/reconcile`, {
+      method: "POST", headers: json(), body: JSON.stringify({ outcome: "zero", repository: "attacker/repo" }),
+    });
+    assert.equal(targetInjectionReconcile.status, 400);
+    assert.deepEqual(calls.gets, ["plan_github"]);
+    assert.deepEqual(calls.resolves, [{ planId: "plan_github", decision: "approve", resolvedBy: "wesley-local-operator", idempotencyKey: "resolve_1" }]);
+    assert.deepEqual(calls.reconciles, [{
+      planId: "plan_github",
+      input: {
+        outcome: "one",
+        matchCount: 1,
+        externalId: "pr_42",
+        externalRevision: "revision_42",
+        payloadHash: "a".repeat(64),
+        observedAt: "2026-08-13T10:00:00.000Z",
+      },
+      operatorId: "wesley-local-operator",
+    }]);
+  } finally {
+    server.close();
+    await once(server, "close");
+    rmSync(root, { recursive: true, force: true });
+  }
+});

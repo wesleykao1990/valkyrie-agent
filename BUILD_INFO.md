@@ -73,6 +73,18 @@ writer. Migration 011 records process-local Codex provider-thread continuity;
 same-role turns append deltas, role lineages are isolated, and restart resume is
 refused.
 
+Milestone 7 is deterministically implemented and default-off. Migration 012 adds
+revision-bound Linear/Git authority plus per-consumer fenced delivery; migration
+013 adds evidence-bound external-action plans and receipts. The host-side Linear,
+Git, and GitHub gateways use exact digest-pinned project policy, private
+credential files, stable provider markers, dead letters, and ambiguous-result
+reconciliation. Linear issue/comment writes and GitHub draft-PR creation require
+their own immutable plan and exact approval; ordinary task intake never writes
+to Linear. GitHub may create only a separately approved draft PR from an
+already-existing remote head. Local Markdown remains Project Brain authority;
+the OpenViking candidate is read-only/evaluation-only. No live Linear or GitHub
+credential is bundled or claimed exercised until the opt-in M7 smoke is recorded.
+
 ## Verification entry point
 
 ```bash
@@ -103,3 +115,6 @@ See `docs/VERIFICATION.md` for the recorded baseline/final evidence and
 16. `docs/adr/ADR-P007-subscription-inference-broker.md`
 17. `docs/IMPLEMENTATION_PLAN_M6.md`
 18. `docs/adr/ADR-P008-direct-runtime-comparison.md`
+19. `docs/IMPLEMENTATION_PLAN_M7.md`
+20. `docs/adr/ADR-P010-production-connector-boundary.md`
+21. `docs/M7_CONNECTOR_SETUP.md`

@@ -104,6 +104,260 @@ export interface OutboxEvent {
   lastError?: string | null;
 }
 
+/**
+ * A narrow binding between a local control-plane object and the current
+ * identity/revision observed at an external authority.  This is deliberately
+ * not a provider payload snapshot or a roadmap replica.
+ */
+export interface AuthorityBinding {
+  provider: string;
+  localKind: string;
+  localId: string;
+  externalKind?: string | null;
+  externalId: string;
+  revision: string;
+  observedAt: string;
+  payloadHash: string;
+  freshUntil: string;
+}
+
+/**
+ * An explicit, compare-and-set authority refresh.  A changed external
+ * identity/revision is never accepted by the ordinary binding operation.
+ */
+export interface AuthorityBindingRefreshInput extends AuthorityBinding {
+  expectedExternalKind?: string | null;
+  expectedExternalId: string;
+  expectedRevision: string;
+  expectedPayloadHash: string;
+}
+
+export interface ProviderReceipt {
+  externalId: string;
+  externalRevision: string;
+  payloadHash: string;
+  observedAt: string;
+}
+
+export type OutboxDeliveryState = "pending" | "claimed" | "delivered" | "dead";
+
+export interface OutboxDeliveryAttemptEvidence {
+  kind: "failure" | "claim_expired" | "replay";
+  attempt: number;
+  observedAt: string;
+  errorCode?: string;
+  errorFingerprint?: string;
+  operatorId?: string;
+}
+
+export interface OutboxDelivery {
+  outboxId: string;
+  consumerId: string;
+  state: OutboxDeliveryState;
+  claimOwnerId: string | null;
+  claimToken: string | null;
+  claimExpiresAt: string | null;
+  attempts: number;
+  nextAttemptAt: string | null;
+  deliveredAt: string | null;
+  lastErrorCode: string | null;
+  lastErrorFingerprint: string | null;
+  providerReceipt: ProviderReceipt | null;
+  attemptHistory: OutboxDeliveryAttemptEvidence[];
+  /** The immutable source event is returned with the delivery for dispatch. */
+  outbox: OutboxEvent;
+  /** Convenience copies of the immutable source event fields. */
+  topic: string;
+  aggregateId: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+  availableAt: string;
+}
+
+export interface OutboxDeliveryClaimInput {
+  consumerId: string;
+  ownerId: string;
+  claimUntil: string;
+  /** Exact allowlisted topics this consumer is authorized to receive. */
+  topics: string[];
+  limit?: number;
+}
+
+export interface OutboxDeliveryAckInput {
+  outboxId: string;
+  consumerId: string;
+  ownerId: string;
+  claimToken: string;
+  providerReceipt?: ProviderReceipt;
+  /** Optional first binding or exact-evidence refresh, committed with ack. */
+  authorityBinding?: AuthorityBinding | AuthorityBindingRefreshInput;
+}
+
+export interface OutboxDeliveryFailureInput {
+  outboxId: string;
+  consumerId: string;
+  ownerId: string;
+  claimToken: string;
+  errorCode: string;
+  errorFingerprint: string;
+  /** Caller may select a bounded retry time; the store validates it. */
+  nextAttemptAt?: string;
+}
+
+export interface OutboxDeliveryReplayInput {
+  outboxId: string;
+  consumerId: string;
+  operatorId: string;
+  nextAttemptAt?: string;
+}
+
+export interface OutboxDeliveryPruneInput {
+  before: string;
+  limit?: number;
+}
+
+export type ExternalActionKind =
+  | "linear_create_issue"
+  | "linear_evidence_comment"
+  | "github_create_draft_pr";
+export type ExternalActionProvider = "linear" | "github";
+export type ExternalActionPlanState =
+  | "pending_approval"
+  | "authorized"
+  | "executing"
+  | "ambiguous"
+  | "succeeded"
+  | "denied"
+  | "expired"
+  | "failed"
+  | "quarantined";
+
+export interface ExternalActionProviderReceipt extends ProviderReceipt {
+  marker: string;
+  targetHash: string;
+}
+
+export type ExternalActionReconciliationOutcome = "zero" | "one" | "multiple";
+
+export interface ExternalActionReconciliationEvidence {
+  outcome: ExternalActionReconciliationOutcome;
+  marker: string;
+  targetHash: string;
+  operatorId: string;
+  observedAt: string;
+  matchCount: number;
+  externalId?: string | null;
+  externalRevision?: string | null;
+  payloadHash?: string | null;
+}
+
+export interface ExternalActionPlan {
+  id: string;
+  runId: string;
+  projectId: string;
+  workflow: string;
+  kind: ExternalActionKind;
+  provider: ExternalActionProvider;
+  marker: string;
+  target: Record<string, unknown>;
+  spec: Record<string, unknown>;
+  requestHash: string;
+  evidenceDigest: string;
+  policyHash: string;
+  approvalId: string;
+  approvalAction: string;
+  exactEffect: string;
+  expiresAt: string;
+  state: ExternalActionPlanState;
+  attempts: number;
+  providerReceipt: ExternalActionProviderReceipt | null;
+  result: Record<string, unknown> | null;
+  lastErrorCode: string | null;
+  lastErrorFingerprint: string | null;
+  reconciliation: ExternalActionReconciliationEvidence | null;
+  authorizedOutboxId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ExternalActionPlanRequestInput {
+  plan: ExternalActionPlan;
+  approval: Approval;
+  event: Omit<RunEvent, "seq">;
+  idempotency?: IdempotencyInput;
+}
+
+export interface ExternalActionPlanRequestResult {
+  plan: ExternalActionPlan;
+  approval: Approval;
+  event: RunEvent;
+  replayed: boolean;
+}
+
+export interface ExternalActionApprovalInput {
+  planId: string;
+  state: "approved" | "denied" | "changes_requested";
+  decision: string;
+  resolvedBy: string;
+  expectedBinding: ApprovalBinding;
+  event?: Omit<RunEvent, "seq">;
+  idempotency?: IdempotencyInput;
+}
+
+export interface ExternalActionApprovalResult {
+  plan: ExternalActionPlan;
+  approval: Approval;
+  event?: RunEvent;
+  replayed: boolean;
+}
+
+export interface ExternalActionPlanExpiryInput {
+  planId: string;
+  event: Omit<RunEvent, "seq">;
+  idempotency?: IdempotencyInput;
+}
+
+export interface ExternalActionDeliveryFence {
+  outboxId: string;
+  consumerId: string;
+  ownerId: string;
+  claimToken: string;
+}
+
+export interface BeginExternalActionAttemptInput {
+  planId: string;
+  delivery: ExternalActionDeliveryFence;
+}
+
+export interface CompleteExternalActionAttemptInput {
+  planId: string;
+  delivery: ExternalActionDeliveryFence;
+  providerReceipt: ExternalActionProviderReceipt;
+  result: Record<string, unknown>;
+}
+
+export interface FailExternalActionAttemptInput {
+  planId: string;
+  delivery: ExternalActionDeliveryFence;
+  errorCode: string;
+  errorFingerprint: string;
+  ambiguous?: boolean;
+  nextAttemptAt?: string;
+}
+
+export interface ReconcileExternalActionPlanInput {
+  planId: string;
+  deliveryConsumerId: string;
+  operatorId: string;
+  evidence: ExternalActionReconciliationEvidence;
+}
+
+export interface ExternalActionPlanListInput {
+  projectId?: string;
+  state?: ExternalActionPlanState;
+  limit?: number;
+}
+
 export interface IdempotencyInput {
   scope: string;
   key: string;
@@ -535,6 +789,33 @@ export interface ControlPlaneStore {
   listPendingOutbox(limit?: number): Promise<OutboxEvent[]>;
   markOutboxPublished(id: string, publishedAt: string): Promise<boolean>;
   markOutboxFailed(id: string, error: string, availableAt: string): Promise<boolean>;
+  /** Create or replay an unchanged local-to-authority binding. */
+  createAuthorityBinding(binding: AuthorityBinding): Promise<AuthorityBinding>;
+  /** Alias for callers that use the domain term "bind". */
+  bindAuthority(binding: AuthorityBinding): Promise<AuthorityBinding>;
+  getAuthorityBinding(provider: string, localKind: string, localId: string): Promise<AuthorityBinding | null>;
+  listAuthorityBindings(provider?: string, limit?: number): Promise<AuthorityBinding[]>;
+  /** Explicit compare-and-set refresh for changed external identity/revision evidence. */
+  refreshAuthorityBinding(input: AuthorityBindingRefreshInput): Promise<AuthorityBinding>;
+
+  claimOutboxDeliveries(input: OutboxDeliveryClaimInput): Promise<OutboxDelivery[]>;
+  getOutboxDelivery(outboxId: string, consumerId: string): Promise<OutboxDelivery | null>;
+  listOutboxDeliveries(consumerId?: string, state?: OutboxDeliveryState, limit?: number): Promise<OutboxDelivery[]>;
+  /** Ack is fenced by the exact unexpired claim and may atomically bind a receipt. */
+  ackOutboxDelivery(input: OutboxDeliveryAckInput): Promise<OutboxDelivery>;
+  failOutboxDelivery(input: OutboxDeliveryFailureInput): Promise<OutboxDelivery>;
+  replayOutboxDelivery(input: OutboxDeliveryReplayInput): Promise<OutboxDelivery>;
+  pruneOutboxDeliveries(input: OutboxDeliveryPruneInput): Promise<number>;
+  pruneOutboxDeliveries(before: string, limit?: number): Promise<number>;
+  requestExternalActionPlan(input: ExternalActionPlanRequestInput): Promise<ExternalActionPlanRequestResult>;
+  getExternalActionPlan(id: string): Promise<ExternalActionPlan | null>;
+  listExternalActionPlans(input?: ExternalActionPlanListInput): Promise<ExternalActionPlan[]>;
+  resolveExternalActionPlanApproval(input: ExternalActionApprovalInput): Promise<ExternalActionApprovalResult>;
+  expireExternalActionPlanApproval(input: ExternalActionPlanExpiryInput): Promise<ExternalActionApprovalResult>;
+  beginExternalActionAttempt(input: BeginExternalActionAttemptInput): Promise<ExternalActionPlan>;
+  completeExternalActionAttempt(input: CompleteExternalActionAttemptInput): Promise<ExternalActionPlan>;
+  failExternalActionAttempt(input: FailExternalActionAttemptInput): Promise<ExternalActionPlan>;
+  reconcileExternalActionPlan(input: ReconcileExternalActionPlanInput): Promise<ExternalActionPlan>;
   listReconciliationCandidates(now: string, outboxLimit?: number): Promise<ReconciliationCandidates>;
 }
 
@@ -559,8 +840,28 @@ const sha256Hex = /^[a-f0-9]{64}$/;
 const safeInferenceId = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 const safeProviderSessionId = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 const safeRoutingPolicyVersion = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
+const safeAuthorityValue = /^[A-Za-z0-9][A-Za-z0-9_.:/@#-]{0,511}$/;
+const safeDeliveryConsumer = /^[A-Za-z0-9][A-Za-z0-9_.:/@#-]{0,127}$/;
+const safeDeliveryOwner = /^[A-Za-z0-9][A-Za-z0-9_.:/@#-]{0,255}$/;
+const safeDeliveryToken = /^[a-f0-9]{64}$/;
+const safeDeliveryErrorCode = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
+const safeOutboxTopic = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
+const safeExternalMarker = /^(?:[A-Za-z0-9][A-Za-z0-9_.:/#-]{0,255}|<!-- valkyrie-action:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127} -->)$/;
+const safeExternalActionId = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
+const externalActionKinds = new Set<ExternalActionKind>([
+  "linear_create_issue", "linear_evidence_comment", "github_create_draft_pr",
+]);
+const externalActionProviders = new Set<ExternalActionProvider>(["linear", "github"]);
+const externalActionStates = new Set<ExternalActionPlanState>([
+  "pending_approval", "authorized", "executing", "ambiguous", "succeeded", "denied", "expired", "failed", "quarantined",
+]);
+const externalActionForbiddenKey = /token|secret|password|authorization|credential|raw.?body|raw.?response|request.?body/i;
 const inferenceRoles = new Set<InferenceRole>(["implementer", "verifier_initial", "repair", "verifier_final"]);
 const immutableImageRef = /^[A-Za-z0-9][A-Za-z0-9./:_-]*@sha256:[a-f0-9]{64}$/;
+export const MAX_OUTBOX_DELIVERY_ATTEMPTS = 8;
+export const MAX_OUTBOX_DELIVERY_RETRY_DELAY_MS = 15 * 60 * 1000;
+export const MAX_OUTBOX_DELIVERY_CLAIM_TTL_MS = 15 * 60 * 1000;
+export const MAX_OUTBOX_DELIVERY_LIMIT = 1_000;
 const sandboxTransitions: Record<SandboxInstanceState, ReadonlySet<SandboxInstanceState>> = {
   provisioning: new Set(["ready", "quarantined"]),
   ready: new Set(["running", "quarantined"]),
@@ -574,6 +875,305 @@ const sandboxTransitions: Record<SandboxInstanceState, ReadonlySet<SandboxInstan
 function boundedInteger(value: number, label: string, minimum: number, maximum: number): void {
   if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
     throw new StorageConflictError(`${label} must be an integer between ${minimum} and ${maximum}`);
+  }
+}
+
+function validateSafeAuthorityText(value: unknown, field: string, maximum = 512): asserts value is string {
+  if (typeof value !== "string" || value.length < 1 || value.length > maximum
+      || /[\u0000-\u001f\u007f]/.test(value) || value !== value.trim()) {
+    throw new StorageConflictError(`${field} must be 1-${maximum} safe non-whitespace-edge characters`);
+  }
+}
+
+function validateAuthorityValue(value: unknown, field: string, maximum = 512): asserts value is string {
+  validateSafeAuthorityText(value, field, maximum);
+  if (!safeAuthorityValue.test(value)) throw new StorageConflictError(`${field} contains unsupported characters`);
+}
+
+export function validateDeliveryIdentity(value: unknown, field: string, maximum = 256): asserts value is string {
+  validateSafeAuthorityText(value, field, maximum);
+}
+
+function validateDeliveryCode(value: unknown, field: string): asserts value is string {
+  if (typeof value !== "string" || !safeDeliveryErrorCode.test(value)) {
+    throw new StorageConflictError(`${field} must be a bounded safe error code`);
+  }
+}
+
+function validateDeliveryFingerprint(value: unknown, field: string): asserts value is string {
+  if (typeof value !== "string" || !sha256Hex.test(value)) {
+    throw new StorageConflictError(`${field} must be a lowercase SHA-256 fingerprint`);
+  }
+}
+
+export function validateAuthorityBinding(binding: AuthorityBinding): void {
+  validateAuthorityValue(binding.provider, "Authority provider", 128);
+  validateAuthorityValue(binding.localKind, "Authority local kind", 128);
+  validateAuthorityValue(binding.localId, "Authority local ID", 256);
+  if (binding.externalKind !== undefined && binding.externalKind !== null) {
+    validateAuthorityValue(binding.externalKind, "Authority external kind", 128);
+  }
+  validateAuthorityValue(binding.externalId, "Authority external ID", 256);
+  validateAuthorityValue(binding.revision, "Authority revision", 512);
+  validateAuthorityValue(binding.payloadHash, "Authority payload hash", 128);
+  if (!sha256Hex.test(binding.payloadHash)) throw new StorageConflictError("Authority payload hash must be a lowercase SHA-256 digest");
+  const observed = timestampMillis(binding.observedAt, "Authority observedAt");
+  const freshUntil = timestampMillis(binding.freshUntil, "Authority freshUntil");
+  if (freshUntil <= observed) throw new StorageConflictError("Authority freshness must extend beyond observedAt");
+  if (freshUntil - observed > 30 * 24 * 60 * 60 * 1000) {
+    throw new StorageConflictError("Authority freshness may not exceed 30 days");
+  }
+}
+
+export function validateAuthorityRefresh(input: AuthorityBindingRefreshInput): void {
+  validateAuthorityBinding(input);
+  if (input.expectedExternalKind !== undefined && input.expectedExternalKind !== null) {
+    validateAuthorityValue(input.expectedExternalKind, "Expected authority external kind", 128);
+  }
+  validateAuthorityValue(input.expectedExternalId, "Expected authority external ID", 256);
+  validateAuthorityValue(input.expectedRevision, "Expected authority revision", 512);
+  validateDeliveryFingerprint(input.expectedPayloadHash, "Expected authority payload hash");
+}
+
+export function validateProviderReceipt(receipt: ProviderReceipt): void {
+  validateAuthorityValue(receipt.externalId, "Provider receipt external ID", 256);
+  validateAuthorityValue(receipt.externalRevision, "Provider receipt revision", 512);
+  validateDeliveryFingerprint(receipt.payloadHash, "Provider receipt payload hash");
+  timestampMillis(receipt.observedAt, "Provider receipt observedAt");
+}
+
+export function validateOutboxDeliveryClaim(input: OutboxDeliveryClaimInput, observedAt: string): void {
+  validateDeliveryIdentity(input.consumerId, "Outbox consumer ID", 128);
+  validateDeliveryIdentity(input.ownerId, "Outbox claim owner ID", 256);
+  if (!Array.isArray(input.topics) || input.topics.length < 1 || input.topics.length > 64
+      || new Set(input.topics).size !== input.topics.length) {
+    throw new StorageConflictError("Outbox claim topics must contain 1-64 unique exact topics");
+  }
+  for (const topic of input.topics) {
+    if (!safeOutboxTopic.test(topic)) throw new StorageConflictError("Outbox claim topics contain an invalid exact topic");
+  }
+  const observed = timestampMillis(observedAt, "Observed storage time");
+  const claimUntil = timestampMillis(input.claimUntil, "Outbox claimUntil");
+  if (claimUntil <= observed) throw new StorageConflictError("Outbox claim expiry must be after observed storage time");
+  if (claimUntil - observed > MAX_OUTBOX_DELIVERY_CLAIM_TTL_MS) {
+    throw new StorageConflictError("Outbox claim expiry exceeds the bounded claim TTL");
+  }
+  boundedInteger(input.limit ?? 100, "Outbox claim limit", 1, MAX_OUTBOX_DELIVERY_LIMIT);
+}
+
+export function validateOutboxDeliveryFence(input: Pick<OutboxDeliveryAckInput, "outboxId" | "consumerId" | "ownerId" | "claimToken">): void {
+  validateDeliveryIdentity(input.outboxId, "Outbox ID", 256);
+  validateDeliveryIdentity(input.consumerId, "Outbox consumer ID", 128);
+  validateDeliveryIdentity(input.ownerId, "Outbox claim owner ID", 256);
+  if (!safeDeliveryToken.test(input.claimToken)) throw new StorageConflictError("Outbox claim token is invalid");
+}
+
+export function validateOutboxDeliveryFailure(input: OutboxDeliveryFailureInput, observedAt: string): void {
+  validateOutboxDeliveryFence(input);
+  validateDeliveryCode(input.errorCode, "Outbox error code");
+  validateDeliveryFingerprint(input.errorFingerprint, "Outbox error fingerprint");
+  if (input.nextAttemptAt !== undefined) {
+    const observed = timestampMillis(observedAt, "Observed storage time");
+    const next = timestampMillis(input.nextAttemptAt, "Outbox nextAttemptAt");
+    if (next < observed || next - observed > MAX_OUTBOX_DELIVERY_RETRY_DELAY_MS) {
+      throw new StorageConflictError("Outbox retry time must be within the bounded retry delay");
+    }
+  }
+}
+
+export function validateOutboxDeliveryReplay(input: OutboxDeliveryReplayInput, observedAt: string): void {
+  validateDeliveryIdentity(input.outboxId, "Outbox ID", 256);
+  validateDeliveryIdentity(input.consumerId, "Outbox consumer ID", 128);
+  validateDeliveryIdentity(input.operatorId, "Outbox replay operator ID", 256);
+  if (input.nextAttemptAt !== undefined) {
+    const observed = timestampMillis(observedAt, "Observed storage time");
+    const next = timestampMillis(input.nextAttemptAt, "Outbox replay nextAttemptAt");
+    if (next < observed || next - observed > MAX_OUTBOX_DELIVERY_RETRY_DELAY_MS) {
+      throw new StorageConflictError("Outbox replay time must be within the bounded retry delay");
+    }
+  }
+}
+
+export function validateOutboxDeliveryPrune(input: OutboxDeliveryPruneInput): void {
+  timestampMillis(input.before, "Outbox delivery prune cutoff");
+  boundedInteger(input.limit ?? 100, "Outbox delivery prune limit", 1, MAX_OUTBOX_DELIVERY_LIMIT);
+}
+
+function validateExternalJson(value: unknown, field: string, depth = 0): void {
+  if (depth > 8) throw new StorageConflictError(`${field} nesting exceeds the safe bound`);
+  if (value === null || typeof value === "boolean") return;
+  if (typeof value === "string") {
+    if (value.length > 4_096 || /[\u0000-\u001f\u007f]/.test(value)) {
+      throw new StorageConflictError(`${field} contains unsafe text`);
+    }
+    return;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new StorageConflictError(`${field} contains a non-finite number`);
+    return;
+  }
+  if (Array.isArray(value)) {
+    if (value.length > 256) throw new StorageConflictError(`${field} contains too many items`);
+    for (const item of value) validateExternalJson(item, field, depth + 1);
+    return;
+  }
+  if (typeof value !== "object") throw new StorageConflictError(`${field} must be JSON data`);
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (!key || key.length > 128 || /[\u0000-\u001f\u007f]/.test(key) || externalActionForbiddenKey.test(key)) {
+      throw new StorageConflictError(`${field} contains a forbidden or unsafe field`);
+    }
+    validateExternalJson(item, `${field}.${key}`, depth + 1);
+  }
+}
+
+function validateExternalJsonObject(value: unknown, field: string, maximum = 16_384): asserts value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new StorageConflictError(`${field} must be a JSON object`);
+  }
+  validateExternalJson(value, field);
+  let serialized: string;
+  try { serialized = canonicalJson(value); } catch { throw new StorageConflictError(`${field} must be JSON serializable`); }
+  if (new TextEncoder().encode(serialized).byteLength > maximum) {
+    throw new StorageConflictError(`${field} exceeds ${maximum} UTF-8 bytes`);
+  }
+}
+
+export function externalActionTargetHash(target: Record<string, unknown>): string {
+  return createHash("sha256").update(canonicalJson(target)).digest("hex");
+}
+
+export function externalActionAuthorizedOutboxId(planId: string): string {
+  return deterministicOutboxId("external.action.authorized", planId, "authorized");
+}
+
+export function validateExternalActionPlan(plan: ExternalActionPlan): void {
+  for (const [field, value] of [["External action plan ID", plan.id], ["External action run ID", plan.runId],
+    ["External action project ID", plan.projectId], ["External action workflow", plan.workflow],
+    ["External action approval ID", plan.approvalId]] as const) {
+    if (typeof value !== "string" || !safeExternalActionId.test(value)) throw new StorageConflictError(`${field} is invalid`);
+  }
+  if (!externalActionKinds.has(plan.kind)) throw new StorageConflictError("External action kind is invalid");
+  if (!externalActionProviders.has(plan.provider)) throw new StorageConflictError("External action provider is invalid");
+  if ((plan.kind.startsWith("linear_") && plan.provider !== "linear")
+      || (plan.kind.startsWith("github_") && plan.provider !== "github")) {
+    throw new StorageConflictError("External action kind/provider do not agree");
+  }
+  if (typeof plan.marker !== "string" || !safeExternalMarker.test(plan.marker)) {
+    throw new StorageConflictError("External action marker is invalid");
+  }
+  validateExternalJsonObject(plan.target, "External action target");
+  validateExternalJsonObject(plan.spec, "External action spec");
+  for (const [field, value] of [["requestHash", plan.requestHash], ["evidenceDigest", plan.evidenceDigest], ["policyHash", plan.policyHash]] as const) {
+    if (!sha256Hex.test(value)) throw new StorageConflictError(`External action ${field} must be a SHA-256 digest`);
+  }
+  validateDeliveryIdentity(plan.approvalAction, "External action approval action", 256);
+  validateSafeAuthorityText(plan.exactEffect, "External action exact effect", 2_048);
+  if (!externalActionStates.has(plan.state)) throw new StorageConflictError("External action plan state is invalid");
+  boundedInteger(plan.attempts, "External action attempts", 0, MAX_OUTBOX_DELIVERY_ATTEMPTS);
+  const createdAt = timestampMillis(plan.createdAt, "External action createdAt");
+  const updatedAt = timestampMillis(plan.updatedAt, "External action updatedAt");
+  const expiresAt = timestampMillis(plan.expiresAt, "External action expiresAt");
+  if (updatedAt < createdAt || expiresAt <= createdAt || expiresAt - createdAt > 30 * 24 * 60 * 60 * 1000) {
+    throw new StorageConflictError("External action plan validity window is invalid");
+  }
+  if (plan.providerReceipt) validateExternalActionReceipt(plan.providerReceipt, plan);
+  if (plan.result) validateExternalJsonObject(plan.result, "External action result");
+  if (plan.lastErrorCode !== null) validateDeliveryCode(plan.lastErrorCode, "External action error code");
+  if (plan.lastErrorFingerprint !== null) validateDeliveryFingerprint(plan.lastErrorFingerprint, "External action error fingerprint");
+  if ((plan.lastErrorCode === null) !== (plan.lastErrorFingerprint === null)) {
+    throw new StorageConflictError("External action error code and fingerprint must be paired");
+  }
+  if (plan.reconciliation) validateExternalActionReconciliation(plan.reconciliation, plan);
+  if (plan.authorizedOutboxId !== null) validateDeliveryIdentity(plan.authorizedOutboxId, "External action authorized outbox ID", 256);
+}
+
+export function validateExternalActionReceipt(
+  receipt: ExternalActionProviderReceipt,
+  plan: Pick<ExternalActionPlan, "marker" | "target">,
+): void {
+  validateProviderReceipt(receipt);
+  if (!safeExternalMarker.test(receipt.marker) || receipt.marker !== plan.marker) {
+    throw new StorageConflictError("External action receipt marker does not match the plan");
+  }
+  if (receipt.targetHash !== externalActionTargetHash(plan.target) || !sha256Hex.test(receipt.targetHash)) {
+    throw new StorageConflictError("External action receipt target hash does not match the plan");
+  }
+}
+
+export function validateExternalActionReconciliation(
+  evidence: ExternalActionReconciliationEvidence,
+  plan: Pick<ExternalActionPlan, "marker" | "target">,
+): void {
+  if (!['zero', 'one', 'multiple'].includes(evidence.outcome)) throw new StorageConflictError("External action reconciliation outcome is invalid");
+  if (evidence.marker !== plan.marker || !safeExternalMarker.test(evidence.marker)) {
+    throw new StorageConflictError("External action reconciliation marker does not match the plan");
+  }
+  if (evidence.targetHash !== externalActionTargetHash(plan.target) || !sha256Hex.test(evidence.targetHash)) {
+    throw new StorageConflictError("External action reconciliation target hash does not match the plan");
+  }
+  validateDeliveryIdentity(evidence.operatorId, "External action reconciliation operator ID", 256);
+  timestampMillis(evidence.observedAt, "External action reconciliation observedAt");
+  boundedInteger(evidence.matchCount, "External action reconciliation matchCount", 0, 1_000);
+  if (evidence.outcome === "zero" && evidence.matchCount !== 0) throw new StorageConflictError("Zero reconciliation must record zero matches");
+  if (evidence.outcome === "one" && evidence.matchCount !== 1) throw new StorageConflictError("One reconciliation must record exactly one match");
+  if (evidence.outcome === "multiple" && evidence.matchCount < 2) throw new StorageConflictError("Multiple reconciliation must record at least two matches");
+  if (evidence.outcome === "one") {
+    if (typeof evidence.externalId !== "string"
+        || typeof evidence.externalRevision !== "string"
+        || typeof evidence.payloadHash !== "string") {
+      throw new StorageConflictError("One-match reconciliation must record a complete provider identity");
+    }
+    validateAuthorityValue(evidence.externalId, "External action reconciled external ID", 256);
+    validateAuthorityValue(evidence.externalRevision, "External action reconciled revision", 512);
+    validateDeliveryFingerprint(evidence.payloadHash, "External action reconciled payload hash");
+  } else if (evidence.externalId !== undefined || evidence.externalRevision !== undefined || evidence.payloadHash !== undefined) {
+    throw new StorageConflictError("Only one-match reconciliation may record a provider identity");
+  }
+}
+
+export function validateExternalActionPlanRequest(
+  plan: ExternalActionPlan,
+  approval: Approval,
+  run: Run,
+  observedAt: string,
+): void {
+  validateExternalActionPlan(plan);
+  if (plan.state !== "pending_approval" || plan.attempts !== 0 || plan.providerReceipt || plan.result
+      || plan.lastErrorCode !== null || plan.lastErrorFingerprint !== null || plan.reconciliation || plan.authorizedOutboxId !== null) {
+    throw new StorageConflictError("A new external action plan must be pending and have no execution evidence");
+  }
+  if (run.status !== "completed") throw new StorageConflictError("External action plans require a completed evidence run");
+  if (plan.runId !== run.id || plan.projectId !== run.projectId || (plan.workflow ?? null) !== (run.workflow ?? null)) {
+    throw new StorageConflictError("External action plan does not match its completed run");
+  }
+  if (approval.state !== "pending" || approval.id !== plan.approvalId || approval.runId !== plan.runId
+      || approval.action !== plan.approvalAction || approval.exactEffect !== plan.exactEffect) {
+    throw new StorageConflictError("External action approval does not match the plan");
+  }
+  const binding = approvalBindingOf(approval);
+  if (!binding || binding.action !== plan.approvalAction || binding.exactEffect !== plan.exactEffect
+      || binding.projectId !== plan.projectId || binding.workflow !== plan.workflow
+      || binding.evidenceDigest !== plan.evidenceDigest || binding.policyHash !== plan.policyHash
+      || binding.expiresAt !== plan.expiresAt) {
+    throw new StorageConflictError("External action approval binding does not match the plan evidence and policy");
+  }
+  validateApprovalRequestBinding(approval, run, observedAt);
+}
+
+export function validateExternalActionDeliveryFence(input: ExternalActionDeliveryFence): void {
+  validateOutboxDeliveryFence(input);
+}
+
+export function validateExternalActionError(input: FailExternalActionAttemptInput, observedAt: string): void {
+  validateExternalActionDeliveryFence(input.delivery);
+  validateDeliveryCode(input.errorCode, "External action error code");
+  validateDeliveryFingerprint(input.errorFingerprint, "External action error fingerprint");
+  if (input.nextAttemptAt !== undefined) {
+    const observed = timestampMillis(observedAt, "Observed storage time");
+    const next = timestampMillis(input.nextAttemptAt, "External action nextAttemptAt");
+    if (next < observed || next - observed > MAX_OUTBOX_DELIVERY_RETRY_DELAY_MS) {
+      throw new StorageConflictError("External action retry time is outside the bounded delay");
+    }
   }
 }
 

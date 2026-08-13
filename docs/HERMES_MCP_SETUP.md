@@ -120,11 +120,38 @@ work, multiple candidates, or an evidence/approval gate. A user preference may
 increase rigor; `direct:` cannot waive a required safety or final-action gate.
 
 The assessment tools require configured bearer authentication even on loopback.
-They currently record `prototype` Linear and `unavailable` Git provenance and
-therefore return an unsupported launch result. `runs_start` still accepts only
+Without M7 configuration they record `prototype` Linear and `unavailable` Git
+provenance. With an accepted M7 policy plus the control plane's own
+least-privilege read connectors, they bind bounded current source revisions.
+Either way the launch result remains unsupported: `runs_start` still accepts only
 the listed fixed connectivity/M5/M6 workflows, so Hermes must not translate an
-arbitrary request into one of those fixtures. M7 will replace prototype source
-labels only after the control plane has its own least-privilege live connectors.
+arbitrary request into one of those fixtures.
+
+## Optional M7 operator tools
+
+The default 17-tool pilot allowlist above intentionally omits production-
+connector mutations. After reviewing
+[`docs/M7_CONNECTOR_SETUP.md`](M7_CONNECTOR_SETUP.md), an operator may replace
+`CONTROL_PLANE_MCP_TOOL_ALLOWLIST` with an exact subset of these M7 tools:
+
+- `connectors_status`
+- `connector_dead_letters_list`
+- `connector_dead_letter_replay`
+- `external_action_github_draft_pr_prepare`
+- `external_action_linear_evidence_comment_prepare`
+- `external_action_linear_issue_prepare`
+- `external_action_plans_list`
+- `external_action_plan_get`
+- `external_action_plan_resolve`
+
+These are nine optional M7 tools. Preparation creates a local pending plan, not a provider effect. Resolution
+authorizes only the exact evidence/policy/expiry-bound plan. The service rechecks
+the accepted connector-policy digest and exact policy-owned target immediately
+before the write. Ordinary `task.created` events never call Linear.
+Ambiguous-effect reconciliation is
+HTTP-only and is never an MCP tool. This static local bearer does not attest that
+a particular person was present; do not expose these tools through a shared or
+remote Hermes deployment without per-actor authorization.
 
 ## Configure Hermes inference in the isolated profile
 

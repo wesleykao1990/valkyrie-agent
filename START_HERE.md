@@ -18,7 +18,9 @@
    ADR-P009 before changing Direct / Atomic Lite / Atomic Full routing or Hermes'
    role in that decision, then read `docs/IMPLEMENTATION_PLAN_POST_M6_GAPS.md`
    before changing authenticated intake, the Atomic Lite contract, or retained
-   provider-session behavior.
+   provider-session behavior. Read `docs/IMPLEMENTATION_PLAN_M7.md`, proposed
+   ADR-P010, and `docs/M7_CONNECTOR_SETUP.md` before enabling Linear/Git/GitHub
+   authority or any external outbox/final action.
 6. For Atomic-specific work only, then read `packages/atomic-workflow-architect/START_HERE.md`, its `skills/atomic-workflow-architect/SKILL.md`, and the relevant integration guide. That package is a module, not the whole Project OS. Only its reviewed `atomic-fixture-pilot` workflow is connected to a live writer, behind an exact default-off fixture gate; the broader package is not generally enabled.
 7. Read `docs/STORAGE.md` before selecting PostgreSQL. Install locked dependencies
    with `npm ci`, then run `npm run verify` (full verification requires local

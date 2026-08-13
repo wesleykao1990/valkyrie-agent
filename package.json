@@ -28,6 +28,7 @@
     "smoke:atomic-fixture": "node --experimental-strip-types scripts/atomic-fixture-live-smoke.ts",
     "smoke:atomic-model": "node --experimental-strip-types scripts/atomic-model-pilot-live-smoke.ts",
     "smoke:m6-comparison": "node --experimental-strip-types scripts/direct-model-comparison-live-smoke.ts",
+    "smoke:m7-read": "node --experimental-strip-types scripts/m7-live-read-smoke.ts",
     "smoke:codex-subscription": "node --experimental-strip-types scripts/codex-subscription-smoke.ts",
     "smoke:sandbox": "node --experimental-strip-types --test --test-name-pattern=live.Docker-compatible.sandbox tests/oci-sandbox-provider.test.ts",
     "verify": "npm run typecheck && npm test && npm run test:postgres && npm run verify:atomic && npm run smoke:http && npm run smoke:mcp",

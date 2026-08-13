@@ -35,12 +35,12 @@ checksums nine governed artifacts, cleans the container/worktree/lease, then ask
 for one evidence-bound human acceptance. Approval records a safe mock receipt;
 the memory remains only a proposal.
 
-This does **not** establish model quality. It supplies no provider credential,
-performs no real GitHub/PR, merge, deployment, Linear, OpenViking, destructive
-database, or canonical-memory action, and advertises no cross-process Atomic
-durability. The default-off M5b path is now registered behind an even narrower
-fixed contract, but no provider has been called. Live enablement still requires
-Wesley's provider/model/credential decision and an actual evidence-reviewed run.
+This does **not** establish model quality. The default configuration supplies no
+provider or connector credential and performs no real GitHub/PR, merge,
+deployment, Linear, OpenViking, destructive product-database, or
+canonical-memory action. Default-off M7 connector boundaries are now present,
+but their live reads/writes remain unexercised until Wesley supplies an accepted
+project mapping and least-privilege credential files.
 
 ## Requirements
 
@@ -685,11 +685,13 @@ rigor but cannot weaken required checks, isolation, or approval.
 The authenticated assessment surface is now available through
 `engineering_assess` / `engineering_assessment_get` and the matching HTTP routes.
 It records source provenance, final-action intent, the complete rubric, reasons,
-policy version, and a 15-minute TTL. Hermes cannot submit scores. Because live
-Linear/Git authority and a trusted general project launcher are M7 work, every
-current assessment truthfully reports execution unsupported and creates no run,
-workspace, lease, or fixed-pilot substitution. A bearer token is mandatory for
-these two routes even on loopback.
+policy version, and a 15-minute TTL. Hermes cannot submit scores. Without an
+accepted M7 connector policy, assessments continue to record `prototype` Linear
+and `unavailable` Git. When the default-off connectors are configured, they bind
+current Linear project/task revisions and accepted Git base/head/check-policy
+evidence. General execution still reports unsupported: M7 does not substitute a
+fixed pilot or silently register a general writer. A bearer token is mandatory
+for these two routes even on loopback.
 
 ```bash
 curl -fsS http://127.0.0.1:8787/api/engineering/assessments \
@@ -702,8 +704,9 @@ The Atomic package also contains a reusable, package-local
 `atomic-lite-writer` contract: one retained implementer, workflow-owned
 deterministic checks, at most one forked repair, and a fresh reviewer only for a
 policy-declared distinct risk surface. It is independently testable but is not a
-general HTTP/MCP writer until M7 supplies accepted project policy and current
-authority. Its bounded core requires a clean full worktree, descriptor-bound
+general HTTP/MCP writer even when M7 supplies accepted project policy and current
+authority; registering that launcher remains a separate reviewed change. Its
+bounded core requires a clean full worktree, descriptor-bound
 single-file writes, pre-created workflow artifact files, exact admitted Git
 commit/tree/index identities, and post-check/pre-evidence full-worktree gates;
 Git-visible undeclared or committed changes fail evidence. These defenses do not
@@ -716,6 +719,91 @@ repair, and verifier roles remain isolated; a process restart refuses continuati
 rather than claiming unsupported cross-process resume. The next benchmark should
 compare Direct, Atomic Lite, and Atomic Full on the same provider, model, cache
 posture, task contract, and acceptance evidence.
+
+## Milestone 7 production connectors
+
+M7 adds four default-off host-side boundaries:
+
+- Linear project/issue reads retain only provider identity, `updatedAt`
+  revision, observed time, and a canonical payload hash. Idea capture remains a
+  local intake operation. A Linear issue write requires its own immutable
+  evidence-bound action plan and exact approval; ordinary `task.created` events
+  have no live provider-write consumer and the roadmap is never mirrored.
+- Git inspection binds a configured repository identity, clean base/head
+  commit/tree OIDs, binary patch digest, and fixed deterministic-check policy.
+  Callers cannot supply a repository path, ref, executable, or argv.
+- GitHub can create only a draft PR from an already-existing configured remote
+  head after a separate evidence-bound approval. It cannot publish a branch,
+  merge, deploy, delete, or modify repository contents.
+- Project Brain reads use an async read-only provider boundary. Local accepted
+  Markdown remains active; an OpenViking candidate is evaluation-only and cannot
+  promote memory or become authoritative merely by being configured.
+
+Migrations 012 and 013 add narrow authority bindings, per-consumer fenced
+deliveries, dead letters, immutable external-action plans, receipts, and
+ambiguous-result reconciliation. A timeout after an external request is not
+blindly retried. If a process disappears after the durable begin boundary, the
+next worker records ambiguity and requires exact reconciliation.
+
+### Configure read-only authority
+
+1. Copy [the connector-policy example](config/m7-connectors.example.json) to a
+   reviewed private location and replace every placeholder. Linear IDs must be
+   exact team/project UUIDs; Git and GitHub base/head refs must match. The head
+   must already exist remotely for later draft-PR preparation.
+2. Compute and record the exact policy digest:
+
+   ```bash
+   shasum -a 256 /absolute/path/accepted-m7-connectors.json
+   ```
+
+3. Create a private non-symlink Linear token file (`0600`). A Hermes Linear
+   gateway credential is not reused: Hermes is an interface, while the control
+   plane needs its own revision-bound authority read.
+4. Start with read-only Linear and local Git authority:
+
+   ```bash
+   export CONTROL_PLANE_AUTH_TOKEN_FILE=/absolute/private/control-plane.token
+   export ENABLE_DEMO_RESET=false
+   export M7_CONNECTOR_POLICY_FILE=/absolute/path/accepted-m7-connectors.json
+   export M7_CONNECTOR_POLICY_SHA256=<exact-lowercase-sha256>
+   export LINEAR_CONNECTOR_MODE=read-only
+   export LINEAR_AUTH_MODE=personal-api-key
+   export LINEAR_TOKEN_FILE=/absolute/private/linear.token
+   export GITHUB_CONNECTOR_MODE=disabled
+   npm start
+   ```
+
+5. In a second terminal, exercise only current Linear/Git reads:
+
+   ```bash
+   export CONTROL_PLANE_API=http://127.0.0.1:8787
+   export CONTROL_PLANE_AUTH_TOKEN_FILE=/absolute/private/control-plane.token
+   export M7_LIVE_READ_PROJECT_ID=<local-project-id>
+   export M7_LIVE_READ_TASK_ID=<optional-local-task-id>
+   npm run smoke:m7-read
+   ```
+
+The smoke persists one routing assessment but performs no external mutation and
+launches no runtime. Enable `LINEAR_CONNECTOR_MODE=read-write` only for bounded
+issue projection/evidence comments. Enable `GITHUB_CONNECTOR_MODE=draft-pr`
+only with a repository-scoped token and `CONTROL_PLANE_OPERATOR_ID`; preparation
+still creates a local plan and pending approval before any provider write.
+
+Use a dedicated least-privilege Linear key or OAuth token. For GitHub, use a
+repository-scoped App installation/fine-grained token with Metadata read,
+Contents read, and Pull requests read/write only. Contents write, merge,
+Actions, Workflows, Deployments, Administration, and Secrets are outside this
+boundary. No connector credential enters Hermes, storage, model context, a
+writer container, an artifact, or an event.
+
+The static prototype bearer authenticates one local operator context; it is not
+multi-user actor attestation. External writes remain operator-intended and must
+be reviewed in the plan's exact effect before approval.
+
+See [the complete M7 setup and recovery runbook](docs/M7_CONNECTOR_SETUP.md) for
+credential requirements, read-only-first commands, dead-letter operations,
+ambiguous-effect reconciliation, rollback, and current limitations.
 
 ## Project Brain memory boundary
 
@@ -748,6 +836,11 @@ command. Important settings are:
 | `DATA_DIR` | `./data` | SQLite, workspaces, runtime state, and artifact parent. |
 | `PROJECT_BRAIN_DIR` | `./project-brain` | Local accepted/advisory Markdown root. |
 | `CONTROL_PLANE_AUTH_TOKEN_FILE` | unset | Regular non-symlink token file, mode `0600`, 32–4096 bytes. |
+| `CONTROL_PLANE_OPERATOR_ID` | unset | Safe local operator principal; required by M7 write modes and other operator-intended gates. |
+| `M7_CONNECTOR_POLICY_FILE` / `_SHA256` | unset | Absolute reviewed project connector policy plus its exact accepted digest. |
+| `LINEAR_CONNECTOR_MODE` | `disabled` | `read-only` binds authority; `read-write` permits only separately planned, approved, idempotent issue/comment actions. |
+| `LINEAR_AUTH_MODE` / `LINEAR_TOKEN_FILE` | `personal-api-key` / unset | Dedicated Linear authentication mode and private token file. |
+| `GITHUB_CONNECTOR_MODE` / `GITHUB_TOKEN_FILE` | `disabled` / unset | `read-only` observes configured refs; `draft-pr` permits only separately approved draft creation. |
 | `ATOMIC_ADAPTER`, `CODEX_ADAPTER`, `CLAUDE_ADAPTER` | `mock` | Each must be explicitly set to `native` for the pilot. |
 | `*_EXPECTED_VERSION` | pinned versions above | Exact runtime contract; mismatch is unavailable. |
 | `CLAUDE_RUNTIME_ENV_ALLOWLIST` | empty | Must contain `ANTHROPIC_API_KEY` for a live Claude probe. |
@@ -785,6 +878,7 @@ npm run smoke:mcp
 npm run smoke:native   # opt-in; requires the running authenticated pilot
 npm run smoke:atomic-fixture  # opt-in; requires the separate M5a server/runner
 npm run smoke:m6-comparison  # opt-in; real subscription calls; stops before approval
+npm run smoke:m7-read  # opt-in; reads configured Linear/Git authority; no external write
 ```
 
 ## Troubleshooting

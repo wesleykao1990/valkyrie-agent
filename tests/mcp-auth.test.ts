@@ -212,6 +212,48 @@ test("MCP rejects an unknown tool name in the allowlist before serving requests"
   assert.doesNotMatch(result.stderr, new RegExp(token));
 });
 
+test("MCP exposes bounded production connector and external-action tools only", () => {
+  const names = [
+    "connectors_status", "connector_dead_letters_list", "connector_dead_letter_replay",
+    "external_action_github_draft_pr_prepare", "external_action_linear_evidence_comment_prepare",
+    "external_action_linear_issue_prepare",
+    "external_action_plans_list", "external_action_plan_get", "external_action_plan_resolve",
+  ];
+  const environment = { ...process.env };
+  delete environment.CONTROL_PLANE_AUTH_TOKEN_FILE;
+  environment.CONTROL_PLANE_AUTH_TOKEN = token;
+  environment.CONTROL_PLANE_MCP_TOOL_ALLOWLIST = names.join(",");
+  const result = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", "apps/mcp-server/src/index.ts"],
+    {
+      cwd: resolve("."),
+      env: environment,
+      encoding: "utf8",
+      input: `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" })}\n`,
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const listed = JSON.parse(result.stdout.trim()).result.tools;
+  assert.deepEqual(listed.map((item: any) => item.name), names);
+  for (const item of listed) assert.equal(item.inputSchema.additionalProperties, false);
+  const github = listed.find((item: any) => item.name === "external_action_github_draft_pr_prepare");
+  assert.deepEqual(github.inputSchema.required, ["runId", "title", "body"]);
+  assert.equal("owner" in github.inputSchema.properties, false);
+  assert.equal("repo" in github.inputSchema.properties, false);
+  assert.equal(github.inputSchema.properties.title.maxLength, 4096);
+  const linearIssue = listed.find((item: any) => item.name === "external_action_linear_issue_prepare");
+  assert.deepEqual(linearIssue.inputSchema.required, ["runId", "title", "description"]);
+  assert.equal("teamId" in linearIssue.inputSchema.properties, false);
+  assert.equal("projectId" in linearIssue.inputSchema.properties, false);
+  assert.equal(linearIssue.inputSchema.properties.description.maxLength, 4096);
+  const resolveTool = listed.find((item: any) => item.name === "external_action_plan_resolve");
+  assert.deepEqual(resolveTool.inputSchema.required, ["planId", "decision"]);
+  assert.deepEqual(resolveTool.inputSchema.properties.decision.enum, ["approve", "deny", "request_changes"]);
+  const deadList = listed.find((item: any) => item.name === "connector_dead_letters_list");
+  assert.equal(deadList.inputSchema.properties.limit.maximum, 1000);
+});
+
 test("MCP rejects non-origin or non-loopback API targets before loading or sending bearer auth", () => {
   for (const api of [
     "http://example.com:8787",

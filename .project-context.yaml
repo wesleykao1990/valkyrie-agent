@@ -28,8 +28,18 @@ canonical_knowledge:
 project_brain:
   local_path: project-brain
   active_backend: local-markdown-readonly
-  candidate_backend: openviking
+  candidate_backend: openviking-evaluation-only-no-live-transport
   automatic_capture: false
+production_connectors:
+  status: deterministic-contract-tested-default-off-live-credentials-pending
+  policy: digest-pinned-project-allowlist
+  linear: revision-bound-read-plus-idempotent-bounded-writes
+  git: read-only-revision-and-check-policy-authority
+  github: approved-draft-pr-from-pre-existing-remote-head-only
+  branch_publication: false
+  merge: false
+  deployment: false
+  actor_attestation: static-local-operator-context-only
 runtime_policy:
   atomic_status: connectivity-plus-fixed-pilots-and-package-local-lite-contract
   atomic_fixture_workflow: atomic-fixture-pilot
@@ -72,7 +82,9 @@ storage:
   production_candidate: postgres
   postgres_adapter_status: contract-tested-disabled-by-default
   migrations: checksummed-forward-only
-  outbox_dispatcher: not-implemented
+  outbox_dispatcher: per-consumer-fenced-approved-external-actions-default-off
+  connector_authority_ledger: migration-012
+  external_final_action_ledger: migration-013
   redis: disabled
   automatic_sqlite_to_postgres_copy: false
 milestones:
@@ -85,4 +97,5 @@ milestones:
   atomic_tool_only_fixture_slice: live-verified-disabled-by-default
   atomic_model_backed_pilot: live-verified-through-evidence-gate-operator-decision-pending
   direct_runtime_comparison: live-verified-both-candidate-approvals-pending-no-default-selected
-  post_m6_routing_efficiency_gaps: implemented-general-launch-deferred-to-m7
+  post_m6_routing_efficiency_gaps: implemented-general-launch-still-separate
+  production_connectors: deterministic-implemented-live-credentials-pending
