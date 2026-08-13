@@ -44,6 +44,28 @@ async function nextProtocolIssue(client: AtomicRpcClient): Promise<AtomicRpcProt
   return issue as AtomicRpcProtocolIssue;
 }
 
+function stderrMatching(client: AtomicRpcClient, pattern: RegExp): Promise<string> {
+  return new Promise((resolvePromise, reject) => {
+    let observed = "";
+    const cleanup = () => {
+      clearTimeout(timer);
+      client.off("stderr", onStderr);
+    };
+    const onStderr = (text: string) => {
+      observed += text;
+      if (pattern.test(observed)) {
+        cleanup();
+        resolvePromise(observed);
+      }
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Expected native stderr diagnostic was not observed within 2000ms: ${observed}`));
+    }, 2_000);
+    client.on("stderr", onStderr);
+  });
+}
+
 test("Atomic RPC decoder is UTF-8 safe, LF-only, CRLF tolerant, and bounded", () => {
   const decoder = new JsonlLfDecoder({ maxLineBytes: 128 });
   const frame = Buffer.from(`${JSON.stringify({ text: "before\u2028after\u2029🙂" })}\r\n`, "utf8");
@@ -152,11 +174,11 @@ test("split UTF-8, Unicode separators, CRLF, and multiple records preserve frami
 
 test("native stderr is observable without corrupting stdout JSONL", async (t) => {
   const client = startFake(t);
-  const stderrPromise = once(client, "stderr");
+  const stderrPromise = stderrMatching(client, /synthetic native diagnostic/);
   const response = await client.prompt("__fake:stderr__");
-  const [stderr] = await stderrPromise;
+  const stderr = await stderrPromise;
   assert.equal(response.success, true);
-  assert.match(String(stderr), /synthetic native diagnostic/);
+  assert.match(stderr, /synthetic native diagnostic/);
 });
 
 test("command failures and mismatched response commands reject the right request", async (t) => {
