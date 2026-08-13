@@ -17,9 +17,11 @@ const required = [
   "lib/atomic-fixture-pilot-core.mjs",
   "lib/atomic-fixture-model-pilot-core.d.mts",
   "lib/atomic-fixture-model-pilot-core.mjs",
+  "lib/atomic-lite-writer-core.mjs",
   "skills/atomic-workflow-architect/SKILL.md",
   "workflows/atomic-fixture-pilot.ts",
   "workflows/atomic-fixture-model-pilot.ts",
+  "workflows/atomic-lite-writer.ts",
   "workflows/idea-to-decision.ts",
   "workflows/project-blueprint.ts",
   "workflows/request-preflight.ts",
@@ -64,6 +66,8 @@ for (const phrase of [
   "Generated workflows are drafts until proven",
   "idea-to-decision",
   "request-preflight",
+  "Atomic Lite",
+  "control plane owns the final",
   "<keepContext>",
 ]) {
   if (!skill.includes(phrase)) throw new Error(`SKILL.md missing required doctrine: ${phrase}`);
@@ -111,7 +115,7 @@ if (!extension.includes('event.source === "extension"') && !extension.includes('
 if (!extension.includes("event.streamingBehavior")) throw new Error("extension must skip steering/follow-up input");
 if (!extension.includes('action === "test"')) throw new Error("extension must expose routing test command");
 
-const workflowFiles = ["atomic-fixture-model-pilot.ts", "atomic-fixture-pilot.ts", "idea-to-decision.ts", "project-blueprint.ts", "request-preflight.ts"];
+const workflowFiles = ["atomic-fixture-model-pilot.ts", "atomic-fixture-pilot.ts", "atomic-lite-writer.ts", "idea-to-decision.ts", "project-blueprint.ts", "request-preflight.ts"];
 for (const name of workflowFiles) {
   const source = await readFile(join(root, "workflows", name), "utf8");
   for (const expected of ['from "@bastani/workflows"', 'from "typebox"', "workflow({", "outputs:"]) {
@@ -179,6 +183,64 @@ for (const requiredModelText of [
 }
 for (const forbidden of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "sk-", "~/.atomic", "~/.codex", "~/.claude"]) {
   if (modelFixtureWorkflow.includes(forbidden)) throw new Error(`atomic-fixture-model-pilot must not receive provider credentials or host homes: ${forbidden}`);
+}
+
+const liteWorkflow = await readFile(join(root, "workflows/atomic-lite-writer.ts"), "utf8");
+for (const requiredLiteText of [
+  "name: ATOMIC_LITE_WORKFLOW_NAME",
+  'context: "fresh"',
+  'context: "fork"',
+  "forkFromSessionFile: implementer.sessionFile",
+  "reviewerRequired",
+  "review-not-required",
+  "createAtomicLiteCustomTools",
+  "createAtomicLiteCustomTools(workspacePath, preflight.policy, Type)",
+  "runAtomicLiteChecks",
+  "emitAtomicLiteEvidence",
+  "context_sha256",
+  "context: preflight.contextSummary",
+  "final_checks",
+  "artifact_sha256: finalChecks.artifact.sha256",
+  "changed_paths: finalChecks.changed_paths",
+]) {
+  if (!liteWorkflow.includes(requiredLiteText)) throw new Error(`atomic-lite-writer missing bounded workflow doctrine: ${requiredLiteText}`);
+}
+if ((liteWorkflow.match(/ctx\.task\(/g) ?? []).length !== 3) {
+  throw new Error("atomic-lite-writer must contain one implementer, one conditional forked repair, and one conditional fresh reviewer");
+}
+for (const forbidden of ["ctx.stage(", "ctx.parallel(", "ctx.chain(", "ctx.ui.", "fetch(", "https://"]) {
+  if (liteWorkflow.includes(forbidden)) throw new Error(`atomic-lite-writer must remain bounded and offline: ${forbidden}`);
+}
+const liteCore = await readFile(join(root, "lib/atomic-lite-writer-core.mjs"), "utf8");
+for (const requiredLiteCoreText of [
+  'ATOMIC_LITE_CONTEXT_ROOT = "/run-context"',
+  'ATOMIC_LITE_CONTRACT_PATH = "atomic-lite-contract.json"',
+  'ATOMIC_LITE_POLICY_PATH = "atomic-lite-policy.json"',
+  'ATOMIC_LITE_CONTEXT_PATH = "atomic-lite-context.json"',
+  'ATOMIC_LITE_GIT_EXECUTABLE = "/usr/bin/git"',
+  'ATOMIC_LITE_WORKFLOW_NAME = "atomic-lite-writer"',
+  'finalAction !== "stop_before_external_action"',
+  "maxRepairRounds",
+  "reviewerRequired",
+  "shell: false",
+  "nlink !== 1",
+  "ATOMIC_LITE_EXCLUDED_NATIVE_TOOLS",
+  "ATOMIC_LITE_POST_KILL_CLOSE_MS",
+  "maxCommandSeconds > normalized.maxElapsedSeconds",
+  "remainingMs",
+  "Every Atomic Lite write allowlist path must also be readable",
+  "required: [\"path\"]",
+  "required: [\"path\", \"content\"]",
+  "contextSha256",
+  "acceptedContext",
+  "collectReviewableGitPatch",
+  "model_execution_attempted: true",
+  "reviewer_model_execution_attempted",
+]) {
+  if (!liteCore.includes(requiredLiteCoreText)) throw new Error(`atomic-lite-writer core missing required safety contract: ${requiredLiteCoreText}`);
+}
+for (const forbidden of ["fetch(", "https://", "process.env.OPENAI_API_KEY", "process.env.ANTHROPIC_API_KEY"]) {
+  if (liteCore.includes(forbidden)) throw new Error(`atomic-lite-writer core must not use network or credentials: ${forbidden}`);
 }
 for (const requiredFixtureCoreText of [
   '"/usr/local/bin/node", "--test"',

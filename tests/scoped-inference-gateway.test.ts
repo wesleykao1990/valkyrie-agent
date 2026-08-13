@@ -26,17 +26,21 @@ const policy: ScopedInferencePolicy = {
     implementer: "fixture-implementer", verifier_initial: "fixture-verifier-initial",
     repair: "fixture-repair", verifier_final: "fixture-verifier-final",
   },
-  roles: ["implementer", "verifier_initial", "repair", "verifier_final"], maxRequests: 4,
+  roles: ["implementer", "verifier_initial", "repair", "verifier_final"], maxRequests: 16,
   maxInputTokens: 10_000, maxOutputTokens: 2_000, maxCostMicros: 50_000, maxElapsedMs: 5_000,
   ttlMs: 10 * 60_000, inputCostMicrosPerMillion: 1_000_000, outputCostMicrosPerMillion: 2_000_000,
 };
 
 class FakeUpstream implements InferenceUpstream {
-  calls: Array<{ role: InferenceRole; body: Record<string, unknown> }> = [];
+  calls: Array<{ role: InferenceRole; body: Record<string, unknown>; priorProviderSessionId?: string }> = [];
   failRole?: InferenceRole;
   usage = { inputTokens: 20, outputTokens: 10 };
   async complete(input: Parameters<InferenceUpstream["complete"]>[0]) {
-    this.calls.push({ role: input.role, body: input.body });
+    this.calls.push({
+      role: input.role,
+      body: input.body,
+      ...(input.priorProviderSessionId ? { priorProviderSessionId: input.priorProviderSessionId } : {}),
+    });
     if (input.signal.aborted || this.failRole === input.role) throw new Error("synthetic upstream failure containing secret-do-not-log");
     const body = Buffer.from(JSON.stringify({
       id: `fake_${input.role}`, object: "chat.completion", model: input.model,
@@ -46,6 +50,9 @@ class FakeUpstream implements InferenceUpstream {
     return {
       status: 200, contentType: "application/json" as const, body,
       providerRequestId: `fake_provider_${input.role}`, ...this.usage,
+      providerSessionId: `native_${input.role}`,
+      providerSessionReused: input.priorProviderSessionId === `native_${input.role}`,
+      nativeRecords: [{ type: "thread.started", thread_id: `native_${input.role}` }, { type: "turn.completed", usage: this.usage }],
     };
   }
 }
@@ -91,6 +98,37 @@ test("scoped inference stores only a token digest and accounts one exact role", 
     await assert.rejects(item.gateway.complete(item.issued.token, "implementer", request()), (error: unknown) =>
       error instanceof ScopedInferenceGatewayError && error.code === "request_already_attempted");
     assert.equal(item.upstream.calls.length, 1, "an exact retry must not spend twice");
+    const events = await item.store.listEvents(item.run.id);
+    assert.equal(events.filter((event) => event.type === "inference.native.raw").length, 2);
+    assert.equal(events.filter((event) => event.type === "inference.request.completed").length, 1);
+    assert.equal(((events.find((event) => event.type === "inference.native.raw")?.payload.rawNative as Record<string, unknown>)?.type), "thread.started");
+  } finally { await item.store.close(); }
+});
+
+test("scoped inference durably carries one provider session across appended same-role turns", async () => {
+  const item = await fixture();
+  try {
+    await item.gateway.complete(item.issued.token, "implementer", request());
+    await item.gateway.complete(item.issued.token, "implementer", {
+      ...request(),
+      messages: [
+        { role: "user", content: "Implement only the fixed fixture contract." },
+        { role: "assistant", content: "fixed implementer" },
+        { role: "user", content: "Now answer using only the appended tool result." },
+      ],
+    });
+    assert.equal(item.upstream.calls.length, 2);
+    assert.equal(item.upstream.calls[0].priorProviderSessionId, undefined);
+    assert.equal(item.upstream.calls[1].priorProviderSessionId, "native_implementer");
+    const requests = await item.store.listInferenceRequests(item.run.id);
+    assert.equal(requests.length, 2);
+    assert.deepEqual(requests.map((entry) => entry.providerSessionId), [
+      "native_implementer", "native_implementer",
+    ]);
+    assert.equal(requests.filter((entry) => !entry.providerSessionReused).length, 1);
+    assert.equal(requests.filter((entry) => entry.providerSessionReused).length, 1);
+    const completed = (await item.store.listEvents(item.run.id)).filter((event) => event.type === "inference.request.completed");
+    assert.deepEqual(completed.map((event) => event.payload.providerSessionReused), [false, true]);
   } finally { await item.store.close(); }
 });
 
@@ -101,6 +139,20 @@ test("scoped inference rejects model and capability tampering before upstream", 
     await assert.rejects(item.gateway.complete(`${item.issued.token.slice(0, -1)}x`, "implementer", request()), /capability is invalid/i);
     await assert.rejects(item.gateway.complete(item.issued.token, "unknown" as InferenceRole, request()), /role is outside/i);
     assert.equal(item.upstream.calls.length, 0);
+  } finally { await item.store.close(); }
+});
+
+test("scoped inference accepts Atomic's explicit no-storage flag and rejects storage enablement", async () => {
+  const item = await fixture();
+  try {
+    const accepted = await item.gateway.complete(item.issued.token, "implementer", {
+      ...request("fixture-implementer"), store: false,
+    });
+    assert.equal(accepted.status, 200);
+    await assert.rejects(item.gateway.complete(item.issued.token, "verifier_initial", {
+      ...request("fixture-verifier-initial"), store: true,
+    }), /store must be false/);
+    assert.equal(item.upstream.calls.length, 1);
   } finally { await item.store.close(); }
 });
 
@@ -148,6 +200,7 @@ test("external HTTPS upstream sends the provider credential only in the reviewed
       baseUrl: "https://provider.invalid/v1", credential: "private-provider-token-123", authorization: "bearer",
     });
     const result = await upstream.complete({
+      capabilityId: "icap_external_upstream_fixture", requestId: "ireq_external_upstream_fixture",
       provider: "future-provider", model: "future-model", role: "implementer",
       body: { model: "future-model", messages: [{ role: "user", content: "fixed" }] },
       timeoutMs: 1000, signal: new AbortController().signal,
@@ -176,7 +229,7 @@ test("credential-free upstream is accepted only for explicit HTTP loopback", asy
   }), /credential/i);
 });
 
-test("deterministic pre-live sequence budgets implementer, fresh verifier, one repair, and final fresh verifier", async () => {
+test("deterministic pre-live sequence supports bounded multi-turn roles and exact replay protection", async () => {
   const item = await fixture();
   try {
     const stages: Array<[InferenceRole, string]> = [
@@ -194,9 +247,19 @@ test("deterministic pre-live sequence budgets implementer, fresh verifier, one r
     const requests = await item.store.listInferenceRequests(item.run.id);
     assert.equal(requests.length, 4);
     assert.equal(requests.every((request) => request.state === "completed"), true);
-    assert.equal((await item.store.getInferenceCapability(item.issued.capability.id))?.state, "exhausted");
-    await assert.rejects(item.gateway.complete(item.issued.token, "repair", request(policy.roleModels.repair)), /already attempted|already used|conflict/i);
-    assert.equal(item.upstream.calls.length, 4, "the one-repair workflow cannot spend a fifth request");
+    assert.equal((await item.store.getInferenceCapability(item.issued.capability.id))?.state, "active");
+    await item.gateway.complete(item.issued.token, "implementer", {
+      model: policy.roleModels.implementer,
+      messages: [{ role: "user", content: "second implementer turn after a bounded tool result" }],
+      max_tokens: 256,
+    });
+    assert.equal(item.upstream.calls.length, 5, "a changed request in the same role is permitted");
+    await assert.rejects(item.gateway.complete(item.issued.token, "implementer", {
+      model: policy.roleModels.implementer,
+      messages: [{ role: "user", content: "second implementer turn after a bounded tool result" }],
+      max_tokens: 256,
+    }), /already (?:been )?attempted|already used|conflict/i);
+    assert.equal(item.upstream.calls.length, 5, "an exact replay must not spend again");
   } finally { await item.store.close(); }
 });
 

@@ -108,6 +108,15 @@ Hermes sends the exact request, project/task IDs, context-pack reference, budget
 
 Hermes never manages OS processes, worktrees, model credentials, or individual graph stages directly.
 
+For general engineering intake, Hermes may request Direct, Atomic Lite, or Atomic
+Full, but the control plane owns the six-dimension routing decision and may only
+increase the requested rigor. The authenticated MCP can persist/read that
+assessment, but it cannot launch general work while Linear/Git authority and a
+trusted project policy are unavailable. `atomic-lite-writer` is a reusable
+package contract, not a registered control-plane runtime. Do not launch Atomic
+first and then expect this package's internal auto-router to switch the root
+runtime to Codex or Claude.
+
 Read:
 
 ```text

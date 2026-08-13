@@ -21,6 +21,14 @@
 - [x] Credential-free M5b model lifecycle: scoped gateway/capabilities, fixed
   Atomic model workflow, bounded repair/fresh verifier, service/Hermes admission,
   restart/cancel/expiry/artifact review, and SQLite/PostgreSQL parity
+- [x] Subscription-first M5b pre-live boundary: pinned Codex/ChatGPT broker,
+  no OAuth export, bounded multi-turn migration 008, fake-child adversarial tests,
+  dedicated profile setup, and opt-in marker smoke
+- [x] Live fixed M5b subscription pilot through governed evidence export, complete
+  cleanup, and the separate operator gate; no approval or external action
+- [x] Deterministic M6 direct Codex writer and durable Atomic/direct comparison
+  ledger with independent workspaces, checks, fresh verifier, governed evidence,
+  raw provider events, and separate approval gates
 
 ## P0
 
@@ -28,8 +36,13 @@
 - [ ] Linear idea creation with idempotency
 - [x] Compose a verified writer boundary into the first non-production Atomic
   pilot; keep the model path default-off behind its scoped egress/credential policy
-- [ ] Run the fixed M5b pilot with one reviewed provider/model and record actual
-  model, token, cost, verifier, artifact, cleanup, and human-review evidence
+- [x] Authenticate the dedicated broker profile, run the fixed M5b pilot with the
+  reviewed subscription model, and record model, token, cost, verifier, artifact,
+  and cleanup evidence
+- [ ] Record Wesley's separate accept/deny/request-changes decision on a fresh,
+  unexpired evidence gate; the recorded live smoke intentionally did not approve
+- [ ] Run the opt-in M6 Atomic/direct-Codex comparison after explicit approval to
+  send the fixed fixture payload to the external ChatGPT subscription service
 - [ ] OpenViking read-only retrieval evaluation
 - [ ] Production audit log/retention policy (checksummed artifact registration is
   implemented for the fixture boundary)
@@ -46,6 +59,16 @@
 - [ ] Mobile approval cards with exact effects
 - [ ] Vault pull-request promotion flow
 - [ ] Context-pack snapshot retained with every run
+- [x] Expose authenticated general engineering assessment that records the
+  structured Direct / Atomic Lite / Atomic Full decision and fails closed with
+  no run when the selected shape is unavailable
+- [x] Implement and contract-test package-local Atomic Lite with one retained implementer
+  session, model-free checks, artifact/delta handoffs, conditional fresh review,
+  and forked repair continuity; runtime registration remains deferred to M7
+- [ ] Bind a fresh live Linear/Git context and accepted project execution policy
+  to an assessment before enabling general Direct/Lite/Full launch
+- [ ] Re-benchmark Direct, Atomic Lite, and Atomic Full under one provider/model,
+  cache posture, task contract, checks, and approval boundary
 
 ## P2
 

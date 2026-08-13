@@ -59,11 +59,13 @@ This should initialize the stdio server and discover the restricted pilot tools.
 It proves MCP connectivity and bearer authentication without spending model
 tokens.
 
-The wrapper exposes these 15 tools:
+The wrapper exposes these 17 tools:
 
 - `projects_list`
 - `project_get_brief`
 - `runtimes_status`
+- `engineering_assess`
+- `engineering_assessment_get`
 - `runs_start`
 - `runs_list`
 - `run_get`
@@ -78,7 +80,9 @@ The wrapper exposes these 15 tools:
 - `memory_reject`
 
 It intentionally excludes idea creation, comparisons, runtime steering, general
-approval resolution, demo reset, and `memory_promote`. The narrow
+approval resolution, general execution launch, demo reset, and `memory_promote`.
+The two engineering tools persist/read an explainable route only; they cannot
+start a writer or substitute a fixed pilot. The narrow
 `atomic_fixture_approval_resolve` tool can resolve only the evidence-bound,
 cleaned disposable Atomic fixture gate; it cannot approve another action.
 `atomic_fixture_artifact_read` returns at most 256 KiB of UTF-8 evidence whose
@@ -93,6 +97,34 @@ subset; an unknown tool name fails MCP startup.
 seconds of future clock-skew tolerance). Although this pilot profile cannot
 promote, any future authorized caller must regenerate and re-review an expired
 preview rather than changing its timestamp.
+
+## Who chooses Direct, Atomic Lite, or Atomic Full
+
+Hermes should not silently make the authoritative runtime decision. For general
+engineering assessment it should:
+
+1. preserve Wesley's literal request and final-action instruction;
+2. resolve or supply the current project/task identity;
+3. state an optional preference such as low latency, Direct, Atomic Lite, or
+   Atomic Full;
+4. call `engineering_assess` and retain its assessment ID;
+5. explain the selected shape, score, hard signals, source freshness, and any
+   preference that policy overrode; and
+6. stop when `executionSupported=false` rather than mapping the request onto a
+   fixed `runs_start` workflow.
+
+The control plane scores Structure, Verifiability, Iteration, Risk, Duration, and
+Isolation. Direct is the 0–3 default, Atomic Lite is the 4–6 default, and Atomic
+Full is selected at 7+ or for an explicit loop, high risk, durable/background
+work, multiple candidates, or an evidence/approval gate. A user preference may
+increase rigor; `direct:` cannot waive a required safety or final-action gate.
+
+The assessment tools require configured bearer authentication even on loopback.
+They currently record `prototype` Linear and `unavailable` Git provenance and
+therefore return an unsupported launch result. `runs_start` still accepts only
+the listed fixed connectivity/M5/M6 workflows, so Hermes must not translate an
+arbitrary request into one of those fixtures. M7 will replace prototype source
+labels only after the control plane has its own least-privilege live connectors.
 
 ## Configure Hermes inference in the isolated profile
 

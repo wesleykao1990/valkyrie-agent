@@ -162,6 +162,18 @@ They do not block network access, credential access, process escape, symlink
 tricks, or writes outside the worktree. The M3 native connectivity pilot therefore
 has no writer mode and no implementation/PR action.
 
+The package-local Atomic Lite contract additionally requires a completely clean
+Git worktree, pre-creates its exact workflow-owned artifact inodes, uses
+`O_NOFOLLOW` descriptor writes with descriptor/path identity and containment
+checks, and rejects the result if any deterministic check changes a path outside
+the declared write allowlist in Git-visible state or changes the admitted Git
+commit/tree/index. Those are fail-closed integrity checks against ordinary path
+replacement and accidental or committed check mutation. They are not a claim
+that Node pathname APIs or Git status resist a malicious concurrent process that
+can manipulate filesystem and index metadata; Atomic Lite is not runtime-
+registered, and any future real launcher must still use the external container/
+VM and exact writer-fence boundary below.
+
 Milestone 4 adds a separate, disabled Docker-compatible boundary for a disposable
 fixture. It never mounts the developer checkout: an exact clean base commit is
 fetched shallowly into a private per-run bare store with one relative worktree.
@@ -231,24 +243,45 @@ Before any model-backed or general-repository writing runtime:
 5. keep PR creation, merge, deploy, destructive database change, secret expansion,
    and canonical promotion behind separate policy decisions.
 
-### M5b scoped inference boundary (live provider not yet exercised)
+### M5b scoped inference boundary (fixed subscription pilot live-verified)
 
-The repository now contains the disabled-by-default, authenticated M5b lifecycle,
-not a live model claim. Four role-scoped requests (implementer, initial fresh verifier,
+The repository contains the disabled-by-default, authenticated M5b lifecycle and
+a completed live execution through its separate approval gate. Four fixed roles (implementer, initial fresh verifier,
 one optional repair, and final fresh verifier) are authorized by an opaque
 run-scoped capability. Storage retains only its SHA-256 digest and bounded usage
-metadata. The provider credential loading point requires a regular non-symlink
-0600 file and remains outside the writer, prompts, events, artifacts, arguments,
-and container environment.
+metadata. Up to 16 distinct request hashes permit the native custom-tool loop;
+an exact replay is rejected before another model call. External API credentials
+must come from a regular non-symlink 0600 file. Subscription mode instead delegates
+ChatGPT OAuth acquisition and refresh to a pinned Codex CLI in a dedicated private
+`CODEX_HOME`; the control plane never reads or exports the bearer.
 
 The writer can attach only to an inspected local Docker `Internal=true` bridge.
-A separately labeled inference bridge mounts only the private control-plane Unix
-socket read-only; it holds no provider credential. The control-plane gateway
+On the verified macOS/Colima path, a fixed separately labeled proxy is dual-homed
+on that network and Docker's bridge and forwards only to the control-plane's
+loopback host gateway; it holds no provider credential. The writer itself never
+joins the egress bridge. A true local Unix-socket transport remains supported on
+engines that can bind it safely. The control-plane gateway
 enforces exact role/model aliases, request fields, response bytes, expiry,
-request/token/cost/time limits, and one attempt per role. External upstreams must
+request/token/cost/time limits, and one attempt per exact request hash. External upstreams must
 be HTTPS `/v1`; credential-free HTTP requires explicit loopback opt-in. The
 runner/package digests must equal explicit accepted deployment values before a
-capability is issued.
+capability is issued. The subscription broker uses stdin-only prompts, an empty
+read-only scratch root, ignored user config/rules, disabled Codex
+shell/app/plugin/browser/subagent features, a strict output schema, bounded
+LF-JSONL, and authoritative usage. Observed native tool activity fails closed.
+The OAuth profile is never mounted into the writer.
+
+Provider sessions are now retained only inside that dedicated private
+`CODEX_HOME`: the first request creates one thread per capability/role and later
+same-role requests use exact `codex exec resume` with only appended messages.
+The in-memory lineage map is bounded and idle-expiring; ambiguous failures poison
+the lineage. A replacement control-plane process sees the durable thread ID but
+refuses to resume because ownership and cross-process safety are unproven.
+Implementer, repair, and verifier roles never share a lineage. The profile may
+retain prompt/response session history on disk, so keep it mode `0700`, exclude it
+from backup/sync/log collection, and apply a reviewed retention procedure before
+shared-host use. This host-process boundary was live-verified only for the fixed
+disposable fixture; broader use requires separate credential-broker isolation.
 
 Service admission is transactionally capped at one nonterminal model run. Durable
 claims, cancellation, capability revocation/expiry, bridge and sandbox restart
@@ -260,9 +293,49 @@ The model live smoke therefore stops before approval by default.
 Atomic native `--approve` in this fixed workflow authorizes only the two custom
 fixture tools (bounded reads and replacement of one disposable source file).
 Built-in filesystem, shell, web, subagent, intercom, and general editing tools are
-excluded. It is not final-action approval. M5b live verification remains blocked
-on Wesley's provider/model decision, dedicated low-limit credential or reviewed
-local model, and an actual Docker/provider exercise with human evidence review.
+excluded. It is not final-action approval. The dedicated profile, marker request,
+Docker/Atomic model workflow, deterministic checks, fresh verifiers, governed
+export, and cleanup were exercised live. The recorded run deliberately stopped
+at the operator gate; no human-presence claim, acceptance receipt, external action,
+or automatic memory promotion was made.
+
+## M6 direct-comparison boundary
+
+Direct Codex is a separate root runtime, not an Atomic stage. Its writer has no
+network, Docker socket, Codex home, OAuth material, or provider credential. The
+control plane invokes the same scoped host-side subscription broker used by M5b,
+but issues a separate capability and persists bounded raw Codex JSONL records
+before normalized request-completion evidence. Model output is schema checked and
+only the one reviewed fixture file can be replaced through a fixed container
+command. Checks and a fresh ephemeral verifier run after the write, with at most
+one evidence-backed repair.
+
+Atomic and direct candidates never share a worktree, container, writer fence,
+capability, artifact set, approval, or native session. Comparison metrics are a
+convenience snapshot over authoritative run/events/requests/artifacts; they do not
+authorize acceptance or external action. Claude Code remains unavailable unless
+its own explicit authentication and isolation boundary is implemented and live
+exercised. Never mount an ambient `~/.claude` or reuse the Codex profile.
+
+The opt-in M6 smoke sends the fixed objective, source, immutable test, candidate
+bytes, checks, and verifier prompts to the external ChatGPT subscription service.
+Normal verification strips all M6/live flags and makes no provider call.
+
+## Authenticated engineering-assessment boundary
+
+The general engineering assessment operations require a configured bearer even
+on loopback. Hermes can send only a bounded literal request, project/task ID,
+upward-only preference, final-action intent, and idempotency key. It cannot send
+rubric scores, hard signals, repository paths, commands, credentials, runtime
+names, or workflow names. Storage verifies same-project task ownership, score
+totals, hashes, timestamps, replay, and bounded metadata. The literal request is
+retained in the protected assessment row but omitted from its outbox event.
+
+Current source provenance explicitly says Linear is a prototype projection and
+Git is unavailable. Therefore every assessment is execution-unsupported and no
+route creates a run/workspace/lease/container. Fixed pilots are never substituted.
+M7 may enable launch only after live authority freshness and a reviewed project
+execution allowlist are bound to the assessment.
 
 ## Storage and retained command data
 
@@ -272,6 +345,10 @@ local model, and an actual Docker/provider exercise with human evidence review.
   embed it.
 - Persistent PostgreSQL needs separate migration/runtime roles, TLS, backups,
   retention, monitoring, and restore drills.
+- Store invariants assume application code uses the typed store contract. A
+  production PostgreSQL runtime role must not receive DDL or direct table-update
+  privileges that can bypass those transactions/triggers; SQLite's embedded
+  process boundary necessarily trusts the control-plane process itself.
 - Migration mismatch/unavailability fails startup; there is no fallback to
   SQLite. Demo seed/reset are hard-disabled for PostgreSQL.
 - Migration 004 adds explicit lease owners, monotonic fencing epochs, and durable
@@ -288,6 +365,18 @@ local model, and an actual Docker/provider exercise with human evidence review.
   usage/cost evidence, and indexed expiry. Plaintext gateway/provider tokens are
   not stored. Older binaries reject the v7 ledger; rollback requires a verified
   pre-v7 backup or separate compatible database.
+  Migration 008 changes request uniqueness to capability/role/request hash and
+  raises fixed aggregate request/token ceilings for bounded native custom-tool
+  loops. Exact request replay still fails before inference. Older binaries reject
+  the v8 ledger; rollback requires a verified pre-v8 backup or separate compatible
+  database.
+- Migration 009 adds the durable comparison ledger without granting candidate
+  selection or final-action authority. Older binaries require a pre-v9 backup.
+- Migration 010 adds bounded routing assessments and source/final-action policy
+  evidence. Migration 011 adds provider-session audit fields and enforces one
+  active request per capability role. Neither session IDs nor assessments grant
+  execution/resume authority. Older binaries require a verified pre-v10/pre-v11
+  backup, as appropriate; there are no destructive down migrations.
 - A fence protects database state, not raw filesystem writes. Terminating and
   inspecting the exact labeled container remains mandatory before release/reuse.
 - Idempotency/outbox/events may retain objectives, native output, approval effects,

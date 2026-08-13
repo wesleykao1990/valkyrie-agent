@@ -4,7 +4,8 @@
 - Date: 2026-08-12
 - Decision owner: Wesley Kao
 - Implementation status: M5a tool-only slice implemented and live-verified with
-  no model/provider credential. M5b model-backed slice is not implemented.
+  no model/provider credential. The fixed M5b subscription-backed slice is also
+  live-verified through evidence and remains stopped at its operator gate.
 
 ## Context
 

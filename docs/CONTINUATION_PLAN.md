@@ -112,7 +112,7 @@ states. Writer runtime registration remains a separate Milestone 5 action.
 - [ ] Remote micro-VM or equivalent stronger isolation for confidential/high-risk
   work; scoped model egress and short-lived credential broker.
 
-## Milestone 5 — End-to-end Atomic pilot: integration slice implemented; model slice pending
+## Milestone 5 — End-to-end Atomic pilot: model slice live through approval gate
 
 ### M5a — credential-free native integration slice
 
@@ -141,24 +141,49 @@ request, model-based verifier, token/cost, real GitHub PR, merge, deploy, Linear
 write, expanded secret access, or canonical promotion is implemented. Native
 cross-process resume remains false.
 
-### M5b — model-backed pilot: credential-free implementation complete, live evidence pending
+### M5b — model-backed pilot: subscription live evidence complete through gate
 
 The fixed scoped inference gateway, role capabilities, model workflow, fresh
 verifiers, one-repair path, authenticated service/Hermes lifecycle, restart,
 artifact review, approval, and SQLite/PostgreSQL parity are implemented
 default-off. Normal verification is credential-free and cannot claim model
-quality. Wesley must still select a reviewed local endpoint or provider/model and
-dedicated low-limit credential, then run the explicit live smoke under the same
-literal contract. Atomic still owns its graph, and real draft PR creation remains
-a separate final action.
+quality. A pinned host-side Codex broker uses a dedicated ChatGPT subscription
+profile without exporting OAuth material or mounting it in the writer; the
+OpenAI-compatible API path remains available. Migration 008 supplies the bounded
+multi-turn request ledger needed for Atomic custom-tool conversations. The live
+fixed fixture completed real implementer and fresh-verifier turns, passed the
+deterministic checks, exported and rehashed 11 governed artifacts, cleaned all
+writer resources, and stopped at its evidence-bound approval. Wesley's separate
+decision remains pending. Atomic still owns its graph, and real draft PR creation
+remains a separate final action.
 
 ## Milestone 6 — Direct Codex/Claude comparison
 
-Preserve a direct candidate under the same task contract, workspace policy,
-checks, budgets, verifier rubric, and approval boundary. Never share a worktree
-with Atomic. Compare correctness, caught defects, cost, elapsed time, human review,
-event/recovery reliability, resumability, and integration complexity. Atomic does
-not become the permanent default without evidence.
+M6 is deterministic- and live-verified, default-off. A direct Codex
+root candidate uses the exact M5b fixture contract and model policy through its
+own worktree/container/fenced lease/capability/artifacts/approval, without invoking
+Atomic. Migration 009 persists an evidence-derived comparison aggregate and
+candidate metrics for correctness, repairs, token/cost/elapsed usage, review
+burden, events/recovery, resumability, and integration complexity. Raw Codex JSONL
+is retained alongside normalized inference events. Claude Code remains separately
+unavailable rather than falling back to Codex.
+
+Wesley approved the fixed external payload and the opt-in smoke completed with
+both candidates correct, independently cleaned, and stopped at unresolved
+approvals. Atomic used more elapsed time/tokens on this fixture; that one result
+does not establish general quality, recovery, human-review burden, or a permanent
+default.
+
+Post-M6 routing uses the proposed Direct / Atomic Lite / Atomic Full rubric in
+ADR-P009. The authenticated assessment ledger and reusable package-local Atomic
+Lite contract now exist, and the subscription broker retains one process-local
+provider thread per capability/role with appended-message continuation. Forked
+repair, artifact/delta handoff, model-free deterministic gates, and conditional
+review are encoded in the Lite contract. General launch remains fail-closed until
+M7 resolves live Linear/Git authority and an accepted project execution policy.
+The next benchmark must hold model/provider/cache/task/checks constant and include
+a task large or risky enough for workflow structure to have a measurable
+opportunity to help.
 
 ## Milestone 7 — Production connectors
 

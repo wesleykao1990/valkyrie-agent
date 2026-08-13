@@ -69,7 +69,15 @@ test("model workflow core binds policy, runs deterministic gates, and emits prov
   const item = fixture();
   try {
     assert.equal((await preflightAtomicFixtureModel({ workspacePath: item.workspace, contextRoot: item.context, inputs: item.inputs })).contract_sha256, item.inputs.contract_sha256);
-    writeFileSync(join(item.workspace, "src/normalize-project-slug.js"), ATOMIC_FIXTURE_IMPLEMENTATION);
+    const modelCandidate = `export function normalizeProjectSlug(value) {
+  if (typeof value !== "string") throw new TypeError("slug must be a string");
+  const slug = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  if (!slug) throw new Error("slug must contain alphanumeric content");
+  return slug;
+}
+`;
+    assert.notEqual(sha(modelCandidate), sha(ATOMIC_FIXTURE_IMPLEMENTATION));
+    writeFileSync(join(item.workspace, "src/normalize-project-slug.js"), modelCandidate);
     const checks = await runAtomicFixtureModelChecks({ workspacePath: item.workspace, round: "initial", nodePath: process.execPath });
     assert.equal(checks.passed, true);
     const verifier = await writeAtomicFixtureModelReview({ workspacePath: item.workspace, round: "initial", review: { approved: true, findings: [] } });
@@ -79,11 +87,13 @@ test("model workflow core binds policy, runs deterministic gates, and emits prov
     });
     assert.equal(output.live_provider_verified, false);
     assert.equal(output.repair_count, 0);
+    assert.equal(output.source_after_sha256, sha(modelCandidate));
     const evidence = JSON.parse(readFileSync(join(item.workspace, ATOMIC_FIXTURE_MODEL_PATHS.evidence), "utf8"));
     assert.equal(evidence.model_execution_expected, true);
     assert.equal(evidence.live_provider_verified, false);
     assert.equal(evidence.capability_policy_sha256, item.inputs.capability_policy_sha256);
     assert.equal(evidence.package_sha256, item.inputs.package_sha256);
+    assert.equal(evidence.source_after_sha256, output.source_after_sha256);
     assert.deepEqual(
       readFileSync(join(item.workspace, ATOMIC_FIXTURE_MODEL_PATHS.contextPack)),
       readFileSync(join(item.context, "context-pack.json")),

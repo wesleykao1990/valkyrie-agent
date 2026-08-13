@@ -29,6 +29,7 @@ test("model executor follows the native fixed workflow and preserves raw pre-liv
     });
     assert.equal(result.nativeSessionId, "fake-main-session");
     assert.equal(result.nativeWorkflowRunId, "11111111-2222-4333-8444-555555555555");
+    assert.match(result.nativeCursor ?? "", /native-entry/);
     assert.equal(result.output.repair_count, 1);
     assert.equal(result.output.live_provider_verified, false);
     assert.ok(result.rawRecords.some((record) => record.type === "message_start"));

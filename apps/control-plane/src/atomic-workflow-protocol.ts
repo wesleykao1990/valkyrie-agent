@@ -85,6 +85,7 @@ export interface AtomicFixtureModelWorkflowOutput {
   context_pack_path: ".valkyrie-model-output/context-pack.json";
   run_contract_path: ".valkyrie-model-output/run-contract.json";
   launch_manifest_path: ".valkyrie-model-output/atomic-model-launch-manifest.json";
+  source_after_sha256: string;
   repair_count: 0 | 1;
   checks_passed: true;
   verifier_passed: true;
@@ -288,13 +289,18 @@ export function parseAtomicFixtureModelWorkflowOutput(
     run_contract_path: ".valkyrie-model-output/run-contract.json",
     launch_manifest_path: ".valkyrie-model-output/atomic-model-launch-manifest.json",
   } as const;
-  const expected = [...Object.keys(paths), "repair_count", "checks_passed", "verifier_passed", "live_provider_verified"].sort();
+  const expected = [
+    ...Object.keys(paths), "source_after_sha256", "repair_count", "checks_passed", "verifier_passed", "live_provider_verified",
+  ].sort();
   const names = Object.keys(output).sort();
   if (names.length !== expected.length || names.some((name, index) => name !== expected[index])) {
     throw new AtomicWorkflowProtocolError("Atomic model fixture output keys do not match the reviewed contract");
   }
   for (const [field, path] of Object.entries(paths)) {
     if (output[field] !== path) throw new AtomicWorkflowProtocolError(`Atomic model fixture ${field} is not the fixed artifact path`);
+  }
+  if (typeof output.source_after_sha256 !== "string" || !SHA256.test(output.source_after_sha256)) {
+    throw new AtomicWorkflowProtocolError("Atomic model fixture source_after_sha256 is invalid");
   }
   if ((output.repair_count !== 0 && output.repair_count !== 1) || output.checks_passed !== true
       || output.verifier_passed !== true || typeof output.live_provider_verified !== "boolean"

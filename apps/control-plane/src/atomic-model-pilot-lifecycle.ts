@@ -553,13 +553,14 @@ export class AtomicModelPilotLifecycleCoordinator {
     const expectedRoles = repairCount === 1
       ? ["implementer", "repair", "verifier_final", "verifier_initial"]
       : ["implementer", "verifier_final", "verifier_initial"];
-    const actualRoles = requests.map((request) => request.role).sort();
+    const actualRoles = [...new Set(requests.map((request) => request.role))].sort();
     const inputTokens = requests.reduce((sum, request) => sum + request.inputTokens, 0);
     const outputTokens = requests.reduce((sum, request) => sum + request.outputTokens, 0);
     const costMicros = requests.reduce((sum, request) => sum + request.costMicros, 0);
     const liveProviderExpected = run.metadata.liveProviderExpected === true;
     if (typeof run.metadata.liveProviderVerified !== "boolean"
         || run.metadata.liveProviderVerified !== liveProviderExpected
+        || requests.length < expectedRoles.length || requests.length > capability.maxRequests
         || canonicalJson(actualRoles) !== canonicalJson(expectedRoles)
         || requests.some((request) => request.state !== "completed" || !request.responseHash || !SHA256.test(request.responseHash))
         || inputTokens !== run.metadata.nativeInputTokens || outputTokens !== run.metadata.nativeOutputTokens

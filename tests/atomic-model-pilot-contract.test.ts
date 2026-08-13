@@ -9,7 +9,7 @@ import { resolve } from "node:path";
 const policy: ScopedInferencePolicy = {
   provider: "future-provider", model: "future-model", api: "openai-completions",
   roleModels: { implementer: "fixture-implementer", verifier_initial: "fixture-verifier-initial", repair: "fixture-repair", verifier_final: "fixture-verifier-final" },
-  roles: ["implementer", "verifier_initial", "repair", "verifier_final"], maxRequests: 4,
+  roles: ["implementer", "verifier_initial", "repair", "verifier_final"], maxRequests: 16,
   maxInputTokens: 32_000, maxOutputTokens: 8_000, maxCostMicros: 1_000_000,
   maxElapsedMs: 240_000, ttlMs: 600_000, inputCostMicrosPerMillion: 1000, outputCostMicrosPerMillion: 2000,
 };
@@ -33,7 +33,7 @@ test("Atomic model launch manifest binds the exact capability without plaintext 
   const capability: InferenceCapability = {
     id: "icap_fixture", runId: "run_fixture", projectId: "atomic-pilot", workflow: "atomic-fixture-model-pilot",
     tokenHash: "a".repeat(64), provider: policy.provider, model: policy.model, api: "openai-completions",
-    roles: [...policy.roles], maxRequests: 4, maxInputTokens: policy.maxInputTokens, maxOutputTokens: policy.maxOutputTokens,
+    roles: [...policy.roles], maxRequests: 16, maxInputTokens: policy.maxInputTokens, maxOutputTokens: policy.maxOutputTokens,
     maxCostMicros: policy.maxCostMicros, maxElapsedMs: policy.maxElapsedMs, issuedAt: "2026-08-12T00:00:00.000Z",
     expiresAt: "2026-08-12T00:10:00.000Z", state: "active", policyHash: "b".repeat(64),
   };

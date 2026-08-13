@@ -709,7 +709,13 @@ test("model RPC reads only bounded staged agent config and never forwards a prov
     await client.getState();
     const rpcCall = readState(item).calls.find((call) => call.argv[0] === "exec" && call.argv.includes("--mode"));
     assert.ok(rpcCall);
-    assert.ok(rpcCall.argv.includes("ATOMIC_CODING_AGENT_DIR=/run-context/atomic-agent"));
+    assert.ok(rpcCall.argv.includes("ATOMIC_CODING_AGENT_DIR=/workspace/.atomic-agent"));
+    const stagingCalls = readState(item).calls.filter((call) => call.argv[0] === "exec" && !call.argv.includes("--mode"));
+    assert.deepEqual(stagingCalls.map((call) => call.argv.slice(2)), [
+      ["/bin/mkdir", "-m", "700", "/workspace/.atomic-agent"],
+      ["/usr/bin/install", "-m", "600", "/run-context/atomic-agent/models.json", "/workspace/.atomic-agent/models.json"],
+      ["/usr/bin/install", "-m", "600", "/run-context/atomic-agent/settings.json", "/workspace/.atomic-agent/settings.json"],
+    ]);
     assert.equal(rpcCall.envKeys.some((key) => /OPENAI|ANTHROPIC|API_KEY|TOKEN/.test(key)), false);
     await client.stop();
     assert.deepEqual(await item.provider.stop(handle), { status: "stopped" });

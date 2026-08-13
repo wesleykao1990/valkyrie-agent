@@ -44,7 +44,22 @@ Pilot: proposed ADR-P003 read-only native connectivity slice
   aware lease-loss stop/quarantine, bounded manifest export, deterministic
   baseline secret scanning, cleanup, and quarantine. Fake/provider orchestration,
   provider-aware restart recovery, and the explicit local Colima/Docker live
-  fixture smoke pass; model-writer composition remains disabled.
+  fixture smoke pass.
+- Default-off fixed M5a composition: real Atomic 0.9.12 tool-only workflow in the
+  live OCI writer, deterministic checks/fresh deterministic review, frozen governed
+  artifacts, exact cleanup, evidence-bound safe mock acceptance, and proposed-only
+  memory.
+- Default-off M5b live-verified composition: fixed Atomic model workflow, four model
+  roles, one repair, scoped private inference gateway, internal network bridge,
+  authenticated lifecycle/artifact/approval surface, SQLite/PostgreSQL parity,
+  and migration 008 for at most 16 changed native tool-loop requests with exact
+  replay rejection.
+- Host-side Codex subscription broker: dedicated authenticated ChatGPT profile,
+  process-local role-scoped retained threads, appended-message continuation,
+  read-only structured turns, disabled native tool surfaces, stdin-only prompts,
+  bounded JSONL/usage, and no OAuth export or writer mount. Fake-child contracts
+  plus dedicated-profile marker and end-to-end Atomic model evidence are recorded;
+  restart resume remains disabled.
 
 ## Default behavior remains simulated
 
@@ -84,9 +99,9 @@ implemented capability and live exercise are reported separately.
   authorization, expiry/rotation/revocation, or remote channel attestation.
 - PostgreSQL is contract-tested; production still needs deployment-specific roles,
   TLS, backup/restore, monitoring, retention, and an outbox dispatcher.
-- The writer boundary has renewal, fencing, ownership-aware stop/quarantine, and
-  cleanup contracts, but it is not connected to a runtime, has not passed a live
-  engine test on this host, and lacks durable provider-aware restart recovery.
+- The writer boundary has renewal, fencing, ownership-aware stop/quarantine,
+  cleanup, live-engine evidence, and provider-aware restart recovery for the
+  fixed fixture. It is not a general writer or production sandbox service.
 - Native subprocess durability does not cross control-plane restart; restart
   reconciliation fails non-resumable orphans conservatively.
 - Memory promotion validates the exact preview and file target but cannot make the
@@ -96,14 +111,13 @@ implemented capability and live exercise are reported separately.
 
 ## Not implemented or enabled
 
-- A live-verified external writer sandbox on the deployment host, model egress
-  policy, secret broker, or production credential injection. The implemented
-  Docker-compatible provider and baseline scanner remain disabled/internal until
-  their opt-in live test passes.
-- Real repository implementation by Atomic, Codex, or Claude; deterministic
-  check/repair/reviewer pipeline; draft PR creation; merge; deploy.
-- Atomic model workflow, HIL response mapping, steering, pause/resume, or proven
-  DBOS/PostgreSQL cross-process durability.
+- General/confidential repository writing, production credential injection, or a
+  separately isolated credential-broker service. The current subscription broker
+  is restricted to the disposable fixture.
+- Wesley's separate decision on a fresh M5b evidence gate; real draft PR creation,
+  merge, deploy, or product-database action.
+- General Atomic HIL response mapping, model-stage steering, or proven DBOS/
+  PostgreSQL cross-process durability.
 - Direct native in-flight steering, resume, or approval mapping.
 - Phone/mobile Hermes gateway, remote ingress, per-user policy, or production
   channel authentication.

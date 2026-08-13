@@ -112,6 +112,21 @@ and credential policy. See
 `docs/adr/ADR-P004-external-writer-boundary.md`; the boundary remains proposed
 until Wesley accepts or amends it.
 
+### D-23 — Risk-based Direct, Atomic Lite, and Atomic Full routing
+
+Hermes may collect the literal request and express a latency/rigor preference,
+but the control plane owns the final execution-shape decision after resolving
+current Linear, Git/check, and Project Brain context. The proposed deterministic
+rubric selects the smallest complete shape: Direct for small low-risk work,
+Atomic Lite for a persistent implementer plus deterministic checks and conditional
+review, and Atomic Full for hard workflow signals, high risk, iteration,
+independent candidates, durability, or evidence/approval gates. A preference may
+increase rigor but cannot weaken policy. See
+`docs/adr/ADR-P009-risk-based-execution-shapes.md`. The authenticated assessment
+ledger and reusable package-level Lite contract are implemented, but general
+execution remains fail-closed until live Linear/Git authority and a trusted
+project launcher exist.
+
 ## Deferred
 
 - Prime Agent until long-horizon benchmark tasks show incremental value.

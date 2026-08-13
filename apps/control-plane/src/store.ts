@@ -244,6 +244,50 @@ export interface InferenceRequest {
   reservedAt: string;
   completedAt: string | null;
   failureCode: string | null;
+  providerSessionId: string | null;
+  providerSessionReused: boolean;
+}
+
+export type ComparisonStatus = "running" | "complete" | "failed";
+export type ComparisonCandidateStatus = "running" | "evidence_ready" | "accepted" | "rejected" | "failed";
+
+export interface ComparisonRecord {
+  id: string;
+  projectId: string;
+  taskId: string;
+  objective: string;
+  contractHash: string;
+  status: ComparisonStatus;
+  selectionPolicy: string;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface ComparisonMetrics {
+  correctness: "passed" | "failed";
+  defectsCaught: number;
+  inputTokens: number;
+  outputTokens: number;
+  costMicros: number;
+  elapsedMs: number;
+  humanReviewArtifacts: number;
+  eventCount: number;
+  recoveryReliability: "not_exercised" | "recovered" | "failed";
+  resumability: "none" | "control_plane_only" | "native";
+  integrationComplexity: number;
+}
+
+export interface ComparisonCandidate {
+  comparisonId: string;
+  runId: string;
+  runtime: string;
+  workflow: string;
+  ordinal: number;
+  status: ComparisonCandidateStatus;
+  metrics: ComparisonMetrics | null;
+  evidenceDigest: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ReserveInferenceRequestInput {
@@ -265,6 +309,86 @@ export interface CompleteInferenceRequestInput {
   costMicros: number;
   failureCode?: string | null;
   completedAt?: string;
+  /** Provider session lineage is audit evidence, not a resume capability. */
+  providerSessionId?: string | null;
+  providerSessionReused?: boolean;
+}
+
+export type EngineeringRoutingScore = 0 | 1 | 2;
+export type EngineeringRoutingPreference = "auto" | "direct" | "atomic-lite" | "atomic-full";
+export type EngineeringRoutingShape = Exclude<EngineeringRoutingPreference, "auto">;
+export type EngineeringRoutingStatus = "assessed" | "unsupported" | "expired";
+export type EngineeringFinalActionIntent = "analysis_only" | "prepare_reviewable_result";
+
+export interface EngineeringRoutingDimensions {
+  structure: EngineeringRoutingScore;
+  verifiability: EngineeringRoutingScore;
+  iteration: EngineeringRoutingScore;
+  risk: EngineeringRoutingScore;
+  duration: EngineeringRoutingScore;
+  isolation: EngineeringRoutingScore;
+}
+
+export interface EngineeringRoutingHardSignals {
+  explicitLoop: boolean;
+  durableBackground: boolean;
+  approvalOrEvidenceGate: boolean;
+  multipleCandidates: boolean;
+}
+
+/**
+ * Context provenance is intentionally structured but provider-specific details
+ * remain opaque to storage. The three named authorities are required; each
+ * source may be a short status string or a bounded status/details object.
+ */
+export type EngineeringRoutingContextSource = string | {
+  status: string;
+  [key: string]: unknown;
+};
+
+export interface EngineeringRoutingContextSources {
+  linear: EngineeringRoutingContextSource;
+  git: EngineeringRoutingContextSource;
+  projectBrain: EngineeringRoutingContextSource;
+  [key: string]: EngineeringRoutingContextSource;
+}
+
+export interface EngineeringRoutingAssessmentRecord {
+  id: string;
+  projectId: string;
+  taskId: string | null;
+  literalRequest: string;
+  requestHash: string;
+  contextDigest: string;
+  contextSources: EngineeringRoutingContextSources;
+  dimensions: EngineeringRoutingDimensions;
+  hardSignals: EngineeringRoutingHardSignals;
+  preference: EngineeringRoutingPreference;
+  finalAction: EngineeringFinalActionIntent;
+  baselineShape: EngineeringRoutingShape;
+  selectedShape: EngineeringRoutingShape;
+  score: number;
+  reasons: string[];
+  policyVersion: string;
+  executionSupported: boolean;
+  unsupportedReasons: string[];
+  status: EngineeringRoutingStatus;
+  /** Reserved for a later explicit run-binding operation; create currently requires null. */
+  runId: string | null;
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface CreateEngineeringRoutingAssessmentInput {
+  assessment?: EngineeringRoutingAssessmentRecord;
+  /** Alias accepted for callers that use the word "record" in their transport shape. */
+  record?: EngineeringRoutingAssessmentRecord;
+  idempotency?: IdempotencyInput;
+}
+
+export interface CreateEngineeringRoutingAssessmentResult {
+  assessment: EngineeringRoutingAssessmentRecord;
+  replayed: boolean;
 }
 
 export interface ApprovalRequestInput {
@@ -380,6 +504,23 @@ export interface ControlPlaneStore {
   expireInferenceCapabilities(observedAt: string, limit?: number): Promise<InferenceCapability[]>;
   listInferenceRequests(runId: string): Promise<InferenceRequest[]>;
 
+  createEngineeringRoutingAssessment(
+    input: CreateEngineeringRoutingAssessmentInput,
+  ): Promise<CreateEngineeringRoutingAssessmentResult>;
+  createEngineeringRoutingAssessment(
+    assessment: EngineeringRoutingAssessmentRecord,
+    idempotency?: IdempotencyInput,
+  ): Promise<CreateEngineeringRoutingAssessmentResult>;
+  getEngineeringRoutingAssessment(id: string): Promise<EngineeringRoutingAssessmentRecord | null>;
+  listEngineeringRoutingAssessments(projectId?: string, limit?: number): Promise<EngineeringRoutingAssessmentRecord[]>;
+
+  createComparison(comparison: ComparisonRecord): Promise<ComparisonRecord>;
+  getComparison(id: string): Promise<ComparisonRecord | null>;
+  completeComparison(id: string, status: "complete" | "failed", completedAt: string): Promise<ComparisonRecord>;
+  attachComparisonCandidate(candidate: ComparisonCandidate): Promise<ComparisonCandidate>;
+  finalizeComparisonCandidate(candidate: ComparisonCandidate): Promise<ComparisonCandidate>;
+  listComparisonCandidates(comparisonId: string): Promise<ComparisonCandidate[]>;
+
   createArtifact(artifact: Artifact): Promise<void>;
   /** Persists one run's bounded artifact set and all matching outbox records atomically. */
   createArtifactBatch(artifacts: Artifact[]): Promise<ArtifactBatchResult>;
@@ -416,6 +557,8 @@ export class IdempotencyConflictError extends StorageConflictError {
 const maximumFencingToken = Number.MAX_SAFE_INTEGER;
 const sha256Hex = /^[a-f0-9]{64}$/;
 const safeInferenceId = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
+const safeProviderSessionId = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
+const safeRoutingPolicyVersion = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 const inferenceRoles = new Set<InferenceRole>(["implementer", "verifier_initial", "repair", "verifier_final"]);
 const immutableImageRef = /^[A-Za-z0-9][A-Za-z0-9./:_-]*@sha256:[a-f0-9]{64}$/;
 const sandboxTransitions: Record<SandboxInstanceState, ReadonlySet<SandboxInstanceState>> = {
@@ -450,9 +593,9 @@ export function validateInferenceCapability(capability: InferenceCapability, obs
   if (roles.length === 0 || roles.length !== capability.roles.length || roles.some((role) => !inferenceRoles.has(role))) {
     throw new StorageConflictError("Inference capability roles must be unique reviewed roles");
   }
-  boundedInteger(capability.maxRequests, "Inference maxRequests", 1, 8);
-  boundedInteger(capability.maxInputTokens, "Inference maxInputTokens", 1, 128_000);
-  boundedInteger(capability.maxOutputTokens, "Inference maxOutputTokens", 1, 32_768);
+  boundedInteger(capability.maxRequests, "Inference maxRequests", 1, 16);
+  boundedInteger(capability.maxInputTokens, "Inference maxInputTokens", 1, 1_000_000);
+  boundedInteger(capability.maxOutputTokens, "Inference maxOutputTokens", 1, 131_072);
   boundedInteger(capability.maxCostMicros, "Inference maxCostMicros", 0, 100_000_000);
   boundedInteger(capability.maxElapsedMs, "Inference maxElapsedMs", 100, 10 * 60 * 1_000);
   const issued = timestampMillis(capability.issuedAt, "Inference capability issuedAt");
@@ -486,9 +629,140 @@ export function validateInferenceCompletion(input: CompleteInferenceRequestInput
       && (!safeInferenceId.test(input.providerRequestId))) {
     throw new StorageConflictError("Inference provider request ID is invalid");
   }
-  boundedInteger(input.inputTokens, "Inference inputTokens", 0, 128_000);
-  boundedInteger(input.outputTokens, "Inference outputTokens", 0, 32_768);
+  const hasProviderSessionId = input.providerSessionId !== undefined;
+  const hasProviderSessionReused = input.providerSessionReused !== undefined;
+  if (hasProviderSessionId !== hasProviderSessionReused) {
+    throw new StorageConflictError("Provider session ID and reuse flag must be supplied together");
+  }
+  if (hasProviderSessionReused && typeof input.providerSessionReused !== "boolean") {
+    throw new StorageConflictError("Provider session reuse flag must be boolean");
+  }
+  if (input.providerSessionId !== undefined && input.providerSessionId !== null
+      && !safeProviderSessionId.test(input.providerSessionId)) {
+    throw new StorageConflictError("Inference provider session ID is invalid");
+  }
+  const providerSessionId = input.providerSessionId ?? null;
+  const providerSessionReused = input.providerSessionReused ?? false;
+  if (providerSessionId === null && providerSessionReused) {
+    throw new StorageConflictError("A reused provider session requires a provider session ID");
+  }
+  if (input.state === "failed" && providerSessionId !== null) {
+    throw new StorageConflictError("Failed inference requests may not claim a provider session");
+  }
+  boundedInteger(input.inputTokens, "Inference inputTokens", 0, 1_000_000);
+  boundedInteger(input.outputTokens, "Inference outputTokens", 0, 131_072);
   boundedInteger(input.costMicros, "Inference costMicros", 0, 100_000_000);
+}
+
+function validateRoutingText(value: unknown, field: string, maximum: number): asserts value is string {
+  if (typeof value !== "string" || value.length < 1 || value.length > maximum
+      || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw new StorageConflictError(`${field} must be 1-${maximum} safe characters`);
+  }
+}
+
+function validateRoutingIdentity(value: unknown, field: string): asserts value is string {
+  validateRoutingText(value, field, 128);
+  if (value !== value.trim()) throw new StorageConflictError(`${field} must not have whitespace at its edges`);
+}
+
+function validateRoutingContextSource(value: unknown, field: string): void {
+  if (typeof value === "string") {
+    validateRoutingText(value, `${field} status`, 128);
+    return;
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new StorageConflictError(`${field} must be a status string or object`);
+  }
+  const status = (value as Record<string, unknown>).status;
+  validateRoutingText(status, `${field}.status`, 128);
+  let serialized: string;
+  try { serialized = JSON.stringify(value); } catch { throw new StorageConflictError(`${field} must be JSON serializable`); }
+  if (serialized.length > 4_096) throw new StorageConflictError(`${field} details exceed 4096 bytes`);
+}
+
+function validateRoutingStringArray(value: unknown, field: string, maximumItems = 32, maximumLength = 512): asserts value is string[] {
+  if (!Array.isArray(value) || value.length > maximumItems) {
+    throw new StorageConflictError(`${field} must contain at most ${maximumItems} strings`);
+  }
+  for (const [index, item] of value.entries()) validateRoutingText(item, `${field}[${index}]`, maximumLength);
+}
+
+export function validateEngineeringRoutingAssessment(value: EngineeringRoutingAssessmentRecord): void {
+  validateRoutingIdentity(value.id, "Routing assessment ID");
+  validateRoutingIdentity(value.projectId, "Routing assessment project ID");
+  if (value.taskId !== null) validateRoutingIdentity(value.taskId, "Routing assessment task ID");
+  validateRoutingText(value.literalRequest, "Routing literal request", 16_384);
+  if (!sha256Hex.test(value.requestHash)) throw new StorageConflictError("Routing request hash must be a lowercase SHA-256 digest");
+  if (!sha256Hex.test(value.contextDigest)) throw new StorageConflictError("Routing context digest must be a lowercase SHA-256 digest");
+  if (!value.contextSources || typeof value.contextSources !== "object" || Array.isArray(value.contextSources)) {
+    throw new StorageConflictError("Routing context sources must be an object");
+  }
+  for (const name of ["linear", "git", "projectBrain"] as const) {
+    validateRoutingContextSource(value.contextSources[name], `Routing context source ${name}`);
+  }
+  const dimensions = value.dimensions;
+  if (!dimensions || typeof dimensions !== "object") throw new StorageConflictError("Routing dimensions are required");
+  let score = 0;
+  for (const name of ["structure", "verifiability", "iteration", "risk", "duration", "isolation"] as const) {
+    boundedInteger(dimensions[name], `Routing ${name}`, 0, 2);
+    score += dimensions[name];
+  }
+  if (!Number.isSafeInteger(value.score) || value.score < 0 || value.score > 12 || value.score !== score) {
+    throw new StorageConflictError("Routing score must equal the six-dimension total between 0 and 12");
+  }
+  const hardSignals = value.hardSignals;
+  if (!hardSignals || typeof hardSignals !== "object") throw new StorageConflictError("Routing hard signals are required");
+  for (const name of ["explicitLoop", "durableBackground", "approvalOrEvidenceGate", "multipleCandidates"] as const) {
+    if (typeof hardSignals[name] !== "boolean") throw new StorageConflictError(`Routing hard signal ${name} must be boolean`);
+  }
+  if (!["auto", "direct", "atomic-lite", "atomic-full"].includes(value.preference)) {
+    throw new StorageConflictError("Routing preference is invalid");
+  }
+  if (!["analysis_only", "prepare_reviewable_result"].includes(value.finalAction)) {
+    throw new StorageConflictError("Routing final-action intent is invalid");
+  }
+  if (!["direct", "atomic-lite", "atomic-full"].includes(value.baselineShape)
+      || !["direct", "atomic-lite", "atomic-full"].includes(value.selectedShape)) {
+    throw new StorageConflictError("Routing execution shape is invalid");
+  }
+  validateRoutingStringArray(value.reasons, "Routing reasons");
+  validateRoutingIdentity(value.policyVersion, "Routing policy version");
+  if (!safeRoutingPolicyVersion.test(value.policyVersion)) throw new StorageConflictError("Routing policy version is invalid");
+  if (typeof value.executionSupported !== "boolean") throw new StorageConflictError("Routing executionSupported must be boolean");
+  validateRoutingStringArray(value.unsupportedReasons, "Routing unsupported reasons");
+  if (!["assessed", "unsupported", "expired"].includes(value.status)) {
+    throw new StorageConflictError("Routing assessment status is invalid");
+  }
+  if (value.status === "unsupported" && value.executionSupported) {
+    throw new StorageConflictError("Unsupported routing assessments cannot claim execution support");
+  }
+  if (value.status === "assessed" && !value.executionSupported) {
+    throw new StorageConflictError("Assessed routing assessments must be execution-supported");
+  }
+  if (value.runId !== null) {
+    throw new StorageConflictError("Routing assessment run binding is reserved for a future operation");
+  }
+  const createdAt = timestampMillis(value.createdAt, "Routing assessment createdAt");
+  const expiresAt = timestampMillis(value.expiresAt, "Routing assessment expiresAt");
+  if (expiresAt <= createdAt) throw new StorageConflictError("Routing assessment expiry must be after creation");
+  let contextSerialized: string;
+  try { contextSerialized = JSON.stringify(value.contextSources); } catch { throw new StorageConflictError("Routing context sources must be JSON serializable"); }
+  if (contextSerialized.length > 12_288) throw new StorageConflictError("Routing context sources exceed 12288 bytes");
+  let decisionMetadataSerialized: string;
+  try {
+    decisionMetadataSerialized = JSON.stringify({
+      assessmentId: value.id, projectId: value.projectId, taskId: value.taskId,
+      requestHash: value.requestHash, contextDigest: value.contextDigest,
+      contextSources: value.contextSources, dimensions: value.dimensions, hardSignals: value.hardSignals,
+      preference: value.preference, finalAction: value.finalAction,
+      baselineShape: value.baselineShape, selectedShape: value.selectedShape,
+      score: value.score, reasons: value.reasons, policyVersion: value.policyVersion,
+      executionSupported: value.executionSupported, unsupportedReasons: value.unsupportedReasons,
+      status: value.status, runId: value.runId,
+    });
+  } catch { throw new StorageConflictError("Routing decision metadata must be JSON serializable"); }
+  if (decisionMetadataSerialized.length > 16_384) throw new StorageConflictError("Routing decision metadata exceeds 16384 bytes");
 }
 
 function timestampMillis(value: string, field: string): number {
@@ -764,6 +1038,50 @@ export function artifactsEqual(stored: Artifact, requested: Artifact): boolean {
     && stored.checksum === requested.checksum
     && stored.mediaType === requested.mediaType
     && stored.createdAt === requested.createdAt;
+}
+
+export function validateComparisonRecord(value: ComparisonRecord): void {
+  for (const [field, item] of [["id", value.id], ["projectId", value.projectId], ["taskId", value.taskId]] as const) {
+    if (!item || item.length > 128 || /[\u0000-\u001f\u007f]/.test(item)) throw new StorageConflictError(`Comparison ${field} is invalid`);
+  }
+  if (!value.objective || value.objective.length > 4096 || !sha256Hex.test(value.contractHash)
+      || !["running", "complete", "failed"].includes(value.status) || !value.selectionPolicy || value.selectionPolicy.length > 2000) {
+    throw new StorageConflictError("Comparison record is outside its reviewed bounds");
+  }
+  timestampMillis(value.createdAt, "Comparison createdAt");
+  if (value.completedAt !== null) timestampMillis(value.completedAt, "Comparison completedAt");
+}
+
+export function validateComparisonCandidate(value: ComparisonCandidate, finalizing = false): void {
+  if (!value.comparisonId || !value.runId || !value.runtime || !value.workflow
+      || !Number.isSafeInteger(value.ordinal) || value.ordinal < 1 || value.ordinal > 8
+      || !["running", "evidence_ready", "accepted", "rejected", "failed"].includes(value.status)) {
+    throw new StorageConflictError("Comparison candidate identity is invalid");
+  }
+  timestampMillis(value.createdAt, "Comparison candidate createdAt");
+  timestampMillis(value.updatedAt, "Comparison candidate updatedAt");
+  if (!finalizing && (value.metrics !== null || value.evidenceDigest !== null || value.status !== "running")) {
+    throw new StorageConflictError("New comparison candidate must start without a metrics snapshot");
+  }
+  if (finalizing) {
+    if (!value.metrics || !value.evidenceDigest || !sha256Hex.test(value.evidenceDigest) || value.status === "running") {
+      throw new StorageConflictError("Final comparison candidate requires evidence-bound metrics");
+    }
+    const metrics = value.metrics;
+    if (!["passed", "failed"].includes(metrics.correctness)
+        || !Number.isSafeInteger(metrics.defectsCaught) || metrics.defectsCaught < 0 || metrics.defectsCaught > 1000
+        || !Number.isSafeInteger(metrics.inputTokens) || metrics.inputTokens < 0
+        || !Number.isSafeInteger(metrics.outputTokens) || metrics.outputTokens < 0
+        || !Number.isSafeInteger(metrics.costMicros) || metrics.costMicros < 0
+        || !Number.isSafeInteger(metrics.elapsedMs) || metrics.elapsedMs < 0
+        || !Number.isSafeInteger(metrics.humanReviewArtifacts) || metrics.humanReviewArtifacts < 0
+        || !Number.isSafeInteger(metrics.eventCount) || metrics.eventCount < 0
+        || !["not_exercised", "recovered", "failed"].includes(metrics.recoveryReliability)
+        || !["none", "control_plane_only", "native"].includes(metrics.resumability)
+        || !Number.isSafeInteger(metrics.integrationComplexity) || metrics.integrationComplexity < 1 || metrics.integrationComplexity > 10) {
+      throw new StorageConflictError("Comparison metrics are outside their reviewed bounds");
+    }
+  }
 }
 
 export function decodeJson<T>(value: unknown, fallback: T): T {

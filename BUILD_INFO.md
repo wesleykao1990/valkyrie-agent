@@ -2,7 +2,7 @@
 
 - Package: Wesley Agent Control Plane Prototype
 - Repository release: 0.3.0
-- Built: 12 August 2026
+- Built: 13 August 2026
 - Minimum runtime: Node.js 22.16
 - Full-verification database: disposable PostgreSQL 16
 - External credentials bundled: none
@@ -10,9 +10,9 @@
 - Production-candidate data store: opt-in PostgreSQL
 - Default runtimes: deterministic, explicitly labelled lifecycle simulations
 - Atomic module: integrated source 0.2.0, repository derivative 0.2.1
-- Atomic writer posture: fixed tool-only fixture live-verified behind a default-off
-  flag; M5b scoped inference/model workflow and authenticated lifecycle are
-  credential-free contract-tested and default-off until provider review
+- Atomic writer posture: fixed tool-only fixture and fixed M5b model fixture are
+  live-verified behind default-off flags. M5b used the dedicated ChatGPT-
+  subscription broker and stopped at its evidence-bound operator gate.
 - Automatic episodic memory capture: disabled
 
 ## Completed milestones
@@ -40,14 +40,38 @@
   deploy, promotion, or cross-process Atomic durability. The opt-in live runner
   completed successfully; exact IDs and evidence are in `docs/VERIFICATION.md`.
 
-Milestone 5b is complete through the credential-free lifecycle boundary:
+Milestone 5b is live-verified through the separate approval boundary:
 scoped capability/storage, private gateway/bridge topology, fixed model workflow,
 fresh verifier, one-repair contracts, substantive evidence validation, and
 frozen-export rebinding plus authenticated service/Hermes admission, cancellation,
 restart, expiry, artifact review, approval, safe receipt, and SQLite/PostgreSQL
-parity are deterministic-test green. It still requires a reviewed provider/model
-or local endpoint, a dedicated low-limit credential when applicable, one actual
-end-to-end model exercise, and a real evidence review.
+parity are deterministic-test green. A pinned Codex broker can use a dedicated
+ChatGPT profile without an API key or OAuth export, and migration 008 supports
+bounded native tool-loop turns. The live disposable run used real subscription
+inference, passed deterministic checks and two fresh verification stages, exported
+governed evidence, cleaned its writer, and stopped without approval or external
+action. Exact IDs and usage are in `docs/VERIFICATION.md`.
+
+Milestone 6 is deterministically implemented, live-verified, and default-off. Direct Codex is a
+separate root writer using an independent worktree/container/fenced lease and the
+same fixed task/model/check/verifier/approval policy as Atomic. Raw provider JSONL
+and normalized inference events are retained, migration 009 persists comparison
+metrics, and Claude Code remains separately unavailable rather than falling back.
+Wesley approved the fixed disposable payload and the Atomic/direct Codex live
+comparison passed. Both candidates produced correct, separately governed evidence
+and stopped at unresolved approval gates. The result does not select a default
+runtime; exact IDs and metrics are in `docs/VERIFICATION.md`.
+
+Post-M6 routing remains proposed for execution, but its pre-M7 contracts are now
+implemented. Authenticated HTTP/MCP assessment persists the literal Hermes
+request, source provenance, final-action intent, and control-plane-owned Direct /
+Atomic Lite / Atomic Full decision under migration 010; it fails closed with no
+run while live Linear/Git authority is unavailable. The package-level
+`atomic-lite-writer` implements one retained implementer, model-free checks, one
+forked repair, and conditional fresh review without being registered as a general
+writer. Migration 011 records process-local Codex provider-thread continuity;
+same-role turns append deltas, role lineages are isolated, and restart resume is
+refused.
 
 ## Verification entry point
 
@@ -75,3 +99,7 @@ See `docs/VERIFICATION.md` for the recorded baseline/final evidence and
 12. `docs/adr/ADR-P005-atomic-writer-pilot.md`
 13. `docs/IMPLEMENTATION_PLAN_M5B_PRELIVE.md`
 14. `docs/adr/ADR-P006-scoped-inference-boundary.md`
+15. `docs/IMPLEMENTATION_PLAN_M5B_SUBSCRIPTION.md`
+16. `docs/adr/ADR-P007-subscription-inference-broker.md`
+17. `docs/IMPLEMENTATION_PLAN_M6.md`
+18. `docs/adr/ADR-P008-direct-runtime-comparison.md`

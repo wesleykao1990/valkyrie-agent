@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { routeTask, validateBudget } from "../apps/control-plane/src/policy.ts";
+import {
+  assessEngineeringRequest,
+  ENGINEERING_ROUTING_POLICY_VERSION,
+  recommendEngineeringExecution,
+  routeTask,
+  validateBudget,
+} from "../apps/control-plane/src/policy.ts";
 import { loadConfig } from "../apps/control-plane/src/config.ts";
 import { buildIsolatedSmokeEnvironment } from "../scripts/smoke-environment.ts";
 
@@ -14,6 +20,116 @@ test("routes long research to Prime", () => {
 
 test("explicit runtime wins", () => {
   assert.equal(routeTask({ projectId: "ovalo", objective: "Anything", runtime: "claude" }).runtime, "claude");
+});
+
+test("engineering routing selects the smallest complete execution shape", () => {
+  const direct = recommendEngineeringExecution({
+    structure: 0, verifiability: 1, iteration: 0, risk: 0, duration: 0, isolation: 0,
+  });
+  assert.deepEqual({ shape: direct.shape, score: direct.score }, { shape: "direct", score: 1 });
+
+  const lite = recommendEngineeringExecution({
+    structure: 1, verifiability: 1, iteration: 1, risk: 1, duration: 0, isolation: 0,
+  });
+  assert.deepEqual({ shape: lite.shape, score: lite.score }, { shape: "atomic-lite", score: 4 });
+
+  const full = recommendEngineeringExecution({
+    structure: 1, verifiability: 2, iteration: 1, risk: 1, duration: 1, isolation: 1,
+  });
+  assert.deepEqual({ shape: full.shape, score: full.score }, { shape: "atomic-full", score: 7 });
+});
+
+test("Hermes preference can increase rigor but cannot weaken control-plane policy", () => {
+  const blocked = recommendEngineeringExecution({
+    structure: 2, verifiability: 2, iteration: 2, risk: 2, duration: 1, isolation: 2,
+    preference: "direct",
+  });
+  assert.equal(blocked.shape, "atomic-full");
+  assert.equal(blocked.preferenceApplied, false);
+  assert.match(blocked.reasons.join(" "), /blocked-by-policy/);
+
+  const escalated = recommendEngineeringExecution({
+    structure: 0, verifiability: 1, iteration: 0, risk: 0, duration: 0, isolation: 0,
+    preference: "atomic-lite",
+  });
+  assert.equal(escalated.shape, "atomic-lite");
+  assert.equal(escalated.preferenceApplied, true);
+});
+
+test("hard workflow signals select Atomic Full regardless of a low numeric score", () => {
+  const decision = recommendEngineeringExecution({
+    structure: 0, verifiability: 0, iteration: 0, risk: 0, duration: 0, isolation: 0,
+    preference: "direct",
+    hardSignals: { approvalOrEvidenceGate: true },
+  });
+  assert.equal(decision.shape, "atomic-full");
+  assert.equal(decision.baselineShape, "atomic-full");
+  assert.equal(decision.preferenceApplied, false);
+});
+
+test("engineering routing rejects invalid dimension values", () => {
+  assert.throws(() => recommendEngineeringExecution({
+    structure: 3 as 2, verifiability: 0, iteration: 0, risk: 0, duration: 0, isolation: 0,
+  }), /structure routing score/);
+});
+
+test("control-plane routing derives Direct, Lite, and Full without caller-supplied scores", () => {
+  const direct = assessEngineeringRequest({
+    request: "Fix one typo in a single README file.",
+    finalAction: "analysis_only",
+    projectHealth: "on_track",
+    preference: "auto",
+  });
+  assert.equal(direct.policyVersion, ENGINEERING_ROUTING_POLICY_VERSION);
+  assert.equal(direct.decision.shape, "direct");
+  assert.equal(direct.assessment.structure, 0);
+
+  const lite = assessEngineeringRequest({
+    request: "Implement a bounded parser in two files with unit tests.",
+    finalAction: "prepare_reviewable_result",
+    projectHealth: "on_track",
+  });
+  assert.equal(lite.decision.shape, "atomic-lite");
+  assert.equal(lite.assessment.verifiability, 2);
+  assert.equal(lite.assessment.iteration, 1);
+
+  const full = assessEngineeringRequest({
+    request: "Create a production database migration with an approval gate and bounded repair until green.",
+    finalAction: "prepare_reviewable_result",
+    projectHealth: "at_risk",
+    preference: "direct",
+  });
+  assert.equal(full.decision.shape, "atomic-full");
+  assert.equal(full.assessment.risk, 2);
+  assert.equal(full.assessment.hardSignals?.explicitLoop, true);
+  assert.match(full.decision.reasons.join(" "), /blocked-by-policy/);
+});
+
+test("derived routing applies authoritative context floors while retaining caller preference as upward-only", () => {
+  const value = assessEngineeringRequest({
+    request: "Please review this focused change.",
+    finalAction: "analysis_only",
+    projectHealth: "on_track",
+    preference: "atomic-full",
+    task: { title: "Review", objective: "Review", status: "planned", priority: "critical" },
+  });
+  assert.equal(value.assessment.risk, 1);
+  assert.equal(value.decision.shape, "atomic-full");
+  assert.equal(value.decision.preferenceApplied, true);
+  assert.ok(value.matchedSignals.includes("task-priority-risk-floor"));
+});
+
+test("derived routing rejects invalid or unbounded literal requests", () => {
+  assert.throws(() => assessEngineeringRequest({
+    request: "x",
+    finalAction: "analysis_only",
+    projectHealth: "on_track",
+  }), /5 to 16000/);
+  assert.throws(() => assessEngineeringRequest({
+    request: "x".repeat(16_001),
+    finalAction: "analysis_only",
+    projectHealth: "on_track",
+  }), /5 to 16000/);
 });
 
 test("budget is bounded", () => {
@@ -164,7 +280,7 @@ test("Atomic model pilot is default-off and requires accepted digests plus a cre
     process.env.ENABLE_DEMO_RESET = "false";
     assert.throws(() => loadConfig(), /CONTROL_PLANE_OPERATOR_ID/);
     process.env.CONTROL_PLANE_OPERATOR_ID = "wesley-local-operator";
-    assert.throws(() => loadConfig(), /explicit provider, model, and upstream/);
+    assert.throws(() => loadConfig(), /explicit provider and model/);
     process.env.ATOMIC_FIXTURE_MODEL_PROVIDER = "future-provider";
     process.env.ATOMIC_FIXTURE_MODEL_ID = "future-model";
     process.env.ATOMIC_FIXTURE_MODEL_UPSTREAM_BASE_URL = "https://api.example.invalid/v1";
@@ -187,6 +303,81 @@ test("Atomic model pilot is default-off and requires accepted digests plus a cre
       const value = previous[name];
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
+    }
+  }
+});
+
+test("Atomic model pilot accepts an explicit subscription broker without provider API credentials", () => {
+  const names = [
+    "ATOMIC_FIXTURE_PILOT_ENABLED", "ATOMIC_FIXTURE_PILOT_REPOSITORY", "ATOMIC_FIXTURE_PILOT_ENGINE",
+    "ATOMIC_FIXTURE_PILOT_IMAGE", "ATOMIC_FIXTURE_PILOT_ROOT", "ATOMIC_FIXTURE_MODEL_PILOT_ENABLED",
+    "ATOMIC_FIXTURE_MODEL_UPSTREAM_MODE", "ATOMIC_FIXTURE_MODEL_PROVIDER", "ATOMIC_FIXTURE_MODEL_ID",
+    "ATOMIC_FIXTURE_MODEL_NETWORK", "ATOMIC_FIXTURE_MODEL_ACCEPTED_PACKAGE_SHA256",
+    "ATOMIC_FIXTURE_MODEL_ACCEPTED_IMAGE_DIGEST", "ATOMIC_FIXTURE_MODEL_CODEX_COMMAND",
+    "ATOMIC_FIXTURE_MODEL_CODEX_EXPECTED_VERSION", "ATOMIC_FIXTURE_MODEL_CODEX_HOME",
+    "ATOMIC_FIXTURE_MODEL_CODEX_SCRATCH_ROOT", "CONTROL_PLANE_OPERATOR_ID", "ENABLE_DEMO_RESET",
+    "CONTROL_PLANE_AUTH_TOKEN", "ATOMIC_FIXTURE_MODEL_UPSTREAM_BASE_URL",
+    "ATOMIC_FIXTURE_MODEL_CREDENTIAL_FILE", "ATOMIC_FIXTURE_MODEL_ALLOW_CREDENTIAL_FREE_LOOPBACK",
+  ] as const;
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  try {
+    for (const name of names) delete process.env[name];
+    const digest = `sha256:${"c".repeat(64)}`;
+    Object.assign(process.env, {
+      CONTROL_PLANE_AUTH_TOKEN: "0123456789abcdefghijklmnopqrstuvwxyz-ABCDE",
+      CONTROL_PLANE_OPERATOR_ID: "wesley-local-operator",
+      ENABLE_DEMO_RESET: "false",
+      ATOMIC_FIXTURE_PILOT_ENABLED: "true",
+      ATOMIC_FIXTURE_PILOT_REPOSITORY: "/tmp/fixture-repository",
+      ATOMIC_FIXTURE_PILOT_ENGINE: "/usr/local/bin/docker",
+      ATOMIC_FIXTURE_PILOT_IMAGE: `fixture.invalid/atomic@${digest}`,
+      ATOMIC_FIXTURE_PILOT_ROOT: "/tmp/atomic-pilot-root",
+      ATOMIC_FIXTURE_MODEL_PILOT_ENABLED: "true",
+      ATOMIC_FIXTURE_MODEL_UPSTREAM_MODE: "codex-subscription",
+      ATOMIC_FIXTURE_MODEL_PROVIDER: "openai-codex-subscription",
+      ATOMIC_FIXTURE_MODEL_ID: "gpt-5.6-sol",
+      ATOMIC_FIXTURE_MODEL_NETWORK: "valkyrie-model-test",
+      ATOMIC_FIXTURE_MODEL_ACCEPTED_PACKAGE_SHA256: "d".repeat(64),
+      ATOMIC_FIXTURE_MODEL_ACCEPTED_IMAGE_DIGEST: digest,
+      ATOMIC_FIXTURE_MODEL_CODEX_COMMAND: "/opt/homebrew/bin/codex",
+      ATOMIC_FIXTURE_MODEL_CODEX_EXPECTED_VERSION: "0.147.0",
+      ATOMIC_FIXTURE_MODEL_CODEX_HOME: "/tmp/valkyrie-codex-home",
+      ATOMIC_FIXTURE_MODEL_CODEX_SCRATCH_ROOT: "/tmp/valkyrie-codex-scratch",
+    });
+    const configured = loadConfig().atomicFixtureModelPilot;
+    assert.equal(configured.upstreamMode, "codex-subscription");
+    assert.equal(configured.upstreamBaseUrl, undefined);
+    assert.equal(configured.credentialFile, undefined);
+    process.env.ATOMIC_FIXTURE_MODEL_UPSTREAM_BASE_URL = "https://api.example.invalid/v1";
+    assert.throws(() => loadConfig(), /forbids provider URLs/);
+  } finally {
+    for (const name of names) {
+      const value = previous[name];
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
+test("M6 direct candidates are default-off, Codex requires M5b, and Claude remains separately gated", () => {
+  const names = ["DIRECT_CODEX_MODEL_PILOT_ENABLED", "DIRECT_CLAUDE_MODEL_PILOT_ENABLED", "ATOMIC_FIXTURE_MODEL_PILOT_ENABLED", "CONTROL_PLANE_AUTH_TOKEN"] as const;
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  try {
+    for (const name of names) delete process.env[name];
+    const defaults = loadConfig();
+    assert.equal(defaults.directCodexModelPilotEnabled, false);
+    assert.equal(defaults.directClaudeModelPilotEnabled, false);
+    process.env.DIRECT_CODEX_MODEL_PILOT_ENABLED = "true";
+    assert.throws(() => loadConfig(), /bearer authentication is required/);
+    process.env.CONTROL_PLANE_AUTH_TOKEN = "0123456789abcdefghijklmnopqrstuvwxyz-ABCDE";
+    assert.throws(() => loadConfig(), /requires the reviewed M5b scoped inference deployment/);
+    delete process.env.DIRECT_CODEX_MODEL_PILOT_ENABLED;
+    process.env.DIRECT_CLAUDE_MODEL_PILOT_ENABLED = "true";
+    assert.equal(loadConfig().directClaudeModelPilotEnabled, true);
+  } finally {
+    for (const name of names) {
+      const value = previous[name];
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
     }
   }
 });
@@ -227,6 +418,9 @@ test("disposable fixture processes ignore inherited persistent storage and repos
     "CONTROL_PLANE_OPERATOR_ID",
     "ATOMIC_FIXTURE_MODEL_PILOT_ENABLED",
     "ATOMIC_FIXTURE_MODEL_CREDENTIAL_FILE",
+    "DIRECT_CODEX_MODEL_PILOT_ENABLED",
+    "DIRECT_CLAUDE_MODEL_PILOT_ENABLED",
+    "VALKYRIE_M6_ATOMIC_RUN_ID",
   ] as const;
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   try {
@@ -246,6 +440,8 @@ test("disposable fixture processes ignore inherited persistent storage and repos
     process.env.CONTROL_PLANE_OPERATOR_ID = "wesley-local-operator";
     process.env.ATOMIC_FIXTURE_MODEL_PILOT_ENABLED = "true";
     process.env.ATOMIC_FIXTURE_MODEL_CREDENTIAL_FILE = "/sensitive/provider-token";
+    process.env.DIRECT_CODEX_MODEL_PILOT_ENABLED = "true";
+    process.env.DIRECT_CLAUDE_MODEL_PILOT_ENABLED = "true";
 
     const environment = buildIsolatedSmokeEnvironment({ PORT: "19001" });
     assert.equal(environment.CONTROL_PLANE_STORE, "sqlite");
@@ -267,6 +463,9 @@ test("disposable fixture processes ignore inherited persistent storage and repos
     assert.equal(environment.CONTROL_PLANE_OPERATOR_ID, undefined);
     assert.equal(environment.ATOMIC_FIXTURE_MODEL_PILOT_ENABLED, undefined);
     assert.equal(environment.ATOMIC_FIXTURE_MODEL_CREDENTIAL_FILE, undefined);
+    assert.equal(environment.DIRECT_CODEX_MODEL_PILOT_ENABLED, undefined);
+    assert.equal(environment.DIRECT_CLAUDE_MODEL_PILOT_ENABLED, undefined);
+    assert.equal(environment.VALKYRIE_M6_ATOMIC_RUN_ID, undefined);
   } finally {
     for (const name of names) {
       const value = previous[name];

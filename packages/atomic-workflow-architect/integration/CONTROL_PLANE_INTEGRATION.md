@@ -14,6 +14,21 @@ Atomic native workflow runs
 
 Atomic is a first-class root runtime. The control plane starts/observes it; it does not recreate Atomic as a wrapper around Codex, Claude Code, or another agent SDK.
 
+## Route before root-runtime launch
+
+Hermes preserves the literal request and may attach an optional Direct / Atomic
+Lite / Atomic Full preference. The control plane resolves authoritative context,
+scores Structure, Verifiability, Iteration, Risk, Duration, and Isolation, applies
+hard workflow signals, and records the final decision and reasons. A preference
+may increase rigor but cannot reduce it.
+
+This decision must happen before a root runtime starts. The Atomic package's
+input auto-router can choose an Atomic skill/workflow after Atomic is selected;
+it cannot turn that already-started session into a direct Codex or Claude root.
+Atomic Lite should retain one implementer stage/session, use forked repair,
+model-free checks, and conditional fresh review. Atomic Full is reserved for
+multi-stage, high-risk, iterative, resumable, parallel, or gated work.
+
 ## Runner installation
 
 Install/pin this package in the trusted runner image or project settings. The control plane supplies the exact request and project context. External RPC input is automatically transformed into the skill invocation.

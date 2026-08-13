@@ -15,5 +15,5 @@ else
   export CONTROL_PLANE_AUTH_TOKEN_FILE="$TOKEN_FILE"
 fi
 cd "$REPOSITORY_ROOT"
-export CONTROL_PLANE_MCP_TOOL_ALLOWLIST=${CONTROL_PLANE_MCP_TOOL_ALLOWLIST:-"projects_list,project_get_brief,runtimes_status,runs_start,runs_list,run_get,atomic_fixture_artifact_read,atomic_model_fixture_artifact_read,run_cancel,atomic_fixture_approval_resolve,atomic_model_fixture_approval_resolve,memory_search,memory_propose,memory_preview,memory_reject"}
+export CONTROL_PLANE_MCP_TOOL_ALLOWLIST=${CONTROL_PLANE_MCP_TOOL_ALLOWLIST:-"projects_list,project_get_brief,runtimes_status,engineering_assess,engineering_assessment_get,runs_start,runs_list,run_get,atomic_fixture_artifact_read,atomic_model_fixture_artifact_read,run_cancel,atomic_fixture_approval_resolve,atomic_model_fixture_approval_resolve,memory_search,memory_propose,memory_preview,memory_reject"}
 exec node --experimental-strip-types apps/mcp-server/src/index.ts

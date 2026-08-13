@@ -19,9 +19,15 @@ test("HTTP bearer auth protects every API route while health and static files st
   const artifactReads: Array<{ runId: string; artifactId: string }> = [];
   const modelArtifactReads: Array<{ runId: string; artifactId: string }> = [];
   const modelApprovals: Array<{ approvalId: string; decision: string; resolvedBy: string }> = [];
+  const engineeringRequests: unknown[] = [];
   const service = {
     portfolio: async () => ({ projects: [] }),
     runtimeStatus: async () => [{ runtime: "atomic", adapter: "mock", available: true }],
+    assessEngineeringRequest: async (input: unknown) => {
+      engineeringRequests.push(input);
+      return { assessment: { id: "route_fixture", selectedShape: "atomic-lite", executionSupported: false }, replayed: false };
+    },
+    getEngineeringRoutingAssessment: async (assessmentId: string) => ({ id: assessmentId, selectedShape: "atomic-lite" }),
     readAtomicFixtureArtifact: async (runId: string, artifactId: string) => {
       artifactReads.push({ runId, artifactId });
       if (artifactId === "artifact_internal_failure") {
@@ -105,6 +111,20 @@ test("HTTP bearer auth protects every API route while health and static files st
     assert.equal(runtimes.status, 200);
     assert.equal((await runtimes.json())[0].runtime, "atomic");
 
+    const engineering = await fetch(`${base}/api/engineering/assessments`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ projectId: "ovalo", request: "Implement a bounded parser with unit tests." }),
+    });
+    assert.equal(engineering.status, 201);
+    assert.equal((await engineering.json() as any).assessment.id, "route_fixture");
+    const engineeringGet = await fetch(`${base}/api/engineering/assessments/route_fixture`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(engineeringGet.status, 200);
+    assert.equal((await engineeringGet.json() as any).id, "route_fixture");
+    assert.deepEqual(engineeringRequests, [{ projectId: "ovalo", request: "Implement a bounded parser with unit tests." }]);
+
     const artifact = await fetch(
       `${base}/api/atomic-fixture/runs/run_fixture/artifacts/artifact_fixture`,
       { headers: { authorization: `Bearer ${token}` } },
@@ -149,6 +169,38 @@ test("HTTP bearer auth protects every API route while health and static files st
       decision: "approve",
       resolvedBy: "wesley-local-operator",
     }]);
+  } finally {
+    server.close();
+    await once(server, "close");
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("general engineering intake remains unavailable on an unauthenticated loopback API", async () => {
+  const root = mkdtempSync(join(tmpdir(), "control-plane-engineering-auth-"));
+  const publicDir = join(root, "public");
+  mkdirSync(publicDir);
+  writeFileSync(join(publicDir, "index.html"), "public");
+  let called = false;
+  const service = {
+    assessEngineeringRequest: async () => { called = true; return {}; },
+  } as unknown as ControlPlaneService;
+  const store = {
+    backend: "sqlite",
+    healthCheck: async () => ({ ok: true, backend: "sqlite", migrationsCurrent: true }),
+  } as unknown as ControlPlaneStore;
+  const server = createControlPlaneServer(service, store, publicDir);
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const port = (server.address() as AddressInfo).port;
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/engineering/assessments`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId: "ovalo", request: "Implement a bounded parser." }),
+    });
+    assert.equal(response.status, 403);
+    assert.match((await response.json() as any).error, /bearer authentication/);
+    assert.equal(called, false);
   } finally {
     server.close();
     await once(server, "close");

@@ -180,6 +180,7 @@ export async function writeAtomicFixtureModelReview(options) {
 export async function emitAtomicFixtureModelEvidence(options) {
   if (!options.checks.passed || !options.verifier.approved) throw new Error("Model evidence cannot be emitted without passing checks and fresh verification");
   const workspace = resolve(options.workspacePath);
+  const source = await readRegular(workspace, ATOMIC_FIXTURE_TARGET, "model candidate source", 8 * 1024);
   const patchResult = await runBoundedCommand("/usr/bin/git", ["diff", "--binary", "--", ATOMIC_FIXTURE_TARGET], {
     cwd: workspace, signal: options.signal, timeoutMs: 15_000, maxOutputBytes: 256 * 1024,
   });
@@ -204,6 +205,7 @@ export async function emitAtomicFixtureModelEvidence(options) {
     workflow: ATOMIC_FIXTURE_MODEL_WORKFLOW_NAME,
     package_sha256: options.inputs.package_sha256,
     capability_policy_sha256: options.inputs.capability_policy_sha256,
+    source_after_sha256: source.sha256,
     repair_count: options.repairCount,
     checks: options.checks.artifact,
     verifier: options.verifier.artifact,
@@ -223,7 +225,8 @@ export async function emitAtomicFixtureModelEvidence(options) {
     checks_final_path: options.checks.artifact.path, verifier_final_path: options.verifier.artifact.path,
     memory_proposal_path: memoryProposal.path, draft_pr_mock_path: draftPrMock.path,
     context_pack_path: copied.contextPack.path, run_contract_path: copied.runContract.path,
-    launch_manifest_path: copied.launchManifest.path, repair_count: options.repairCount,
+    launch_manifest_path: copied.launchManifest.path, source_after_sha256: source.sha256,
+    repair_count: options.repairCount,
     checks_passed: true, verifier_passed: true, live_provider_verified: options.inputs.live_provider_expected,
   };
 }

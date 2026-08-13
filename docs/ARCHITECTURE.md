@@ -49,6 +49,37 @@ accepted Project Brain Markdown controls project rationale and decisions. Curren
 explicit user instruction controls intent but does not silently rewrite recorded
 external state.
 
+## Engineering routing authority
+
+For a general engineering request, Hermes is the conversational intake and may
+send an optional latency/rigor preference. It is not the final runtime router.
+The control plane resolves current task/project authority, evaluates the recorded
+six-dimension rubric, applies hard safety/workflow signals, and returns an
+explainable execution shape:
+
+```text
+Hermes literal request + optional preference
+                    |
+                    v
+      control-plane routing policy + current context
+            /               |               \
+           v                v                v
+        Direct         Atomic Lite       Atomic Full
+   one root session   persistent stage   multi-stage graph
+   + tool checks      + tool checks      + evidence/gates
+```
+
+A preference can increase rigor but cannot reduce the policy-selected shape.
+Direct remains subject to the same workspace, deterministic-check, budget, and
+final-action boundaries. Atomic Lite and Atomic Full are both Atomic root runs;
+they are not Codex or Claude runs hidden underneath an Atomic wrapper. The
+structured selector plus authenticated assessment/read operations are
+implemented and tested. Assessments are durable, source-labeled, and explicitly
+unsupported for execution while Linear/Git authority and a trusted project
+launcher are absent. The package-level Atomic Lite workflow is independently
+testable but is not registered as a general writer; current live writer pilots
+retain their fixed literal contracts.
+
 ## Storage boundary
 
 The control plane uses one asynchronous store contract with two adapters:
@@ -173,13 +204,28 @@ writer fence, isolated container, bounded Project Brain pack, inference policy,
 artifacts, expiry, approval, and safe mock receipt.
 
 The writer joins one inspected local `Internal=true` Docker bridge but has no
-public credential or direct provider authority. A separate no-secret bridge can
-reach only the private host Unix-socket gateway. The gateway holds the reviewed
+public credential or direct provider authority. On macOS/Colima, a separate
+no-secret proxy is dual-homed on that network and Docker's bridge and can reach
+only the fixed loopback host gateway; the writer never joins the egress bridge.
+Engines with a safe bind path may instead use the private Unix-socket transport.
+The gateway holds the reviewed
 provider credential, accepts an opaque expiring run capability, fixes role/model
 and request shape, and transactionally accounts request/token/cost/time limits in
 SQLite/PostgreSQL. The container gets only the capability file and fixed internal
 endpoint; host model homes, OAuth, keychain, Docker socket, and provider secret
 are never mounted or forwarded.
+
+The gateway supports either a reviewed OpenAI-compatible HTTP upstream or a
+host-side `codex-subscription` adapter. Subscription mode delegates ChatGPT OAuth
+to a pinned Codex CLI in a dedicated private profile and converts each fixed
+OpenAI-compatible stage turn to one structured, read-only Codex turn. Migration
+011 retains one process-local native thread per capability/role, uses appended
+message deltas for continuation, and permits only one active turn in a role.
+Atomic remains the workflow owner. Migration 008 permits up to 16 changed request
+hashes across the four fixed roles, while exact replay remains single-spend and
+aggregate token/time/concurrency bounds remain fail-closed. Codex native tools are
+disabled and any observed tool event invalidates the request. Restart continuation
+is refused because provider thread ownership is not cross-process durable.
 
 After Atomic succeeds, deterministic checks and substantive source/test/patch/
 fresh-verifier evidence are rebound to stopped frozen exports. The container,
@@ -198,7 +244,8 @@ run without external credentials. PostgreSQL now exists behind the store contrac
 OpenViking and general writer runtimes remain disabled continuation work. The
 writer boundary is contract-tested and locally live-verified behind proposed
 ADR-P004; the only runtime composition is the fixed credential-free M5a fixture
-behind proposed ADR-P005. Read-only native connectivity adapters exist only
+behind proposed ADR-P005, with the subscription inference extension proposed in
+ADR-P007. Read-only native connectivity adapters exist only
 behind explicit feature flags and the proposed ADR-P003 boundary.
 
 

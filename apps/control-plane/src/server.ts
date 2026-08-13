@@ -17,6 +17,8 @@ const ATOMIC_FIXTURE_ARTIFACT_READ_ERROR =
   "Atomic fixture artifact evidence is unavailable or no longer matches the pending approval";
 const ATOMIC_MODEL_FIXTURE_ARTIFACT_READ_ERROR =
   "Atomic model fixture artifact evidence is unavailable or no longer matches the pending approval";
+const DIRECT_CODEX_FIXTURE_ARTIFACT_READ_ERROR =
+  "Direct Codex fixture artifact evidence is unavailable or no longer matches the pending approval";
 
 export function createControlPlaneServer(
   service: ControlPlaneService,
@@ -77,11 +79,25 @@ async function route(
   if (method === "GET" && path === "/api/approvals") return sendJson(res, 200, await service.listApprovals());
   if (method === "GET" && path === "/api/memory/proposals") return sendJson(res, 200, await service.listMemoryProposals());
 
-  let match = path.match(/^\/api\/projects\/([^/]+)\/brief$/);
+  let match = path.match(/^\/api\/engineering\/assessments\/([^/]+)$/);
+  if (method === "GET" && match) {
+    if (!authToken) return sendJson(res, 403, { error: "Engineering intake requires configured bearer authentication" });
+    return sendJson(res, 200, await service.getEngineeringRoutingAssessment(decodeURIComponent(match[1])));
+  }
+
+  if (method === "POST" && path === "/api/engineering/assessments") {
+    if (!authToken) return sendJson(res, 403, { error: "Engineering intake requires configured bearer authentication" });
+    return sendJson(res, 201, await service.assessEngineeringRequest(await readJson(req)));
+  }
+
+  match = path.match(/^\/api\/projects\/([^/]+)\/brief$/);
   if (method === "GET" && match) return sendJson(res, 200, await service.projectBrief(decodeURIComponent(match[1])));
 
   match = path.match(/^\/api\/runs\/([^/]+)$/);
   if (method === "GET" && match) return sendJson(res, 200, await service.getRun(decodeURIComponent(match[1])));
+
+  match = path.match(/^\/api\/comparisons\/([^/]+)$/);
+  if (method === "GET" && match) return sendJson(res, 200, await service.getComparison(decodeURIComponent(match[1])));
 
   match = path.match(/^\/api\/runs\/([^/]+)\/events$/);
   if (method === "GET" && match) return streamEvents(req, res, store, decodeURIComponent(match[1]), Number(url.searchParams.get("after") ?? 0));
@@ -171,6 +187,29 @@ async function route(
       ));
     } catch {
       return sendJson(res, 400, { error: ATOMIC_MODEL_FIXTURE_ARTIFACT_READ_ERROR });
+    }
+  }
+
+  match = path.match(/^\/api\/direct-codex-fixture\/approvals\/([^/]+)\/resolve$/);
+  if (method === "POST" && match) {
+    if (!operatorId) return sendJson(res, 403, { error: "Direct Codex approval requires a configured operator principal" });
+    const body = await readJson(req);
+    return sendJson(res, 200, await service.resolveDirectCodexFixtureApproval(
+      decodeURIComponent(match[1]),
+      String(body.decision ?? ""),
+      operatorId,
+    ));
+  }
+
+  match = path.match(/^\/api\/direct-codex-fixture\/runs\/([^/]+)\/artifacts\/([^/]+)$/);
+  if (method === "GET" && match) {
+    try {
+      return sendJson(res, 200, await service.readDirectCodexFixtureArtifact(
+        decodeURIComponent(match[1]),
+        decodeURIComponent(match[2]),
+      ));
+    } catch {
+      return sendJson(res, 400, { error: DIRECT_CODEX_FIXTURE_ARTIFACT_READ_ERROR });
     }
   }
 

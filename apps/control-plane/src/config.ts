@@ -33,6 +33,8 @@ export interface AppConfig {
   claudeRuntimeEnvAllowlist: string[];
   atomicFixturePilot: AtomicFixturePilotConfig;
   atomicFixtureModelPilot: AtomicFixtureModelPilotConfig;
+  directCodexModelPilotEnabled: boolean;
+  directClaudeModelPilotEnabled: boolean;
 }
 
 export interface AtomicFixturePilotConfig {
@@ -48,6 +50,7 @@ export interface AtomicFixturePilotConfig {
 
 export interface AtomicFixtureModelPilotConfig {
   enabled: boolean;
+  upstreamMode: "openai-compatible" | "codex-subscription";
   provider?: string;
   model?: string;
   upstreamBaseUrl?: string;
@@ -63,6 +66,12 @@ export interface AtomicFixtureModelPilotConfig {
   maxCostUsd: number;
   inputCostMicrosPerMillion: number;
   outputCostMicrosPerMillion: number;
+  codexCommand?: string;
+  codexExpectedVersion?: string;
+  codexHome?: string;
+  codexScratchRoot?: string;
+  codexOutputSchemaPath?: string;
+  codexReasoningEffort: "low" | "medium" | "high" | "xhigh";
 }
 
 export type RuntimeAdapterMode = "mock" | "native";
@@ -132,6 +141,22 @@ function credentialHeader(name: string): "bearer" | "x-api-key" {
   return value;
 }
 
+function modelUpstreamMode(name: string): "openai-compatible" | "codex-subscription" {
+  const value = (process.env[name] ?? "openai-compatible").trim().toLowerCase();
+  if (value !== "openai-compatible" && value !== "codex-subscription") {
+    throw new Error(`${name} must be openai-compatible or codex-subscription`);
+  }
+  return value;
+}
+
+function reasoningEffort(name: string): "low" | "medium" | "high" | "xhigh" {
+  const value = (process.env[name] ?? "medium").trim().toLowerCase();
+  if (value !== "low" && value !== "medium" && value !== "high" && value !== "xhigh") {
+    throw new Error(`${name} must be low, medium, high, or xhigh`);
+  }
+  return value;
+}
+
 function nonnegativeNumber(name: string, fallback: number, maximum: number): number {
   const value = Number(process.env[name] ?? String(fallback));
   if (!Number.isFinite(value) || value < 0 || value > maximum) throw new Error(`${name} must be nonnegative and at most ${maximum}`);
@@ -170,9 +195,12 @@ export function loadConfig(): AppConfig {
   };
   const atomicFixturePilotEnabled = booleanFlag("ATOMIC_FIXTURE_PILOT_ENABLED", false);
   const atomicFixtureModelPilotEnabled = booleanFlag("ATOMIC_FIXTURE_MODEL_PILOT_ENABLED", false);
+  const directCodexModelPilotEnabled = booleanFlag("DIRECT_CODEX_MODEL_PILOT_ENABLED", false);
+  const directClaudeModelPilotEnabled = booleanFlag("DIRECT_CLAUDE_MODEL_PILOT_ENABLED", false);
   const operatorId = safeModelId("CONTROL_PLANE_OPERATOR_ID");
   const auth = loadControlPlaneAuth();
-  if (!auth && (Object.values(runtimeAdapters).includes("native") || atomicFixturePilotEnabled || atomicFixtureModelPilotEnabled)) {
+  if (!auth && (Object.values(runtimeAdapters).includes("native") || atomicFixturePilotEnabled || atomicFixtureModelPilotEnabled
+      || directCodexModelPilotEnabled || directClaudeModelPilotEnabled)) {
     throw new Error("Control-plane bearer authentication is required when a native runtime or the Atomic fixture pilot is enabled");
   }
   if (!auth && !isLoopbackHost(host)) {
@@ -201,8 +229,10 @@ export function loadConfig(): AppConfig {
     }
   }
 
+  const atomicFixtureModelUpstreamMode = modelUpstreamMode("ATOMIC_FIXTURE_MODEL_UPSTREAM_MODE");
   const atomicFixtureModelPilot: AtomicFixtureModelPilotConfig = {
     enabled: atomicFixtureModelPilotEnabled,
+    upstreamMode: atomicFixtureModelUpstreamMode,
     provider: safeModelId("ATOMIC_FIXTURE_MODEL_PROVIDER"),
     model: safeModelId("ATOMIC_FIXTURE_MODEL_ID"),
     upstreamBaseUrl: modelUpstreamBaseUrl("ATOMIC_FIXTURE_MODEL_UPSTREAM_BASE_URL"),
@@ -213,17 +243,26 @@ export function loadConfig(): AppConfig {
     networkName: safeNetworkName("ATOMIC_FIXTURE_MODEL_NETWORK"),
     acceptedPackageSha256: optionalSha256("ATOMIC_FIXTURE_MODEL_ACCEPTED_PACKAGE_SHA256"),
     acceptedImageDigest: process.env.ATOMIC_FIXTURE_MODEL_ACCEPTED_IMAGE_DIGEST?.trim() || undefined,
-    maxInputTokens: positiveNumber("ATOMIC_FIXTURE_MODEL_MAX_INPUT_TOKENS", 32_000, 128_000),
-    maxOutputTokens: positiveNumber("ATOMIC_FIXTURE_MODEL_MAX_OUTPUT_TOKENS", 8_000, 32_768),
+    maxInputTokens: positiveNumber("ATOMIC_FIXTURE_MODEL_MAX_INPUT_TOKENS",
+      atomicFixtureModelUpstreamMode === "codex-subscription" ? 256_000 : 32_000, 1_000_000),
+    maxOutputTokens: positiveNumber("ATOMIC_FIXTURE_MODEL_MAX_OUTPUT_TOKENS",
+      atomicFixtureModelUpstreamMode === "codex-subscription" ? 32_000 : 8_000, 131_072),
     maxCostUsd: positiveNumber("ATOMIC_FIXTURE_MODEL_MAX_COST_USD", 1, 5),
     inputCostMicrosPerMillion: nonnegativeNumber("ATOMIC_FIXTURE_MODEL_INPUT_COST_MICROS_PER_MILLION", 0, 100_000_000),
     outputCostMicrosPerMillion: nonnegativeNumber("ATOMIC_FIXTURE_MODEL_OUTPUT_COST_MICROS_PER_MILLION", 0, 100_000_000),
+    codexCommand: optionalAbsolutePath("ATOMIC_FIXTURE_MODEL_CODEX_COMMAND"),
+    codexExpectedVersion: process.env.ATOMIC_FIXTURE_MODEL_CODEX_EXPECTED_VERSION?.trim() || undefined,
+    codexHome: optionalAbsolutePath("ATOMIC_FIXTURE_MODEL_CODEX_HOME"),
+    codexScratchRoot: optionalAbsolutePath("ATOMIC_FIXTURE_MODEL_CODEX_SCRATCH_ROOT"),
+    codexOutputSchemaPath: optionalAbsolutePath("ATOMIC_FIXTURE_MODEL_CODEX_OUTPUT_SCHEMA")
+      ?? resolve("./apps/control-plane/schemas/codex-subscription-broker-output.schema.json"),
+    codexReasoningEffort: reasoningEffort("ATOMIC_FIXTURE_MODEL_CODEX_REASONING_EFFORT"),
   };
   if (atomicFixtureModelPilot.enabled) {
     if (!atomicFixturePilot.enabled) throw new Error("ATOMIC_FIXTURE_MODEL_PILOT_ENABLED requires the isolated Atomic fixture pilot boundary");
     if (!operatorId) throw new Error("CONTROL_PLANE_OPERATOR_ID is required when the Atomic model pilot is enabled");
-    if (!atomicFixtureModelPilot.provider || !atomicFixtureModelPilot.model || !atomicFixtureModelPilot.upstreamBaseUrl) {
-      throw new Error("The Atomic model pilot requires an explicit provider, model, and upstream base URL");
+    if (!atomicFixtureModelPilot.provider || !atomicFixtureModelPilot.model) {
+      throw new Error("The Atomic model pilot requires an explicit provider and model");
     }
     if (!atomicFixtureModelPilot.networkName) {
       throw new Error("The Atomic model pilot requires an explicit inspected internal Docker network");
@@ -231,16 +270,38 @@ export function loadConfig(): AppConfig {
     if (atomicFixtureModelPilot.gatewayPort !== 8790) {
       throw new Error("The Atomic model pilot gateway port is fixed to 8790 in this reviewed bridge contract");
     }
-    const upstream = new URL(atomicFixtureModelPilot.upstreamBaseUrl);
-    const credentialFreeLoopback = isLoopbackHost(upstream.hostname) && atomicFixtureModelPilot.allowCredentialFreeLoopback;
-    if (!atomicFixtureModelPilot.credentialFile
-        && !credentialFreeLoopback) {
-      throw new Error("The Atomic model pilot requires a private credential file unless an explicit credential-free loopback provider is selected");
-    }
-    if (!credentialFreeLoopback
-        && (process.env.ATOMIC_FIXTURE_MODEL_INPUT_COST_MICROS_PER_MILLION === undefined
-          || process.env.ATOMIC_FIXTURE_MODEL_OUTPUT_COST_MICROS_PER_MILLION === undefined)) {
-      throw new Error("External Atomic model pilots require explicit input/output provider prices for budget accounting");
+    if (atomicFixtureModelPilot.upstreamMode === "codex-subscription") {
+      if (atomicFixtureModelPilot.upstreamBaseUrl || atomicFixtureModelPilot.credentialFile
+          || atomicFixtureModelPilot.allowCredentialFreeLoopback) {
+        throw new Error("Codex subscription mode forbids provider URLs, provider credential files, and credential-free loopback mode");
+      }
+      if (!atomicFixtureModelPilot.codexCommand || !atomicFixtureModelPilot.codexExpectedVersion
+          || !/^\d+\.\d+\.\d+(?:[-A-Za-z0-9.]*)?$/.test(atomicFixtureModelPilot.codexExpectedVersion)
+          || !atomicFixtureModelPilot.codexHome || !atomicFixtureModelPilot.codexScratchRoot) {
+        throw new Error("Codex subscription mode requires an absolute command, exact version, private CODEX_HOME, and separate scratch root");
+      }
+      if (atomicFixtureModelPilot.provider !== "openai-codex-subscription") {
+        throw new Error("Codex subscription mode requires provider=openai-codex-subscription");
+      }
+      if (atomicFixtureModelPilot.maxCostUsd !== 1
+          || atomicFixtureModelPilot.inputCostMicrosPerMillion !== 0
+          || atomicFixtureModelPilot.outputCostMicrosPerMillion !== 0) {
+        throw new Error("Codex subscription mode records zero dollar pricing; request, token, elapsed-time, and concurrency limits remain authoritative");
+      }
+    } else {
+      if (!atomicFixtureModelPilot.upstreamBaseUrl) {
+        throw new Error("OpenAI-compatible mode requires an explicit upstream base URL");
+      }
+      const upstream = new URL(atomicFixtureModelPilot.upstreamBaseUrl);
+      const credentialFreeLoopback = isLoopbackHost(upstream.hostname) && atomicFixtureModelPilot.allowCredentialFreeLoopback;
+      if (!atomicFixtureModelPilot.credentialFile && !credentialFreeLoopback) {
+        throw new Error("The Atomic model pilot requires a private credential file unless an explicit credential-free loopback provider is selected");
+      }
+      if (!credentialFreeLoopback
+          && (process.env.ATOMIC_FIXTURE_MODEL_INPUT_COST_MICROS_PER_MILLION === undefined
+            || process.env.ATOMIC_FIXTURE_MODEL_OUTPUT_COST_MICROS_PER_MILLION === undefined)) {
+        throw new Error("External Atomic model pilots require explicit input/output provider prices for budget accounting");
+      }
     }
     if (!atomicFixtureModelPilot.acceptedPackageSha256 || !atomicFixtureModelPilot.acceptedImageDigest
         || !/^sha256:[a-f0-9]{64}$/.test(atomicFixtureModelPilot.acceptedImageDigest)) {
@@ -250,6 +311,9 @@ export function loadConfig(): AppConfig {
         && !atomicFixturePilot.image?.endsWith(`@${atomicFixtureModelPilot.acceptedImageDigest}`)) {
       throw new Error("The Atomic model pilot accepted image digest must match the configured runner image");
     }
+  }
+  if (directCodexModelPilotEnabled && !atomicFixtureModelPilot.enabled) {
+    throw new Error("DIRECT_CODEX_MODEL_PILOT_ENABLED requires the reviewed M5b scoped inference deployment");
   }
 
   return {
@@ -279,6 +343,8 @@ export function loadConfig(): AppConfig {
     claudeRuntimeEnvAllowlist: envAllowlist("CLAUDE_RUNTIME_ENV_ALLOWLIST"),
     atomicFixturePilot,
     atomicFixtureModelPilot,
+    directCodexModelPilotEnabled,
+    directClaudeModelPilotEnabled,
   };
 }
 

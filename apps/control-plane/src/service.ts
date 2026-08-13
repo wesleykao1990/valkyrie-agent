@@ -3,11 +3,22 @@ import { existsSync, lstatSync, mkdirSync, realpathSync, writeFileSync } from "n
 import { join, resolve, sep } from "node:path";
 import type { RuntimeAdapter } from "./runtime.ts";
 import type { Approval, Artifact, MemoryProposal, Project, Run, RuntimeName, RuntimePreflight, StartRunInput, Task } from "./types.ts";
-import { canonicalJson, IdempotencyConflictError, type ControlPlaneStore, type RunBundleResult } from "./store.ts";
+import {
+  canonicalJson,
+  IdempotencyConflictError,
+  type ControlPlaneStore,
+  type EngineeringRoutingAssessmentRecord,
+  type RunBundleResult,
+} from "./store.ts";
 import { contextPackChecksum, type LocalProjectBrain, type PromotionPreview } from "./project-brain.ts";
 import type { WorkspaceManager } from "./workspace.ts";
 import { id, nowIso } from "./ids.ts";
-import { routeTask, validateBudget } from "./policy.ts";
+import {
+  assessEngineeringRequest as deriveEngineeringRouting,
+  type EngineeringIntakeInput,
+  routeTask,
+  validateBudget,
+} from "./policy.ts";
 import {
   ATOMIC_FIXTURE_WORKFLOW_NAME,
   type AtomicFixturePilotCoordinator,
@@ -17,6 +28,14 @@ import {
   ATOMIC_MODEL_PILOT_WORKFLOW,
 } from "./atomic-model-pilot-coordinator.ts";
 import type { AtomicModelPilotLifecycleCoordinator } from "./atomic-model-pilot-lifecycle.ts";
+import { ATOMIC_MODEL_PILOT_TASK_ID } from "./atomic-model-pilot-lifecycle.ts";
+import { ATOMIC_FIXTURE_MODEL_REQUEST } from "../../../packages/atomic-workflow-architect/lib/atomic-fixture-model-pilot-core.mjs";
+import {
+  DIRECT_CODEX_APPROVAL_ACTION,
+  DIRECT_CODEX_MODEL_WORKFLOW,
+  DIRECT_CLAUDE_MODEL_WORKFLOW,
+  type DirectModelPilotCoordinator,
+} from "./direct-model-pilot.ts";
 
 function requestHash(value: unknown): string {
   const normalized = JSON.parse(JSON.stringify(value)) as unknown;
@@ -27,11 +46,14 @@ const approvalDecisions = new Set(["approve", "deny", "request_changes"]);
 const memoryDecisions = new Set(["promote", "reject"]);
 export const MEMORY_PROMOTION_PREVIEW_MAX_AGE_MS = 15 * 60 * 1_000;
 export const MEMORY_PROMOTION_PREVIEW_MAX_FUTURE_SKEW_MS = 30 * 1_000;
+export const ENGINEERING_ROUTING_ASSESSMENT_TTL_MS = 15 * 60 * 1_000;
 
 interface ControlPlaneServiceOptions {
   now?: () => Date;
   atomicFixturePilot?: AtomicFixturePilotCoordinator;
   atomicModelPilot?: AtomicModelPilotLifecycleCoordinator;
+  directModelPilot?: DirectModelPilotCoordinator;
+  directClaudeModelPilotEnabled?: boolean;
 }
 
 export class ControlPlaneService {
@@ -43,6 +65,8 @@ export class ControlPlaneService {
   private readonly now: () => Date;
   private readonly atomicFixturePilot?: AtomicFixturePilotCoordinator;
   private readonly atomicModelPilot?: AtomicModelPilotLifecycleCoordinator;
+  private readonly directModelPilot?: DirectModelPilotCoordinator;
+  private readonly directClaudeModelPilotEnabled: boolean;
   private currentTick: Promise<void> | null = null;
   private approvalQueue = new Map<string, Promise<unknown>>();
 
@@ -60,6 +84,8 @@ export class ControlPlaneService {
     this.now = options.now ?? (() => new Date());
     this.atomicFixturePilot = options.atomicFixturePilot;
     this.atomicModelPilot = options.atomicModelPilot;
+    this.directModelPilot = options.directModelPilot;
+    this.directClaudeModelPilotEnabled = options.directClaudeModelPilotEnabled ?? false;
   }
 
   listProjects(): Promise<Project[]> { return this.store.listProjects(); }
@@ -67,6 +93,186 @@ export class ControlPlaneService {
   listRuns(): Promise<Run[]> { return this.store.listRuns(); }
   listApprovals(): Promise<Approval[]> { return this.store.listApprovals(); }
   listMemoryProposals(): Promise<MemoryProposal[]> { return this.store.listMemoryProposals(); }
+
+  async assessEngineeringRequest(input: EngineeringIntakeInput) {
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Engineering intake must be an object");
+    const allowedKeys = new Set(["projectId", "taskId", "request", "preference", "finalAction", "idempotencyKey"]);
+    if (Object.keys(input).some((key) => !allowedKeys.has(key))) {
+      throw new Error("Engineering intake received an unsupported field; routing scores are control-plane owned");
+    }
+    const project = await this.requireProject(input.projectId);
+    const task = input.taskId ? await this.store.getTask(input.taskId) : null;
+    if (input.taskId && !task) throw new Error("Task not found");
+    if (task && task.projectId !== project.id) throw new Error("Task does not belong to the selected project");
+    const finalAction = input.finalAction ?? "analysis_only";
+    const derived = deriveEngineeringRouting({
+      request: input.request,
+      preference: input.preference ?? "auto",
+      finalAction,
+      projectHealth: project.health,
+      ...(task ? { task: {
+        title: task.title,
+        objective: task.objective,
+        status: task.status,
+        priority: task.priority,
+      } } : {}),
+    });
+    const key = input.idempotencyKey?.trim();
+    if (input.idempotencyKey !== undefined
+        && (!key || key !== input.idempotencyKey || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(key))) {
+      throw new Error("Engineering assessment idempotency key must be a safe 1-128 character ID without surrounding whitespace");
+    }
+    const hashInput = {
+      projectId: project.id,
+      taskId: task?.id ?? null,
+      request: input.request,
+      preference: input.preference ?? "auto",
+      finalAction,
+    };
+    const idempotencyRequestHash = requestHash(hashInput);
+    if (key) {
+      const existing = await this.store.getIdempotencyRecord("engineering.assess", key);
+      if (existing) {
+        if (existing.requestHash !== idempotencyRequestHash
+            || existing.resourceType !== "engineering-routing-assessment") {
+          throw new IdempotencyConflictError();
+        }
+        const assessment = await this.store.getEngineeringRoutingAssessment(existing.resourceId);
+        if (!assessment) throw new Error("Engineering assessment idempotency record refers to missing state");
+        return {
+          assessment,
+          replayed: true,
+          launch: {
+            supported: false,
+            reason: "The assessment is durable, but general execution remains fail-closed until M7 supplies live authority and a reviewed project execution policy.",
+          },
+        };
+      }
+    }
+    const assessmentId = id("route");
+    const contextPack = this.brain.buildContextPack(project, input.request, {
+      runId: assessmentId,
+      ...(task ? { taskId: task.id } : {}),
+    });
+    const contextSources: EngineeringRoutingAssessmentRecord["contextSources"] = {
+      linear: {
+        status: "prototype",
+        taskSource: task?.source ?? "none",
+        note: "Current task data is a local projection; production Linear freshness is unavailable.",
+      },
+      git: {
+        status: "unavailable",
+        repository: project.repository,
+        note: "No live Git revision or deterministic project check policy is bound to general intake.",
+      },
+      projectBrain: {
+        status: "accepted-local",
+        checksum: contextPackChecksum(contextPack),
+        acceptedEntries: contextPack.entries.length,
+      },
+    };
+    const contextDigest = requestHash({
+      project: {
+        id: project.id,
+        objective: project.objective,
+        currentMilestone: project.currentMilestone,
+        health: project.health,
+        repository: project.repository,
+      },
+      task: task ? {
+        id: task.id,
+        source: task.source,
+        sourceId: task.sourceId ?? null,
+        title: task.title,
+        objective: task.objective,
+        status: task.status,
+        priority: task.priority,
+      } : null,
+      contextSources,
+    });
+    const unsupportedReasons = [
+      "live-linear-authority-unavailable",
+      "live-git-authority-unavailable",
+      "trusted-project-execution-policy-unavailable",
+      `general-${derived.decision.shape}-launch-unavailable`,
+    ];
+    const observedAt = this.now();
+    const createdAt = observedAt.toISOString();
+    const assessment: EngineeringRoutingAssessmentRecord = {
+      id: assessmentId,
+      projectId: project.id,
+      taskId: task?.id ?? null,
+      literalRequest: input.request,
+      requestHash: requestHash({
+        projectId: project.id,
+        taskId: task?.id ?? null,
+        request: input.request,
+        preference: input.preference ?? "auto",
+        finalAction,
+      }),
+      contextDigest,
+      contextSources,
+      dimensions: {
+        structure: derived.assessment.structure,
+        verifiability: derived.assessment.verifiability,
+        iteration: derived.assessment.iteration,
+        risk: derived.assessment.risk,
+        duration: derived.assessment.duration,
+        isolation: derived.assessment.isolation,
+      },
+      hardSignals: {
+        explicitLoop: derived.assessment.hardSignals?.explicitLoop ?? false,
+        durableBackground: derived.assessment.hardSignals?.durableBackground ?? false,
+        approvalOrEvidenceGate: derived.assessment.hardSignals?.approvalOrEvidenceGate ?? false,
+        multipleCandidates: derived.assessment.hardSignals?.multipleCandidates ?? false,
+      },
+      preference: derived.decision.preference,
+      finalAction,
+      baselineShape: derived.decision.baselineShape,
+      selectedShape: derived.decision.shape,
+      score: derived.decision.score,
+      reasons: [...derived.decision.reasons, ...derived.matchedSignals.map((signal) => `matched:${signal}`)],
+      policyVersion: derived.policyVersion,
+      executionSupported: false,
+      unsupportedReasons,
+      status: "unsupported",
+      runId: null,
+      createdAt,
+      expiresAt: new Date(observedAt.getTime() + ENGINEERING_ROUTING_ASSESSMENT_TTL_MS).toISOString(),
+    };
+    const result = await this.store.createEngineeringRoutingAssessment({
+      assessment,
+      ...(key ? { idempotency: {
+        scope: "engineering.assess",
+        key,
+        requestHash: idempotencyRequestHash,
+        expiresAt: assessment.expiresAt,
+      } } : {}),
+    });
+    return {
+      ...result,
+      launch: {
+        supported: false,
+        reason: "The assessment is durable, but general execution remains fail-closed until M7 supplies live authority and a reviewed project execution policy.",
+      },
+    };
+  }
+
+  async getEngineeringRoutingAssessment(assessmentId: string) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(assessmentId)) throw new Error("Engineering assessment ID is invalid");
+    const assessment = await this.store.getEngineeringRoutingAssessment(assessmentId);
+    if (!assessment) throw new Error("Engineering routing assessment not found");
+    return {
+      assessment,
+      expired: Date.parse(assessment.expiresAt) <= this.now().getTime(),
+      launch: {
+        supported: assessment.executionSupported,
+        reason: assessment.executionSupported
+          ? "A verified implementation is available for this recorded shape."
+          : "No general runtime launch is authorized from this assessment; fixed pilots are never substituted.",
+      },
+    };
+  }
 
   async runtimeStatus(): Promise<RuntimePreflight[]> {
     const adapterStatuses = await Promise.all([...this.adapters.values()].map(async (adapter) => {
@@ -120,6 +326,37 @@ export class ControlPlaneService {
         reason: pilot.reason,
       });
     }
+    if (this.directModelPilot) {
+      const pilot = await this.directModelPilot.preflight();
+      results.push({
+        runtime: "codex",
+        adapter: "native",
+        enabled: pilot.enabled,
+        available: pilot.available,
+        executionMode: pilot.executionMode,
+        workflow: pilot.workflow,
+        modelExecutionAttempted: pilot.modelExecutionAttempted,
+        authenticated: pilot.authenticated,
+        capabilities: { steer: false, pause: false, resume: false, approve: false, artifacts: true },
+        controlPlaneFinalAcceptance: true,
+        reason: pilot.reason,
+      });
+    }
+    results.push({
+      runtime: "claude",
+      adapter: "native",
+      enabled: this.directClaudeModelPilotEnabled,
+      available: false,
+      executionMode: "isolated-writer",
+      workflow: DIRECT_CLAUDE_MODEL_WORKFLOW,
+      modelExecutionAttempted: false,
+      authenticated: false,
+      capabilities: { steer: false, pause: false, resume: false, approve: false, artifacts: true },
+      controlPlaneFinalAcceptance: true,
+      reason: this.directClaudeModelPilotEnabled
+        ? "Claude Code comparison remains fail-closed until a separately reviewed API-key or subscription broker is configured and exercised"
+        : "Direct Claude Code comparison is disabled by default",
+    });
     return results;
   }
 
@@ -224,6 +461,9 @@ export class ControlPlaneService {
         }
         if (this.atomicModelPilot?.isPilotRun(replayed.run) && replayed.run.status === "queued") {
           this.atomicModelPilot.schedule(replayed.run.id);
+        }
+        if (this.directModelPilot?.isPilotRun(replayed.run) && replayed.run.status === "queued") {
+          this.directModelPilot.schedule(replayed.run.id);
         }
         return {
           run: replayed,
@@ -356,6 +596,40 @@ export class ControlPlaneService {
       };
     }
 
+    if (input.workflow === DIRECT_CODEX_MODEL_WORKFLOW) {
+      if (!this.directModelPilot) throw new Error("Direct Codex model pilot is disabled");
+      const pilotBudgetUsd = this.directModelPilot.validateStart(input);
+      if (input.approvalPolicy?.preparePr === "automatic") {
+        throw new Error("Direct Codex model pilot requires a separate operator-intended final-action boundary");
+      }
+      const preflight = await this.directModelPilot.preflight();
+      if (!preflight.available) throw new Error(`Direct Codex model pilot is unavailable: ${preflight.reason ?? "preflight failed"}`);
+      const run: Run = {
+        id: id("run"), taskId: task!.id, projectId: project.id, rootRuntime: "codex",
+        workflow: DIRECT_CODEX_MODEL_WORKFLOW, status: "queued", stage: null, stageIndex: 0,
+        budgetUsd: pilotBudgetUsd, costUsd: 0, workspaceId: null, nativeRunId: null,
+        nextActionAt: null, startedAt: null, completedAt: null,
+        metadata: {
+          routeReason: route.reason, requestedObjective: input.objective,
+          approvalPolicy: { preparePr: "human" }, adapter: "direct-codex-model-pilot",
+          executionMode: "isolated-writer-scoped-inference", modelExecutionAttempted: false,
+          automaticEpisodicCapture: false, crossProcessResume: false, externalActionPerformed: false,
+        },
+        createdAt: this.now().toISOString(),
+      };
+      const created = await this.store.createRunBundle({
+        run,
+        idempotency: key && hash ? { scope: "run.create", key, requestHash: hash } : undefined,
+        admission: { workflow: DIRECT_CODEX_MODEL_WORKFLOW, maxNonterminal: 1 },
+      });
+      if (created.run.status === "queued") this.directModelPilot.schedule(created.run.id);
+      return { run: await this.getRun(created.run.id), route: { runtime: "codex" as const, reason: route.reason } };
+    }
+
+    if (input.workflow === DIRECT_CLAUDE_MODEL_WORKFLOW) {
+      throw new Error("Direct Claude Code model pilot is not available until its separate credential boundary is reviewed and exercised");
+    }
+
     const adapter = this.requireAdapter(route.runtime);
     const preflight = await adapter.preflight();
     if (!preflight.enabled || !preflight.available) {
@@ -486,43 +760,157 @@ export class ControlPlaneService {
     objective: string;
     runtimes?: RuntimeName[];
     perRunMaxCostUsd?: number;
+    taskId?: string;
+    candidateRunIds?: string[];
+    idempotencyKey?: string;
   }) {
     await this.requireProject(input.projectId);
-    const runtimes = [...new Set(input.runtimes ?? (["atomic", "codex", "claude"] as RuntimeName[]))];
-    if (runtimes.length < 2 || runtimes.length > 4) {
-      throw new Error("Comparison requires between 2 and 4 distinct runtimes");
+    if (!this.atomicModelPilot || !this.directModelPilot) {
+      const runtimes = [...new Set(input.runtimes ?? (["atomic", "codex", "claude"] as RuntimeName[]))];
+      if (runtimes.length < 2 || runtimes.length > 4) throw new Error("Comparison requires between 2 and 4 distinct runtimes");
+      for (const runtime of runtimes) this.requireAdapter(runtime);
+      const comparisonId = id("compare");
+      const runs = await Promise.all(runtimes.map(async (runtime, index) => {
+        const started = await this.startRun({
+          projectId: input.projectId, objective: input.objective, runtime,
+          maxCostUsd: input.perRunMaxCostUsd ?? 8,
+          workflow: runtime === "atomic" ? "issue-to-pr-pilot" : "bounded-comparison-candidate",
+          approvalPolicy: { preparePr: "human" },
+        });
+        const current = await this.requireRun(started.run.run.id);
+        await this.store.updateRun(current.id, { metadata: {
+          ...current.metadata, comparisonId, comparisonIndex: index + 1, comparisonRuntimes: runtimes,
+        } });
+        return (await this.getRun(current.id)).run;
+      }));
+      return {
+        comparisonId, projectId: input.projectId, objective: input.objective,
+        selectionPolicy: "Human selects a candidate after evidence; completion never implies acceptance.", runs,
+      };
     }
-    for (const runtime of runtimes) this.requireAdapter(runtime);
-
-    const comparisonId = id("compare");
-    const results = await Promise.all(runtimes.map(async (runtime, index) => {
-      const started = await this.startRun({
-        projectId: input.projectId,
-        objective: input.objective,
-        runtime,
-        maxCostUsd: input.perRunMaxCostUsd ?? 8,
-        workflow: runtime === "atomic" ? "issue-to-pr-pilot" : "bounded-comparison-candidate",
-        approvalPolicy: { preparePr: "human" }
+    const taskId = input.taskId ?? ATOMIC_MODEL_PILOT_TASK_ID;
+    if (input.projectId !== "atomic-pilot" || taskId !== ATOMIC_MODEL_PILOT_TASK_ID || input.objective !== ATOMIC_FIXTURE_MODEL_REQUEST) {
+      throw new Error("Milestone 6 comparison requires the exact disposable M5b task contract");
+    }
+    const runtimes = [...new Set(input.runtimes ?? (["atomic", "codex"] as RuntimeName[]))];
+    if (canonicalJson(runtimes) !== canonicalJson(["atomic", "codex"])) {
+      throw new Error("Milestone 6 comparison currently requires exactly Atomic and direct Codex, in that order");
+    }
+    if (input.candidateRunIds && input.candidateRunIds.length > runtimes.length) throw new Error("Too many comparison candidate run IDs were supplied");
+    const key = input.idempotencyKey?.trim();
+    if (input.idempotencyKey !== undefined && !key) throw new Error("Comparison idempotency key must not be empty");
+    const comparisonId = key
+      ? `compare_${requestHash({ projectId: input.projectId, key }).slice(0, 32)}`
+      : id("compare");
+    const contractHash = requestHash({ projectId: input.projectId, taskId, objective: input.objective });
+    let comparison = await this.store.getComparison(comparisonId);
+    if (!comparison) {
+      const createdAt = this.now().toISOString();
+      comparison = await this.store.createComparison({
+        id: comparisonId, projectId: input.projectId, taskId, objective: input.objective, contractHash,
+        status: "running", selectionPolicy: "Wesley selects only after reviewing evidence; completion never implies acceptance.",
+        createdAt, completedAt: null,
       });
-      const current = await this.requireRun(started.run.run.id);
-      await this.store.updateRun(current.id, {
-        metadata: {
-          ...current.metadata,
-          comparisonId,
-          comparisonIndex: index + 1,
-          comparisonRuntimes: runtimes
+    } else if (comparison.contractHash !== contractHash || comparison.projectId !== input.projectId || comparison.taskId !== taskId) {
+      throw new IdempotencyConflictError("Comparison idempotency key was reused for another contract");
+    }
+    const attached = await this.store.listComparisonCandidates(comparisonId);
+    const results = [];
+    for (const [index, runtime] of runtimes.entries()) {
+      const existingCandidate = attached.find((candidate) => candidate.runtime === runtime);
+      let current: Run;
+      if (existingCandidate) {
+        current = await this.requireRun(existingCandidate.runId);
+      } else {
+        const suppliedRunId = input.candidateRunIds?.[index];
+        if (suppliedRunId) {
+          current = await this.requireRun(suppliedRunId);
+          const expectedWorkflow = runtime === "atomic" ? ATOMIC_MODEL_PILOT_WORKFLOW : DIRECT_CODEX_MODEL_WORKFLOW;
+          if (current.projectId !== input.projectId || current.taskId !== taskId || current.rootRuntime !== runtime
+              || current.workflow !== expectedWorkflow || current.metadata.requestedObjective !== input.objective) {
+            throw new Error("Supplied comparison candidate does not match the literal runtime/task contract");
+          }
+        } else {
+          const started = await this.startRun({
+            projectId: input.projectId, taskId, objective: input.objective, runtime,
+            maxCostUsd: input.perRunMaxCostUsd ?? 1,
+            workflow: runtime === "atomic" ? ATOMIC_MODEL_PILOT_WORKFLOW : DIRECT_CODEX_MODEL_WORKFLOW,
+            idempotencyKey: `comparison:${comparisonId}:${runtime}`,
+            approvalPolicy: { preparePr: "human" },
+          });
+          current = await this.requireRun(started.run.run.id);
         }
-      });
-      return this.getRun(current.id);
-    }));
+        const candidateCreatedAt = current.createdAt;
+        await this.store.attachComparisonCandidate({
+          comparisonId, runId: current.id, runtime, workflow: current.workflow!, ordinal: index + 1,
+          status: "running", metrics: null, evidenceDigest: null,
+          createdAt: candidateCreatedAt, updatedAt: candidateCreatedAt,
+        });
+        await this.store.updateRun(current.id, { metadata: {
+          ...current.metadata, comparisonId, comparisonIndex: index + 1, comparisonRuntimes: runtimes,
+        } });
+      }
+      results.push(await this.getRun(current.id));
+    }
+    const refreshed = await this.refreshComparison(comparisonId);
+    return { comparisonId, ...refreshed, runs: results.map((result) => result.run) };
+  }
 
-    return {
-      comparisonId,
-      projectId: input.projectId,
-      objective: input.objective,
-      selectionPolicy: "Human selects a candidate after evidence; completion never implies acceptance.",
-      runs: results.map((result) => result.run)
-    };
+  async getComparison(comparisonId: string) { return this.refreshComparison(comparisonId); }
+
+  private async refreshComparison(comparisonId: string) {
+    let comparison = await this.store.getComparison(comparisonId);
+    if (!comparison) throw new Error("Comparison not found");
+    const candidates = await this.store.listComparisonCandidates(comparisonId);
+    for (const candidate of candidates) {
+      if (candidate.status !== "running") continue;
+      const run = await this.requireRun(candidate.runId);
+      if (!["awaiting_approval", "completed", "failed", "cancelled"].includes(run.status)) continue;
+      const [artifacts, events, requests] = await Promise.all([
+        this.store.listArtifacts(run.id), this.store.listEvents(run.id), this.store.listInferenceRequests(run.id),
+      ]);
+      const evidenceDigest = requestHash(artifacts.map((artifact) => ({
+        id: artifact.id, kind: artifact.kind, uri: artifact.uri, checksum: artifact.checksum, mediaType: artifact.mediaType,
+      })).sort((left, right) => left.kind.localeCompare(right.kind) || left.uri.localeCompare(right.uri) || left.id.localeCompare(right.id)));
+      const latestAt = [...events.map((event) => Date.parse(event.createdAt)), Date.parse(run.completedAt ?? "")]
+        .filter(Number.isFinite).reduce((maximum, value) => Math.max(maximum, value), Date.parse(run.createdAt));
+      const startedAt = Date.parse(run.startedAt ?? run.createdAt);
+      const passed = ["awaiting_approval", "completed"].includes(run.status) && artifacts.length > 0;
+      const finalized = await this.store.finalizeComparisonCandidate({
+        ...candidate,
+        status: passed ? run.status === "completed" ? "accepted" : "evidence_ready" : "failed",
+        evidenceDigest,
+        metrics: {
+          correctness: passed ? "passed" : "failed",
+          // For the fixed pilot, one means the initial checks/verifier caught an
+          // evidence-backed defect and triggered the sole permitted repair.
+          defectsCaught: Number(run.metadata.repairCount ?? 0),
+          inputTokens: requests.reduce((sum, item) => sum + item.inputTokens, 0),
+          outputTokens: requests.reduce((sum, item) => sum + item.outputTokens, 0),
+          costMicros: requests.reduce((sum, item) => sum + item.costMicros, 0),
+          elapsedMs: Math.max(0, latestAt - startedAt),
+          humanReviewArtifacts: artifacts.length,
+          eventCount: events.length,
+          recoveryReliability: run.metadata.atomicModelCleanedRecovery === true || run.metadata.directModelCleanedRecovery === true
+            ? "recovered" : "not_exercised",
+          resumability: "control_plane_only",
+          // Reviewed seam-count rubric: Atomic adds native RPC/main-session/
+          // workflow/bridge seams; direct Codex omits those orchestration seams.
+          integrationComplexity: run.rootRuntime === "atomic" ? 8 : 5,
+        },
+        updatedAt: this.now().toISOString(),
+      });
+      Object.assign(candidate, finalized);
+    }
+    const finalCandidates = await this.store.listComparisonCandidates(comparisonId);
+    if (comparison.status === "running" && finalCandidates.length === 2 && finalCandidates.every((candidate) => candidate.status !== "running")) {
+      comparison = await this.store.completeComparison(
+        comparison.id,
+        finalCandidates.every((candidate) => candidate.metrics?.correctness === "passed") ? "complete" : "failed",
+        this.now().toISOString(),
+      );
+    }
+    return { comparison, candidates: finalCandidates };
   }
 
   async getRun(runId: string) {
@@ -562,6 +950,10 @@ export class ControlPlaneService {
       await this.atomicModelPilot.cancel(run, resolvedBy);
       return this.getRun(runId);
     }
+    if (this.directModelPilot?.isPilotRun(run)) {
+      await this.directModelPilot.cancel(run, resolvedBy);
+      return this.getRun(runId);
+    }
     await this.requireAdapter(run.rootRuntime).cancel(run);
     return this.getRun(runId);
   }
@@ -597,6 +989,14 @@ export class ControlPlaneService {
     return this.resolveApproval(approvalId, decision, resolvedBy);
   }
 
+  async resolveDirectCodexFixtureApproval(approvalId: string, decision: string, resolvedBy = "authenticated-operator") {
+    const approval = await this.store.getApproval(approvalId);
+    if (!approval || approval.action !== DIRECT_CODEX_APPROVAL_ACTION) {
+      throw new Error("Approval is not the evidence-bound direct Codex fixture final gate");
+    }
+    return this.resolveApproval(approvalId, decision, resolvedBy);
+  }
+
   async readAtomicFixtureArtifact(runId: string, artifactId: string) {
     if (!this.atomicFixturePilot) throw new Error("Atomic fixture pilot is disabled");
     return this.atomicFixturePilot.readApprovalArtifact(runId, artifactId);
@@ -605,6 +1005,11 @@ export class ControlPlaneService {
   async readAtomicModelFixtureArtifact(runId: string, artifactId: string) {
     if (!this.atomicModelPilot) throw new Error("Atomic model pilot is disabled");
     return this.atomicModelPilot.readApprovalArtifact(runId, artifactId);
+  }
+
+  async readDirectCodexFixtureArtifact(runId: string, artifactId: string) {
+    if (!this.directModelPilot) throw new Error("Direct Codex model pilot is disabled");
+    return this.directModelPilot.readApprovalArtifact(runId, artifactId);
   }
 
   private async resolveApprovalOnce(approvalId: string, decision: string, resolvedBy: string) {
@@ -627,6 +1032,17 @@ export class ControlPlaneService {
         throw new Error("Atomic model approval cannot be resolved while its pilot is disabled");
       }
       await this.atomicModelPilot.resolveApproval(
+        approval,
+        decision as "approve" | "deny" | "request_changes",
+        resolvedBy,
+      );
+      return this.getRun(run.id);
+    }
+    if (approval.action === DIRECT_CODEX_APPROVAL_ACTION) {
+      if (!this.directModelPilot || !this.directModelPilot.isPilotRun(run)) {
+        throw new Error("Direct Codex approval cannot be resolved while its pilot is disabled");
+      }
+      await this.directModelPilot.resolveApproval(
         approval,
         decision as "approve" | "deny" | "request_changes",
         resolvedBy,
@@ -797,7 +1213,7 @@ export class ControlPlaneService {
     };
 
     for (const run of candidates.queuedRuns) {
-      if (this.atomicFixturePilot?.isPilotRun(run) || this.atomicModelPilot?.isPilotRun(run)) continue;
+      if (this.atomicFixturePilot?.isPilotRun(run) || this.atomicModelPilot?.isPilotRun(run) || this.directModelPilot?.isPilotRun(run)) continue;
       const completedAt = nowIso();
       await this.store.updateRun(run.id, {
         status: "failed",
@@ -828,7 +1244,7 @@ export class ControlPlaneService {
       ["running", "paused", "awaiting_approval"].includes(run.status)
       && run.metadata.adapter === "native"
       && run.metadata.crossProcessResume !== true,
-    ).filter((run) => !this.atomicFixturePilot?.isPilotRun(run) && !this.atomicModelPilot?.isPilotRun(run));
+    ).filter((run) => !this.atomicFixturePilot?.isPilotRun(run) && !this.atomicModelPilot?.isPilotRun(run) && !this.directModelPilot?.isPilotRun(run));
     for (const run of nativeOrphans) {
       const completedAt = nowIso();
       await this.store.updateRun(run.id, {
@@ -914,6 +1330,10 @@ export class ControlPlaneService {
         strandedApprovalsAlreadySettled += 1;
         continue;
       }
+      if (approval.action === DIRECT_CODEX_APPROVAL_ACTION && this.directModelPilot?.isPilotRun(candidateRun)) {
+        strandedApprovalsAlreadySettled += 1;
+        continue;
+      }
       const run = await this.store.getRun(candidateRun.id);
       if (!run) {
         strandedApprovalsNeedingAttention += 1;
@@ -991,6 +1411,7 @@ export class ControlPlaneService {
     }
     try {
       await this.atomicModelPilot?.tick();
+      await this.directModelPilot?.tick();
     } catch (error) {
       firstError ??= error;
     }

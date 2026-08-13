@@ -7,8 +7,6 @@ import { canonicalJson, type ControlPlaneStore, type InferenceRole } from "./sto
 import type { OciSandboxHandle } from "./oci-sandbox-provider.ts";
 import type { WriterSandboxValidatedExport } from "./writer-sandbox-boundary.ts";
 import {
-  ATOMIC_FIXTURE_IMPLEMENTATION,
-  ATOMIC_FIXTURE_IMPLEMENTATION_SHA256,
   ATOMIC_FIXTURE_TARGET,
   ATOMIC_FIXTURE_TEST,
   ATOMIC_FIXTURE_TEST_SHA256,
@@ -70,8 +68,8 @@ export async function validateAtomicModelPilotEvidence(input: {
 
   const source = readContainedWorkspaceFile(input.handle, ATOMIC_FIXTURE_TARGET);
   const test = readContainedWorkspaceFile(input.handle, ATOMIC_FIXTURE_TEST);
-  if (sha(source) !== ATOMIC_FIXTURE_IMPLEMENTATION_SHA256 || source.toString("utf8") !== ATOMIC_FIXTURE_IMPLEMENTATION) {
-    throw new Error("Atomic model pilot source is not the exact accepted fixture implementation");
+  if (source.byteLength < 1 || source.byteLength > 8 * 1024 || sha(source) !== output.source_after_sha256) {
+    throw new Error("Atomic model pilot source is not bound to the accepted native workflow output");
   }
   if (sha(test) !== ATOMIC_FIXTURE_TEST_SHA256) throw new Error("Atomic model pilot changed the literal fixture tests");
 
@@ -155,7 +153,7 @@ export async function validateAtomicModelPilotEvidence(input: {
   const acceptedInference = object(acceptedContract.inference, "Atomic model accepted inference binding");
   exactKeys(evidence, [
     "schema_version", "control_plane_run_id", "native_workflow_run_id", "workflow", "package_sha256",
-    "capability_policy_sha256", "repair_count", "checks", "verifier", "patch", "memory_proposal",
+    "capability_policy_sha256", "source_after_sha256", "repair_count", "checks", "verifier", "patch", "memory_proposal",
     "draft_pr_mock", "context", "model_execution_expected", "live_provider_verified", "final_action",
   ], "Atomic model evidence manifest");
   const binding = (path: string) => {
@@ -167,6 +165,7 @@ export async function validateAtomicModelPilotEvidence(input: {
       || evidence.workflow !== ATOMIC_FIXTURE_MODEL_WORKFLOW_NAME || evidence.repair_count !== output.repair_count
       || evidence.package_sha256 !== acceptedPackage.packageSha256
       || evidence.capability_policy_sha256 !== acceptedInference.policySha256
+      || evidence.source_after_sha256 !== output.source_after_sha256
       || evidence.model_execution_expected !== true || evidence.live_provider_verified !== input.liveProviderExpected
       || evidence.final_action !== "stop_before_external_action"
       || canonicalJson(evidence.checks) !== canonicalJson(binding(output.checks_final_path))
@@ -192,8 +191,9 @@ export async function validateAtomicModelPilotEvidence(input: {
   const expectedRoles: InferenceRole[] = output.repair_count === 1
     ? ["implementer", "verifier_initial", "repair", "verifier_final"]
     : ["implementer", "verifier_initial", "verifier_final"];
-  const actualRoles = requests.map((request) => request.role).sort();
-  if (canonicalJson(actualRoles) !== canonicalJson([...expectedRoles].sort())
+  const actualRoles = [...new Set(requests.map((request) => request.role))].sort();
+  if (requests.length < expectedRoles.length || requests.length > capability.maxRequests
+      || canonicalJson(actualRoles) !== canonicalJson([...expectedRoles].sort())
       || requests.some((request) => request.state !== "completed" || !request.responseHash || !SHA.test(request.responseHash))) {
     throw new Error("Atomic model provider usage does not match the native stage contract");
   }

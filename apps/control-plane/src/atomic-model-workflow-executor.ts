@@ -26,10 +26,35 @@ function object(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+class AtomicModelWorkflowPhaseError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "AtomicModelWorkflowPhaseError";
+    this.code = code;
+  }
+}
+
+async function phase<T>(code: string, message: string, operation: () => Promise<T>): Promise<T> {
+  try { return await operation(); }
+  catch { throw new AtomicModelWorkflowPhaseError(code, message); }
+}
+
 function remaining(deadline: number, cap = 30_000): number {
   const value = deadline - Date.now();
   if (value <= 0) throw new Error("Atomic model workflow exceeded its elapsed-time bound");
   return Math.max(25, Math.min(value, cap));
+}
+
+function latestNativeEntryId(records: readonly (AtomicRpcResponse | AtomicRpcNativeEvent)[]): string | null {
+  let cursor: string | null = null;
+  for (const record of records) {
+    if (record.type !== "entry_appended") continue;
+    const entry = (record as Record<string, any>).entry;
+    if (entry && typeof entry === "object" && typeof entry.id === "string" && entry.id) cursor = entry.id;
+  }
+  return cursor;
 }
 
 function waitFor<T>(
@@ -93,20 +118,37 @@ export async function executeAtomicFixtureModelWorkflow(input: {
     if (input.onRecord) recordChain = recordChain.then(() => input.onRecord!(record, ordinal));
   });
   try {
-    const state = object((await input.client.getState({ signal: input.signal, timeoutMs: remaining(deadline) })).data, "Atomic state");
+    const stateResponse = await phase(
+      "ATOMIC_MODEL_RPC_HANDSHAKE_FAILED",
+      "Atomic model RPC did not return its bounded native state",
+      () => input.client.getState({ signal: input.signal, timeoutMs: remaining(deadline) }),
+    );
+    const state = object(stateResponse.data, "Atomic state");
     if (typeof state.sessionId !== "string" || !state.sessionId) throw new Error("Atomic model workflow has no native main session ID");
-    const commands = await input.client.getCommands({ signal: input.signal, timeoutMs: remaining(deadline) });
+    const commands = await phase(
+      "ATOMIC_MODEL_COMMAND_DISCOVERY_FAILED",
+      "Atomic model RPC command discovery failed",
+      () => input.client.getCommands({ signal: input.signal, timeoutMs: remaining(deadline) }),
+    );
     if (!JSON.stringify(commands.data).includes("workflow") || !JSON.stringify(commands.data).includes("atomic-routing")) {
       throw new Error("Atomic model workflow package commands were not discovered");
     }
     const listWait = waitFor(input.client, parseAtomicWorkflowListEvent, () => true, remaining(deadline, 10_000));
-    const listed = await paired(listWait, input.client.prompt("/workflow list", { signal: input.signal, timeoutMs: remaining(deadline, 10_000) }));
+    const listed = await phase(
+      "ATOMIC_MODEL_WORKFLOW_DISCOVERY_FAILED",
+      "Atomic model package workflow discovery failed",
+      () => paired(listWait, input.client.prompt("/workflow list", { signal: input.signal, timeoutMs: remaining(deadline, 10_000) })),
+    );
     if (!listed.workflows.includes(ATOMIC_FIXTURE_MODEL_WORKFLOW_NAME)) throw new Error("Atomic model fixture workflow was not discovered");
     const dispatch = buildAtomicFixtureModelWorkflowDispatchCommand(input.inputs);
     const admittedWait = waitFor(input.client, parseAtomicWorkflowLifecycleEvent,
       (value) => value.action === "run" && value.workflow === ATOMIC_FIXTURE_MODEL_WORKFLOW_NAME,
       remaining(deadline, 15_000));
-    const admitted = await paired(admittedWait, input.client.prompt(dispatch, { signal: input.signal, timeoutMs: remaining(deadline, 15_000) }));
+    const admitted = await phase(
+      "ATOMIC_MODEL_WORKFLOW_DISPATCH_FAILED",
+      "Atomic model workflow dispatch failed",
+      () => paired(admittedWait, input.client.prompt(dispatch, { signal: input.signal, timeoutMs: remaining(deadline, 15_000) })),
+    );
     if (admitted.status !== "running" && admitted.status !== "pending") throw new Error("Atomic model workflow was not admitted");
     let terminal: AtomicWorkflowLifecycleDetail | undefined;
     while (!terminal) {
@@ -114,20 +156,47 @@ export async function executeAtomicFixtureModelWorkflow(input: {
       const statusWait = waitFor(input.client, parseAtomicWorkflowLifecycleEvent,
         (value) => value.action === "status" && value.runId === admitted.runId,
         remaining(deadline, 15_000));
-      const status = await paired(statusWait, input.client.prompt(buildAtomicWorkflowStatusCommand(admitted.runId), {
-        signal: input.signal, timeoutMs: remaining(deadline, 15_000),
-      }));
+      const status = await phase(
+        "ATOMIC_MODEL_WORKFLOW_STATUS_FAILED",
+        "Atomic model workflow status polling failed",
+        () => paired(statusWait, input.client.prompt(buildAtomicWorkflowStatusCommand(admitted.runId), {
+          signal: input.signal, timeoutMs: remaining(deadline, 15_000),
+        })),
+      );
       if (isTerminalAtomicWorkflowStatus(status.status)) terminal = status;
       else await delay(Math.min(pollMs, remaining(deadline)), undefined, { signal: input.signal });
     }
     if (terminal.status !== "completed") throw new Error(`Atomic model workflow ended ${terminal.status}`);
     const output = parseAtomicFixtureModelWorkflowOutput(terminal.output, input.inputs.live_provider_expected);
-    const entries = object((await input.client.getEntries(undefined, { signal: input.signal, timeoutMs: remaining(deadline) })).data, "Atomic entries");
     await recordChain;
+    let nativeCursor = latestNativeEntryId(rawRecords);
+    if (deadline - Date.now() >= 25) {
+      try {
+        const entriesResponse = await input.client.getEntries(nativeCursor ?? undefined, {
+          signal: input.signal,
+          timeoutMs: remaining(deadline, 5_000),
+        });
+        const entries = object(entriesResponse.data, "Atomic entries");
+        if (typeof entries.leafId === "string" && entries.leafId) nativeCursor = entries.leafId;
+      } catch (error) {
+        if (!nativeCursor) {
+          throw new AtomicModelWorkflowPhaseError(
+            "ATOMIC_MODEL_CURSOR_READ_FAILED",
+            "Atomic model native cursor read failed without a persisted entry cursor",
+          );
+        }
+      }
+    }
+    if (!nativeCursor) {
+      throw new AtomicModelWorkflowPhaseError(
+        "ATOMIC_MODEL_CURSOR_READ_FAILED",
+        "Atomic model native workflow completed without a stable entry cursor",
+      );
+    }
     return {
       nativeSessionId: state.sessionId,
       nativeWorkflowRunId: terminal.runId,
-      nativeCursor: typeof entries.leafId === "string" ? entries.leafId : null,
+      nativeCursor,
       output,
       rawRecords,
     };

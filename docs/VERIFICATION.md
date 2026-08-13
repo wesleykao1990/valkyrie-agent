@@ -452,19 +452,176 @@ not prove model quality, and normal verification binds
 all `ATOMIC_FIXTURE_MODEL_*` settings, and loads no provider credential. A live
 configured run may claim verification only after every expected role request is
 durably completed and the native, deterministic, and frozen-export evidence
-agrees. `npm run smoke:atomic-model` is the separate opt-in live command; it was
-not run in this credential-free session.
+agrees. `npm run smoke:atomic-model` is a separate opt-in live command and remains
+excluded from normal verification. Its successful subscription-backed execution
+is recorded below.
 
-## Repository-wide verification through credential-free M5b
+## M5b subscription-broker live evidence
 
-The final repository-wide command passed on 12 August 2026:
+On 13 August 2026, the installed `codex-cli 0.147.0` reported `Logged in using
+ChatGPT`. A minimal ephemeral read-only marker probe using `gpt-5.6-sol` completed
+with thread `019ff7cd-42aa-7231-a105-3f496794fa46`, exact output
+`VALKYRIE_SUBSCRIPTION_OK`, 13,574 input tokens (9,984 cached), and 12 output
+tokens. This proves that the local ChatGPT subscription transport works; it is
+not the end-to-end Atomic pilot and it used no OpenAI API key.
+
+The repository now adds a fake-child-contract-tested `codex-subscription`
+gateway upstream, strict structured-output schema, dedicated-profile setup and
+opt-in marker smoke, and checksummed migration 008. SQLite and PostgreSQL both
+permit changed request hashes within one role while rejecting exact replay and
+enforcing a total 16-request/aggregate-token ceiling. Normal verification strips
+all `ATOMIC_FIXTURE_MODEL_*` values and cannot use the live profile.
+
+`npm run setup:codex-subscription` created the ignored dedicated profile and
+scratch directories, and that profile completed its own ChatGPT device login.
+`npm run smoke:codex-subscription` then passed with `codex-cli 0.147.0`,
+`gpt-5.6-sol`, request `codex_677e403017bc188282400df77d8c7266`, 11,108 input
+tokens, 29 output tokens, and no API key. No OAuth file was copied from the
+existing user profile.
+
+The full `npm run smoke:atomic-model` path passed on 13 August 2026 and stopped
+before approval as designed:
+
+- control-plane run: `run_6423f043-0abc-40c0-a7cc-a398633ba949`;
+- Atomic main session: `019ff807-b584-7ef3-a6ac-62e6f5eb1d77`;
+- native workflow run: `e9d6b759-1d3a-44a2-9f84-deda37d975ae`;
+- pending approval: `approval_atomic_model_7817fe4297c19c7126b580b2d0dad754`;
+- eight completed provider turns: four implementer, two initial-verifier, and two
+  final-verifier turns; repair count zero;
+- aggregate usage: 134,319 input tokens, 858 output tokens, and zero/unknown
+  subscription dollar cost;
+- immutable bindings: runner image
+  `sha256:17de54b6354874d2009fd467c4098efb4e43b16323c38bbfb987092b0699e8bb`,
+  staged package `8b5247c86cb84d5044aca18f01784b9472ccf3fe348d6c3b9e85bd86ede9625b`,
+  policy `2f8745b1913d6b59f1524faee9f95e09bc19788af27e4167bff94cd1789c06bc`,
+  and candidate source `2a83c9141bc48f097168a8ed70f484060974bd7cc0788b318dc079c1ac584934`;
+- deterministic evidence: four fixture tests passed, `git diff --check` passed,
+  exactly `src/normalize-project-slug.js` changed, and both fresh verifiers
+  approved with no findings;
+- 11 checksum-bound governed artifacts were exported; the smoke independently
+  read and rehashed the candidate patch, final checks, final verifier, and evidence
+  manifest against the approval digest;
+- the inference capability was revoked, the proxy and writer container removed,
+  the worktree deleted, and the writer lease released. A post-run managed-container
+  inventory was empty.
+
+The live writer never received the subscription profile or API key. The verified
+macOS/Colima deployment used a loopback-only host gateway plus a fixed credential-
+free proxy dual-homed on the internal writer network and Docker bridge; the writer
+itself remained on the internal network. The run remains an operator-decision
+candidate, not an accepted result or external-action authorization.
+
+## Milestone 6 deterministic and live comparison evidence
+
+The default-off M6 slice adds a direct Codex root writer and checksummed migration
+009 for durable comparison aggregates/candidates. Focused evidence on 13 August
+2026 passed for:
+
+- exact direct task/runtime/workflow and one-candidate admission gates;
+- an independent writer worktree/container/lease owner and no Atomic invocation;
+- schema-bounded implementer output, fixed target write, immutable tests,
+  `node --test`, `git diff --check`, exact changed-file scope, a fresh verifier,
+  and at most one evidence-backed repair;
+- 11 frozen, secret-scanned, checksum-bound artifacts and a separately expiring
+  safe-mock approval with proposed-only memory;
+- bounded raw Codex JSONL plus normalized inference completion events, durable
+  request/token/cost evidence, capability revocation, cleanup, cancellation,
+  artifact re-open/tamper checks, and restart recovery;
+- SQLite/PostgreSQL comparison storage parity and an evidence-derived Atomic/
+  direct-Codex metric snapshot; and
+- a distinct Claude Code model workflow that remains unavailable and never
+  inherits the Codex subscription boundary.
+
+Focused direct/subscription/comparison tests passed 14/14, the policy/direct/
+comparison set passed 21/21, strict typecheck passed, and the unrestricted full
+unit suite exited zero. The final exact repository-wide count is recorded after
+the last `npm run verify` below.
+
+After Wesley explicitly approved sending the fixed disposable payload to the
+external ChatGPT subscription service, `npm run smoke:m6-comparison` passed on
+13 August 2026. The exact evidence was:
+
+- comparison `compare_493a626ad2e583bff275ffc343bb495e`, contract hash
+  `2ba4c154659db4a033b62e5477a8683093d840fdb0857e04c37e6d3cd7406170`;
+- Atomic run `run_2592e612-7f6d-46ab-bf7d-b786de72e62f`, native session
+  `019ff8c5-03b1-7561-8cd8-1368bbea51f0`, and native workflow
+  `fe618202-259c-4ca2-a4c0-2a529b7489b2`;
+- direct Codex run `run_ee9b00bd-52af-4006-bd81-a00c9b6aa5b2`;
+- both candidates passed four deterministic fixture tests, `git diff --check`,
+  exact changed-file scope, and a fresh final verifier with no findings and no
+  repair;
+- Atomic used 134,670 input and 934 output tokens in 83,188 ms, retained 974
+  run events, and produced 11 governed artifacts;
+- direct Codex used 34,933 input and 349 output tokens in 27,267 ms, retained 16
+  run events including 12 raw inference records, and produced 11 governed
+  artifacts;
+- both subscription cost fields were recorded as zero/unknown rather than
+  misrepresented as priced API usage; recovery was not exercised in this live
+  run and `crossProcessResume` remained false;
+- both candidates used the same exact base commit
+  `6b608417507d3d45a6e4ad067b36203f43fe7d88`, model policy hash
+  `2f8745b1913d6b59f1524faee9f95e09bc19788af27e4167bff94cd1789c06bc`,
+  deterministic checks, and verifier rubric, but independent run IDs,
+  workspaces, containers, leases, capabilities, artifacts, and approvals; and
+- governed patches/checks/verifiers were reopened and rehashed, both containers
+  and workspaces were removed, both writer leases were released, and a final
+  managed-container inventory was empty.
+
+The candidate implementations were semantically equivalent. Atomic returned a
+compact one-line normalization expression; direct Codex returned the same logic
+split over multiple lines and used capitalized error text. This one fixed fixture
+does not select a default runtime. Atomic approval
+`approval_atomic_model_d4703f0e655a4a5cbc650b641eed1943` and direct approval
+`approval_direct_codex_4ce0bd26eea85ddc4cf477bf08374e9e` remain pending. No PR,
+merge, deployment, product-database mutation, credential expansion, memory
+promotion, or candidate acceptance occurred.
+
+### Interpreting the elapsed-time and token result
+
+Elapsed time is an operational budget metric required by the M6 contract, not a
+standalone quality score. The raw difference mostly measured orchestration shape:
+
+- Atomic made eight stateless subscription requests: four implementer calls and
+  two calls for each fresh verifier. Their model wait was about 77,037 ms of the
+  83,188 ms total.
+- Direct Codex made three requests: one implementer and one per verifier. Their
+  model wait was about 25,502 ms of the 27,267 ms total.
+- Every Atomic request opened a new Codex thread, resent roughly 16–17K input
+  tokens, and reported zero cached input. Direct requests carried roughly 11–12K.
+- Atomic's first implementer call requested source/test/check evidence, the
+  second wrote the source, the third attempted to read final checks before that
+  artifact existed, and the fourth emitted structured completion. Each Atomic
+  verifier similarly used one read round and one verdict round. Direct Codex
+  received the bounded inputs in its prompt and returned one schema-bound result
+  per role.
+
+For this small deterministic fixture, the additional Atomic work was not worth
+3.05x elapsed time and 3.82x input tokens: it caught no additional defect, used no
+repair, and reached the same check/verifier outcome. Atomic did provide a native
+session/workflow graph, tool-mediated stage trace, and much richer event evidence
+(974 versus 16 events), which may be valuable for larger tasks or recovery—but
+recovery was not exercised here and cross-process resume remains false.
+
+Before another comparison, optimize the Atomic path by reusing or caching tool-loop
+context, trimming its per-turn bootstrap, hiding stage-inapplicable artifacts,
+preloading bounded verifier evidence where safe, and skipping a duplicate final
+verifier when no repair occurred. Then compare several medium tasks and measure
+defects caught and human review burden, not just latency. The current evidence
+supports direct Codex for this class of tiny fixed task; it does not justify a
+global routing default.
+
+## Repository-wide verification through deterministic M6
+
+The final repository-wide command passed on 13 August 2026 after the live pilot.
+The normal verification environment stripped every live model/profile setting and
+made no subscription request:
 
 ```bash
 npm run verify
 ```
 
 - `npm run typecheck`: passed with strict checking enabled.
-- `npm test`: 223 tests total; 220 passed, 0 failed, and 3 honest opt-in
+- `npm test`: 237 tests total; 234 passed, 0 failed, and 3 honest opt-in
   cases skipped in this phase (the PostgreSQL storage contract, PostgreSQL M5b
   lifecycle, and live OCI provider).
 - `npm run test:postgres`: a disposable PostgreSQL 16 cluster passed the storage
@@ -484,8 +641,58 @@ npm run verify
 The general suite is intentionally serialized because several fake-OCI tests use
 tight process deadlines; every previously observed parallel-load timeout passed
 both individually and in the final serialized run. Live model settings and
-credentials were stripped throughout. `npm run smoke:atomic-model` was not run,
-so no provider/model, model-quality, token/cost, or human-review claim is made.
+credentials were stripped throughout. Neither live-model smoke was part of this
+command, so the result makes no new provider/model, model-quality, or human-review
+claim. The separate opt-in M6 smoke is the authority for the live comparison
+claim. It did not resolve either approval and does not prove human-review burden,
+recovery behavior, general coding quality, or a preferred default runtime.
+
+## Post-M6 gap closure: durable assessment, Atomic Lite, and session continuity
+
+On 13 August 2026, the complete pre-M7 gap slice passed the repository verifier:
+
+```bash
+npm run verify
+```
+
+- strict root TypeScript passed;
+- the general suite reported 264 total: 261 passed, 0 failed, and 3 honest
+  opt-in skips (PostgreSQL storage, PostgreSQL model lifecycle, and live OCI are
+  exercised in their separate phases);
+- disposable PostgreSQL passed 22/22 storage and 7/7 model-lifecycle tests;
+- the Atomic package passed TypeScript and verified 38 required files, 6
+  workflows, 16 routing cases, 5 prompt templates, and 11 invalid manifests;
+- HTTP smoke passed with 3 projects, 3 isolated candidates, 3 approvals,
+  artifacts 5/4/4, and one disposable exact-preview memory promotion; and
+- authenticated MCP smoke passed with its 7 test-allowlisted tools, runtime and
+  governed-memory operations, portfolio calls, and idempotent run replay.
+
+Migration 010 and the authenticated HTTP/MCP operations now persist a bounded,
+explainable Direct / Atomic Lite / Atomic Full assessment from a literal Hermes
+request. Scores and hard signals remain control-plane-owned. Because the only
+available Linear context is a prototype projection and Git/project execution
+policy is unavailable, every current assessment is durably marked unsupported
+and creates no run, workspace, lease, container, or fixed-pilot substitution.
+
+The package-local `atomic-lite-writer` passed 12/12 focused tests. It binds the
+contract/policy/context, one retained implementer lineage, model-free checks, at
+most one forked repair, conditional fresh review, exact Git commit/tree/index,
+descriptor-bound writes, full Git-visible worktree state, and checksummed patch/
+evidence artifacts. An independent fresh review found no blocker after regressions
+proved ancestor-swap refusal, ordinary undeclared check-mutation rejection, and
+staged/committed undeclared-mutation rejection. This remains an unregistered
+package contract, not an OS sandbox or a general writer.
+
+Migration 011 retains provider-session identity and reuse evidence. The opt-in
+two-turn ChatGPT-subscription smoke was run twice; the final run kept one native
+Codex thread `019ff91a-d34a-7fe2-b995-0989a9350c24` across request
+`codex_ec75fc61909b2e9f2e525dc570f184b3` (11,674 input/29 output tokens) and
+request `codex_ef152c3ba4e8d66968d132a28538a72c` (23,606 input/57 output tokens).
+The second request recorded `providerSessionReused=true` and sent only the
+appended conversation delta through the broker. This proves process-local
+transport continuity, not token savings: the provider reported more/cumulative
+input on the resumed turn, dollar cost stayed zero/unknown, and restart resume
+remains disabled.
 
 ## Reproduction commands
 

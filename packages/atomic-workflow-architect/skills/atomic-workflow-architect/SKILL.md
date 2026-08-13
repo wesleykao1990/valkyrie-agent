@@ -277,10 +277,20 @@ Use the six-dimension rubric in `references/02-routing-rubric.md`:
 
 Guidance:
 
-- `0–3`: direct/inline.
-- `4–6`, at most one likely repair, no gate: bounded subagents or a small tracked workflow.
-- `7+`, iteration 2, or strong proof/review requirements: workflow.
-- Any explicit loop, approval/evidence gate, background/resume requirement, or multiple independent candidates: workflow regardless of score.
+- `0–3`: Direct — one direct root session plus deterministic checks.
+- `4–6`, at most one likely repair, no gate: Atomic Lite — one retained
+  implementer stage, model-free checks, forked repair continuity, and only a
+  distinct conditional fresh verifier.
+- `7+`, iteration 2, or strong proof/review requirements: Atomic Full.
+- Any explicit loop, approval/evidence gate, background/resume requirement, high
+  risk, or multiple independent candidates: Atomic Full regardless of score.
+
+Hermes may provide a preferred shape, but the control plane owns the final
+policy decision. Preferences can increase rigor and cannot weaken the rubric.
+For Atomic Lite/Full, keep provider sessions persistent within a stage, send
+artifact paths/deltas rather than repeated full context, use model-free
+deterministic gates, and avoid redundant reviewers that inspect no new failure
+surface.
 
 Inspect installed workflow contracts before selection. Never invent a workflow name/input.
 

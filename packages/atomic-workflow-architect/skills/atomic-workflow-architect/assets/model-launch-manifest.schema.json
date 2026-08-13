@@ -72,7 +72,7 @@
             "verifier_final": { "$ref": "#/$defs/stableId" }
           }
         },
-        "max_requests": { "const": 4 },
+        "max_requests": { "const": 16 },
         "max_input_tokens": { "type": "integer", "minimum": 1, "maximum": 128000 },
         "max_output_tokens": { "type": "integer", "minimum": 1, "maximum": 32768 },
         "max_cost_micros": { "type": "integer", "minimum": 0, "maximum": 100000000 },

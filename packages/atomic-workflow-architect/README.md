@@ -29,11 +29,20 @@ The package automatically routes actionable input into the `atomic-workflow-arch
 
 Use `direct:` or `inline:` to bypass. Use `atomic:` or `workflow:` to force the architect.
 
+For general control-plane routing, these map to three profiles: Direct (one root
+session plus deterministic checks), Atomic Lite (one retained implementer stage,
+model-free checks, forked repair, conditional fresh review), and Atomic Full
+(multi-stage evidence, bounded repair/reduction, durability, and gates). Hermes
+may express a preference; the control plane makes and records the final decision.
+The package auto-router runs after Atomic has already been selected, so it cannot
+by itself choose a direct Codex/Claude root runtime.
+
 ## Package contents
 
 - natural-language input-routing extension;
 - `atomic-workflow-architect` Agent Skill;
-- `idea-to-decision`, `project-blueprint`, and `request-preflight` workflows;
+- `idea-to-decision`, `project-blueprint`, `request-preflight`, and the reusable
+  package-local `atomic-lite-writer` workflow;
 - feature, bug, migration, idea, and project workflow templates;
 - run-contract, pre-launch, launch-manifest, and memory-proposal assets;
 - Hermes/control-plane/Codex/Claude integration guidance;
@@ -92,4 +101,9 @@ Version 0.2.1 is a repository-integrated derivative of the verified 0.2.0 source
 
 The package now explicitly declares all three host modules imported by its code. Their peer ranges remain `*` because the source bundle did not record a verified published version set. Do not treat those ranges as production pins: the disabled-by-default pilot runner must supply and contract-test exact versions before live use.
 
-The package has been structurally and TypeScript-checked in this environment. It has not been live-executed against a model-backed Atomic installation because `atomic` is not installed here. The first real deployment should remain a bounded Ovalo pilot.
+The package has been structurally and TypeScript-checked and its fixed M5a/M5b
+workflows were live-exercised with the repository's pinned Atomic 0.9.12 runner.
+The package-local `atomic-lite-writer` is contract-tested but is not registered
+as a general runtime and has not received a live model-backed task. Any future
+deployment must remain bounded by an accepted project policy, the external
+writer sandbox, and the control-plane approval/evidence boundary.

@@ -28,7 +28,7 @@ const fakeAtomic = resolve("scripts/fake-atomic-rpc.ts");
 const policy: ScopedInferencePolicy = {
   provider: "fake-prelive", model: "fake-prelive-model", api: "openai-completions",
   roleModels: { implementer: "impl", verifier_initial: "verify-1", repair: "repair", verifier_final: "verify-2" },
-  roles: ["implementer", "verifier_initial", "repair", "verifier_final"], maxRequests: 4,
+  roles: ["implementer", "verifier_initial", "repair", "verifier_final"], maxRequests: 16,
   maxInputTokens: 32_000, maxOutputTokens: 8_000, maxCostMicros: 1_000_000,
   maxElapsedMs: 240_000, ttlMs: 10 * 60_000, inputCostMicrosPerMillion: 0, outputCostMicrosPerMillion: 0,
 };
@@ -169,7 +169,7 @@ test("pre-live coordinator composes accepted package, read-only capability, nati
       policy, gatewayBaseUrl: "http://valkyrie-inference:8790/v1",
       acceptedPackageSha256: packageDigest, acceptedImageDigest: `sha256:${"b".repeat(64)}`, maxCostUsd: 1,
       bridge: {
-        start: async (runId) => ({ runId, id: "9".repeat(64), name: "fake-bridge", socketPath: join(root, "fake.sock") }),
+        start: async (runId) => ({ runId, id: "9".repeat(64), name: "fake-bridge", gatewayBinding: "test:fake" }),
         stop: async () => undefined,
       },
       now: () => new Date(now),
@@ -213,14 +213,16 @@ test("pre-live coordinator composes accepted package, read-only capability, nati
       policy, gatewayBaseUrl: "http://valkyrie-inference:8790/v1",
       acceptedPackageSha256: packageDigest, acceptedImageDigest: `sha256:${"b".repeat(64)}`, maxCostUsd: 1,
       bridge: {
-        start: async (runId) => ({ runId, id: "8".repeat(64), name: "fake-bridge", socketPath: join(root, "fake.sock") }),
+        start: async (runId) => ({ runId, id: "8".repeat(64), name: "fake-bridge", gatewayBinding: "test:fake" }),
         stop: async () => { bridgeStops += 1; },
       },
       now: () => new Date(now),
     });
     await assert.rejects(
       failedCoordinator.run({ run: failedRun, project, taskId: "task_model", contextPack: { objective: "fixed" }, signal: new AbortController().signal }),
-      /simulated RPC startup failure/,
+      (error: unknown) => error instanceof Error
+        && (error as Error & { code?: string }).code === "ATOMIC_MODEL_RPC_OPEN_FAILED"
+        && /bounded open contract/.test(error.message),
     );
     assert.equal(bridgeStops, 1, "bridge cleanup runs after native startup failure");
     assert.ok(failedBoundary.capabilityToken?.startsWith("vki_"));

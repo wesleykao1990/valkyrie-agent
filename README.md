@@ -437,7 +437,7 @@ admission transactional across processes, but cancellation and native ownership
 handoff are intentionally not horizontally coordinated while
 `crossProcessResume=false`.
 
-## Milestone 5b status: credential-free engineering complete; live model pending
+## Milestone 5b status: subscription-backed pilot live-verified through approval
 
 The default-off M5b path is registered through the authenticated service, HTTP,
 and restricted Hermes MCP boundary for exactly one disposable task. It adds:
@@ -445,10 +445,11 @@ and restricted Hermes MCP boundary for exactly one disposable task. It adds:
 - a second fixed `atomic-fixture-model-pilot` native Atomic workflow;
 - fresh implementer, fresh initial verifier, at most one repair forked from the
   implementer, deterministic checks, and a new final fresh verifier;
-- four single-use role/model capabilities with transactional SQLite/PostgreSQL
-  usage and cost accounting (migration 007);
-- a private Unix-socket inference gateway and a no-secret bridge container on an
-  inspected internal Docker network;
+- four fixed role/model aliases sharing one run capability, with at most 16
+  request-hash-distinct native tool-loop turns and transactional SQLite/
+  PostgreSQL usage accounting (migrations 007–008);
+- a loopback-only host inference gateway and a fixed no-secret proxy container
+  between the inspected internal Docker network and the host gateway;
 - exact runner/package/workflow/core/fence/policy bindings and read-only staged
   Atomic model settings;
 - credential-free fake Atomic/upstream contract tests, failure cleanup,
@@ -459,6 +460,23 @@ and restricted Hermes MCP boundary for exactly one disposable task. It adds:
   bounded artifact reads, an exact evidence-bound operator gate, safe mock receipt,
   and proposed-only memory in both SQLite and PostgreSQL.
 
+The host gateway now has two upstream modes. `openai-compatible` uses a reviewed
+HTTPS API or explicit credential-free loopback server. `codex-subscription` uses
+the pinned Codex CLI with a dedicated `CODEX_HOME` authenticated by ChatGPT. It
+does not export an OAuth token or pretend subscription auth is an API key. Atomic
+remains the root workflow runtime; Codex is only the inference protocol adapter
+for Atomic's fixed model stages.
+
+The subscription broker runs Codex in an empty read-only scratch root, ignores
+user config/rules, disables native shell/app/plugin/browser/subagent surfaces,
+accepts prompts only on stdin, requires structured output and authoritative token
+usage, and rejects any observed native tool activity. It retains one private
+process-owned Codex thread per capability/role so later turns send only appended
+messages. Role threads never mix, ambiguous failures poison the lineage, and a
+replacement process refuses resume. The OAuth/session profile is never mounted
+into the writer. This boundary is reviewed only for the literal disposable
+fixture; broader prompts require a separately isolated credential broker.
+
 These tests prove the boundary and state machine, not a model's correctness. The
 normal suite binds `live_provider_expected=false`, reports
 `live_provider_verified=false`, strips all model settings, and makes no provider
@@ -467,20 +485,39 @@ request. A configured live server binds `live_provider_expected=true`; it may se
 completed within the capability's request/token/cost/time policy and the native,
 deterministic, frozen-export evidence agrees.
 
-For later live enablement, configure the commented
+For subscription-first enablement, prepare a dedicated profile and complete the
+one-time ChatGPT device login. This was exercised successfully on 13 August 2026;
+repeat it only for a new or logged-out profile:
+
+```bash
+npm run setup:codex-subscription
+# Run the printed CODEX_HOME=... codex login --device-auth command if needed.
+# After setting the explicit ATOMIC_FIXTURE_MODEL_* values:
+npm run smoke:codex-subscription
+```
+
+The setup command never copies `~/.codex/auth.json`; the dedicated profile must
+be authenticated directly. The smoke makes two subscription-backed marker turns,
+proves that the second resumes the exact first-turn provider thread, and reports
+only the pinned version, auth mode, safe request/session IDs, and token usage. It
+is opt-in and is not part of `npm run verify`.
+
+Alternatively, configure the OpenAI-compatible
 `ATOMIC_FIXTURE_MODEL_*` values in `.env.example`. An external provider requires
 an HTTPS `/v1` endpoint, explicit token prices, and a dedicated 0600 credential
 file. A credential-free local OpenAI-compatible server is accepted only through
 explicit HTTP-loopback opt-in. The provider credential stays in the host gateway;
 the writer receives only a short-lived capability file. Do not provide a key
 until the provider/model, limits, accepted package/image digests, and intended
-spend have been reviewed.
+spend have been reviewed. ChatGPT subscriptions and OpenAI API usage are separate
+surfaces; subscription dollar cost is recorded as zero/unknown while request,
+token, elapsed-time, concurrency, and provider rate limits remain authoritative.
 
 The internal Docker network must be a dedicated local bridge created with
 `--internal` and named by `ATOMIC_FIXTURE_MODEL_NETWORK`. Set
 `CONTROL_PLANE_OPERATOR_ID` to the authenticated local operator identity recorded
-on cancellation and final-gate events. Once Wesley chooses the provider/model,
-start the configured server and run:
+on cancellation and final-gate events. Once the dedicated subscription profile
+(or external provider) is ready, start the configured server and run:
 
 ```bash
 npm run smoke:atomic-model
@@ -492,13 +529,23 @@ then prints the approval ID. It does not approve by default. After an actual
 review, resolve through Hermes or explicitly set
 `VALKYRIE_ATOMIC_MODEL_SMOKE_APPROVE=true` to exercise only the safe mock receipt.
 
+The recorded live run `run_6423f043-0abc-40c0-a7cc-a398633ba949` used Atomic
+0.9.12 and subscription-backed `gpt-5.6-sol` without an API key. It completed eight
+bounded provider turns (134,319 input tokens; 858 output tokens; subscription cost
+recorded as $0/unknown), passed all four fixture tests and both fresh verifier
+stages with no repair, exported 11 artifacts, proved writer/container cleanup,
+and stopped at approval `approval_atomic_model_7817fe4297c19c7126b580b2d0dad754`.
+The smoke did not resolve that approval or perform an external action.
+
 Disable the slice by stopping the server and leaving
 `ATOMIC_FIXTURE_MODEL_PILOT_ENABLED` unset/false. Migration 007 adds only hashed,
-bounded capability/request/accounting state; migration 006 adds the approval
-bindings. Both are checksummed and forward-only. An older binary must use a
-verified pre-v7 backup or separate compatible database, not the migrated ledger.
+bounded capability/request/accounting state; migration 008 adds bounded
+multi-turn request identity and larger aggregate token ceilings; migration 006
+adds the approval bindings. All are checksummed and forward-only. An older binary
+must use a verified pre-v8 backup or separate compatible database, not the
+migrated ledger.
 
-SQLite applies migration 006 automatically on the next start. For an explicitly
+SQLite applies pending migrations through 011 automatically on the next start. For an explicitly
 selected PostgreSQL development database, back it up first and run:
 
 ```bash
@@ -512,8 +559,10 @@ on the illustrative value above. Disabling the feature does not require deleting
 its ignored data, image, registry, or proposal; retain them until evidence review
 and cleanup are complete.
 
-See [the M5 plan](docs/IMPLEMENTATION_PLAN_M5.md) and
-[proposed ADR-P005](docs/adr/ADR-P005-atomic-writer-pilot.md). The exact live
+See [the M5 plan](docs/IMPLEMENTATION_PLAN_M5.md),
+[the subscription implementation plan](docs/IMPLEMENTATION_PLAN_M5B_SUBSCRIPTION.md),
+[proposed ADR-P005](docs/adr/ADR-P005-atomic-writer-pilot.md), and
+[proposed ADR-P007](docs/adr/ADR-P007-subscription-inference-broker.md). The exact live
 runner digest and run evidence belong in [the verification record](docs/VERIFICATION.md),
 not in reusable setup instructions.
 
@@ -568,6 +617,105 @@ Reuse an idempotency key only for the exact same logical request. See
 The browser developer console does not currently collect or store a bearer token.
 Use it for the default mock demo; use the smoke, HTTP, or Hermes MCP surfaces for
 the authenticated native pilot.
+
+## Milestone 6: Atomic versus direct Codex
+
+The default-off M6 slice adds a second, genuine root writer: direct Codex. It
+uses the same fixed disposable task, reviewed fixture commit, scoped host-side
+ChatGPT subscription broker, model, limits, deterministic checks, fresh verifier,
+one-repair cap, governed exports, and safe-mock approval boundary as M5b. It does
+not invoke Atomic. Atomic and direct Codex receive different run IDs, worktrees,
+containers, lease owners/fences, capabilities, artifacts, and approvals.
+
+Set `DIRECT_CODEX_MODEL_PILOT_ENABLED=true` only alongside the complete reviewed
+M5b configuration. `DIRECT_CLAUDE_MODEL_PILOT_ENABLED` remains a distinct
+default-off visibility gate: it reports unavailable and never falls back to
+Codex because no Claude Code subscription/API broker has yet been exercised.
+
+Migration 009 stores a durable comparison and immutable candidate metrics for
+correctness, evidence-backed repairs, input/output tokens, reported cost, elapsed
+time, review-artifact count, event/recovery evidence, resumability, and a documented
+integration-complexity rubric. Completion means “comparison evidence is ready,”
+not that either candidate is accepted or selected.
+
+The opt-in live smoke sends the fixed fixture objective, source, immutable test,
+candidate output, checks, and verifier prompts to the external ChatGPT subscription
+service. Run it only after explicitly accepting that data flow:
+
+```bash
+export DIRECT_CODEX_MODEL_PILOT_ENABLED=true
+# Start the fully configured M5b server, then in another terminal:
+export CONTROL_PLANE_API=http://127.0.0.1:8787
+export CONTROL_PLANE_AUTH_TOKEN_FILE="$PWD/data/auth/control-plane.token"
+# Optional: attach an existing exact M5b evidence run instead of creating Atomic again.
+export VALKYRIE_M6_ATOMIC_RUN_ID=run_...
+npm run smoke:m6-comparison
+```
+
+The smoke rehashes four direct review artifacts, verifies raw and normalized
+provider evidence, finalizes the two-candidate ledger, and stops before both
+approval gates. It never creates a PR, merges, deploys, changes a product database,
+expands credentials, or promotes memory.
+
+The recorded 13 August 2026 run passed after Wesley approved the fixed external
+payload. Atomic and direct Codex both passed all four fixture tests and a fresh
+verifier with no repair, exported 11 artifacts each, and cleaned their independent
+writer boundaries. Atomic used 134,670 input/934 output tokens in 83.2 seconds;
+direct Codex used 34,933 input/349 output tokens in 27.3 seconds. Subscription
+cost remained zero/unknown, recovery was not exercised, and both approvals remain
+pending. This single fixture does not select a default runtime. Exact run,
+comparison, approval, policy, and evidence IDs are in
+[the verification record](docs/VERIFICATION.md).
+
+### Routing after the M6 comparison
+
+The proposed general engineering policy has three shapes:
+
+| Shape | Intended use | Model-backed structure |
+|---|---|---|
+| Direct | Tiny, deterministic, low-risk work | One Codex or Claude Code root session; deterministic checks; reviewer only when evidence justifies it |
+| Atomic Lite | Moderate work with a real handoff or likely single repair | One persistent Atomic implementer stage, model-free checks, forked repair continuity, and at most one distinct fresh verifier |
+| Atomic Full | High-risk, iterative, parallel, resumable, or approval/evidence-gated work | Explicit multi-stage graph, independent evidence, bounded reducer/repair, artifacts, checkpoints, and gates |
+
+Hermes supplies the literal request and may express a preference. The control
+plane owns the final, recorded decision using Structure, Verifiability, Iteration,
+Risk, Duration, Isolation, and hard workflow signals. A preference may increase
+rigor but cannot weaken required checks, isolation, or approval.
+
+The authenticated assessment surface is now available through
+`engineering_assess` / `engineering_assessment_get` and the matching HTTP routes.
+It records source provenance, final-action intent, the complete rubric, reasons,
+policy version, and a 15-minute TTL. Hermes cannot submit scores. Because live
+Linear/Git authority and a trusted general project launcher are M7 work, every
+current assessment truthfully reports execution unsupported and creates no run,
+workspace, lease, or fixed-pilot substitution. A bearer token is mandatory for
+these two routes even on loopback.
+
+```bash
+curl -fsS http://127.0.0.1:8787/api/engineering/assessments \
+  -H "Authorization: Bearer $CONTROL_PLANE_AUTH_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data '{"projectId":"ovalo","request":"Implement a bounded parser with unit tests.","preference":"auto","finalAction":"prepare_reviewable_result","idempotencyKey":"routing-example-1"}'
+```
+
+The Atomic package also contains a reusable, package-local
+`atomic-lite-writer` contract: one retained implementer, workflow-owned
+deterministic checks, at most one forked repair, and a fresh reviewer only for a
+policy-declared distinct risk surface. It is independently testable but is not a
+general HTTP/MCP writer until M7 supplies accepted project policy and current
+authority. Its bounded core requires a clean full worktree, descriptor-bound
+single-file writes, pre-created workflow artifact files, exact admitted Git
+commit/tree/index identities, and post-check/pre-evidence full-worktree gates;
+Git-visible undeclared or committed changes fail evidence. These defenses do not
+make the package a sandbox, so an eventual launcher still needs the existing
+container/VM and writer-fence boundary.
+
+The subscription broker now retains one process-local Codex provider thread per
+capability/role and sends only appended message deltas on later turns. Implementer,
+repair, and verifier roles remain isolated; a process restart refuses continuation
+rather than claiming unsupported cross-process resume. The next benchmark should
+compare Direct, Atomic Lite, and Atomic Full on the same provider, model, cache
+posture, task contract, and acceptance evidence.
 
 ## Project Brain memory boundary
 
@@ -636,6 +784,7 @@ npm run smoke:http
 npm run smoke:mcp
 npm run smoke:native   # opt-in; requires the running authenticated pilot
 npm run smoke:atomic-fixture  # opt-in; requires the separate M5a server/runner
+npm run smoke:m6-comparison  # opt-in; real subscription calls; stops before approval
 ```
 
 ## Troubleshooting

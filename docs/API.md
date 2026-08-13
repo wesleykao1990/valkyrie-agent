@@ -20,6 +20,10 @@ Missing/invalid credentials return `401` plus `WWW-Authenticate: Bearer`. Native
 runtime selection and non-loopback host binding both fail startup when no token is
 configured. The default loopback/mock demo can still run without auth.
 
+Engineering assessment is stricter than the mock demo: its POST and GET routes
+return `403` unless a bearer token is configured, even on loopback. This prevents
+literal general requests from becoming an unauthenticated local intake surface.
+
 The token must be 32–4096 bytes with no whitespace/control characters. A token
 file must be a regular non-symlink and, on POSIX, grant no group/other permissions
 (`0600`). Set exactly one token source.
@@ -71,6 +75,11 @@ availability or general repository-writing authority.
 - `GET /api/portfolio`
 - `GET /api/projects`
 - `GET /api/projects/:projectId/brief`
+- `GET /api/engineering/assessments/:assessmentId`
+  - Returns the durable literal-request assessment, context-source provenance,
+    dimensions, hard signals, upward-only preference, final-action intent,
+    selected shape, policy version/reasons, TTL, and launch-support status.
+  - Expiry is reported without rewriting or launching the assessment.
 - `GET /api/tasks?projectId=...`
 - `GET /api/runs`
 - `GET /api/runs/:runId`
@@ -99,6 +108,29 @@ availability or general repository-writing authority.
   - Computes an exact promotion preview without writing canonical Markdown.
 
 ## Run mutations
+
+### `POST /api/engineering/assessments`
+
+This is an authenticated assessment, not a run mutation. The caller may supply
+only project/task identity, the literal request, an optional upward-only
+preference, final-action intent, and an idempotency key:
+
+```json
+{
+  "projectId": "ovalo",
+  "taskId": "task_ovalo_parser",
+  "request": "Implement a bounded parser with unit tests.",
+  "preference": "auto",
+  "finalAction": "prepare_reviewable_result",
+  "idempotencyKey": "route-parser-001"
+}
+```
+
+Scores and hard signals are control-plane-owned; extra fields are rejected.
+Migration 010 persists the decision transactionally. Until M7 provides live
+Linear/Git freshness and an accepted project execution policy, the response has
+`executionSupported=false`, `status="unsupported"`, and `launch.supported=false`.
+It creates no run, workspace, lease, container, or fixed-pilot substitution.
 
 ### `POST /api/runs`
 
@@ -180,13 +212,49 @@ route or use SSE until `completed`, `failed`, or `cancelled`.
 the exact same logical body. Exact replay returns the original run; changed input
 returns a conflict.
 
+### Milestone 6 direct candidate and comparison
+
+When the complete default-off M5b deployment plus
+`DIRECT_CODEX_MODEL_PILOT_ENABLED=true` are configured, `runs_start` accepts only
+this additional literal contract:
+
+```json
+{
+  "projectId": "atomic-pilot",
+  "taskId": "task_atomic_fixture_model_m5b",
+  "objective": "Implement normalizeProjectSlug in the disposable Atomic pilot fixture using the configured model, run the immutable checks, obtain a fresh independent verifier decision, and stop before any external final action.",
+  "runtime": "codex",
+  "workflow": "direct-codex-fixture-model-pilot",
+  "maxCostUsd": 1,
+  "idempotencyKey": "direct-codex-fixed-001"
+}
+```
+
+The exact task ID/objective remain those exported by the fixture package; callers
+should obtain them from the documented fixed contract rather than editing the
+literal. The server owns repository/image/command/policy details.
+
+- `GET /api/direct-codex-fixture/runs/:runId/artifacts/:artifactId` reads one
+  bounded UTF-8 artifact only while the exact pending approval remains valid.
+- `POST /api/direct-codex-fixture/approvals/:approvalId/resolve` accepts only
+  `approve`, `deny`, or `request_changes`. Approve records a safe mock receipt;
+  it performs no external action or memory promotion.
+- `POST /api/runs/compare` accepts the exact fixture plus runtimes
+  `["atomic","codex"]`, optional existing `candidateRunIds` in the same order,
+  and an idempotency key. It creates/attaches independent candidates.
+- `GET /api/comparisons/:comparisonId` refreshes and returns the durable
+  evidence-derived comparison. Comparison completion is not candidate selection.
+
+`direct-claude-code-fixture-model-pilot` is recognized only as a separately
+gated unavailable capability. It cannot reuse Codex credentials or silently
+fall back to the Codex implementation.
+
 ### Other run mutations
 
 - `POST /api/runs/compare`
-  - `{ "projectId":"ovalo", "objective":"...", "runtimes":["atomic","codex","claude"], "perRunMaxCostUsd":2 }`
-  - Primarily a mock-demo contract. Native candidates still require explicit
-    `runtime-connectivity`, which this comparison endpoint does not add; use
-    separate native starts for the current pilot.
+  - The mock-demo contract remains available without M6 coordinators. With both
+    M6 coordinators configured, only the exact fixed Atomic/direct-Codex contract
+    described above is accepted.
 - `POST /api/runs/:runId/steer`
   - `{ "message":"..." }`
   - Works only when the selected adapter advertises steering; minimum native

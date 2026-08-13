@@ -38,14 +38,24 @@ export interface InferenceUpstreamResult {
   providerRequestId: string;
   inputTokens: number;
   outputTokens: number;
+  /** Bounded native provider records, retained for audit alongside normalized request evidence. */
+  nativeRecords?: Record<string, unknown>[];
+  /** Stable provider session/thread identity when the reviewed upstream supports retained turns. */
+  providerSessionId?: string;
+  /** True only when this request resumed the exact previously recorded provider session. */
+  providerSessionReused?: boolean;
 }
 
 export interface InferenceUpstream {
   complete(input: {
+    capabilityId: string;
+    requestId: string;
     provider: string;
     model: string;
     role: InferenceRole;
     body: Record<string, unknown>;
+    /** Durable audit identity from an earlier completed request in this role, if one exists. */
+    priorProviderSessionId?: string;
     timeoutMs: number;
     signal: AbortSignal;
   }): Promise<InferenceUpstreamResult>;
@@ -96,9 +106,9 @@ function validatePolicy(policy: ScopedInferencePolicy): void {
   if (roles.size !== 4 || !["implementer", "verifier_initial", "repair", "verifier_final"].every((role) => roles.has(role as InferenceRole))) {
     throw new Error("Scoped inference policy must contain each exact pilot role once");
   }
-  integer(policy.maxRequests, "maxRequests", 4, 4);
-  integer(policy.maxInputTokens, "maxInputTokens", 1, 128_000);
-  integer(policy.maxOutputTokens, "maxOutputTokens", 1, 32_768);
+  integer(policy.maxRequests, "maxRequests", 16, 16);
+  integer(policy.maxInputTokens, "maxInputTokens", 1, 1_000_000);
+  integer(policy.maxOutputTokens, "maxOutputTokens", 1, 131_072);
   integer(policy.maxCostMicros, "maxCostMicros", 0, 100_000_000);
   integer(policy.maxElapsedMs, "maxElapsedMs", 100, 10 * 60_000);
   integer(policy.ttlMs, "ttlMs", 60_000, 30 * 60_000);
@@ -113,7 +123,7 @@ function validatePolicy(policy: ScopedInferencePolicy): void {
 function sanitizeRequest(value: unknown, capability: InferenceCapability, role: InferenceRole, policy: ScopedInferencePolicy): Record<string, unknown> {
   const request = plainObject(value);
   if (!capability.roles.includes(role)) throw new ScopedInferenceGatewayError(403, "role_scope", "Inference role is outside the capability");
-  const allowed = new Set(["model", "messages", "max_tokens", "max_completion_tokens", "temperature", "top_p", "stream", "stream_options", "tools", "tool_choice", "response_format", "reasoning_effort", "stop"]);
+  const allowed = new Set(["model", "messages", "max_tokens", "max_completion_tokens", "temperature", "top_p", "stream", "stream_options", "tools", "tool_choice", "response_format", "reasoning_effort", "stop", "store"]);
   for (const key of Object.keys(request)) {
     if (!allowed.has(key)) throw new ScopedInferenceGatewayError(400, "unsupported_field", `Inference field ${key} is not allowed`);
   }
@@ -125,6 +135,9 @@ function sanitizeRequest(value: unknown, capability: InferenceCapability, role: 
   const maxTokens = integer(requestedOutput, "max output tokens", 1, capability.maxOutputTokens);
   if (request.stream !== undefined && typeof request.stream !== "boolean") {
     throw new ScopedInferenceGatewayError(400, "invalid_stream", "stream must be a boolean");
+  }
+  if (request.store !== undefined && request.store !== false) {
+    throw new ScopedInferenceGatewayError(400, "invalid_store", "store must be false when supplied");
   }
   const normalized: Record<string, unknown> = { ...request, model: capability.model, max_tokens: maxTokens };
   delete normalized.max_completion_tokens;
@@ -304,7 +317,7 @@ export class ScopedInferenceGateway {
     }
     const body = sanitizeRequest(rawBody, capability, role, this.policy);
     const requestHash = sha(canonicalJson(body));
-    const requestId = `ireq_${sha(`${capability.id}\0${role}`).slice(0, 32)}`;
+    const requestId = `ireq_${sha(`${capability.id}\0${role}\0${requestHash}`).slice(0, 32)}`;
     let reservation;
     try {
       reservation = await this.store.reserveInferenceRequest({
@@ -314,13 +327,22 @@ export class ScopedInferenceGateway {
       throw new ScopedInferenceGatewayError(409, "capability_conflict", "Inference capability reservation conflicted with durable policy");
     }
     if (reservation.replayed) {
-      throw new ScopedInferenceGatewayError(409, "request_already_attempted", "This inference role has already been attempted; automatic replay is disabled");
+      throw new ScopedInferenceGatewayError(409, "request_already_attempted", "This exact inference request has already been attempted; automatic replay is disabled");
     }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.min(capability.maxElapsedMs, this.policy.maxElapsedMs));
     try {
+      const priorRequests = (await this.store.listInferenceRequests(capability.runId))
+        .filter((item) => item.id !== requestId && item.role === role && item.state === "completed" && item.providerSessionId);
+      const priorSessionIds = [...new Set(priorRequests.map((item) => item.providerSessionId!))];
+      if (priorSessionIds.length > 1) {
+        throw new ScopedInferenceGatewayError(409, "provider_session_conflict", "Inference role has conflicting durable provider-session evidence");
+      }
+      const priorProviderSessionId = priorSessionIds[0];
       const result = await this.upstream.complete({
+        capabilityId: capability.id, requestId,
         provider: capability.provider, model: capability.model, role, body,
+        ...(priorProviderSessionId ? { priorProviderSessionId } : {}),
         timeoutMs: Math.min(capability.maxElapsedMs, this.policy.maxElapsedMs), signal: controller.signal,
       });
       if (!SAFE_ID.test(result.providerRequestId) || result.body.byteLength > MAX_RESPONSE_BYTES
@@ -329,10 +351,65 @@ export class ScopedInferenceGateway {
           || !["application/json", "text/event-stream"].includes(result.contentType)) {
         throw new ScopedInferenceGatewayError(502, "invalid_upstream_response", "Inference upstream returned invalid bounded evidence");
       }
+      const hasSessionId = result.providerSessionId !== undefined;
+      const hasSessionReuse = result.providerSessionReused !== undefined;
+      if (hasSessionId !== hasSessionReuse
+          || (hasSessionId && (!SAFE_ID.test(result.providerSessionId!) || typeof result.providerSessionReused !== "boolean"))
+          || (priorProviderSessionId !== undefined
+            && (result.providerSessionId !== priorProviderSessionId || result.providerSessionReused !== true))
+          || (priorProviderSessionId === undefined && result.providerSessionReused === true)) {
+        throw new ScopedInferenceGatewayError(502, "provider_session_mismatch", "Inference upstream returned inconsistent provider-session evidence");
+      }
+      const nativeRecords = result.nativeRecords ?? [];
+      if (!Array.isArray(nativeRecords) || nativeRecords.length > 4_096
+          || nativeRecords.some((record) => !record || typeof record !== "object" || Array.isArray(record))) {
+        throw new ScopedInferenceGatewayError(502, "invalid_upstream_response", "Inference upstream returned invalid native evidence");
+      }
+      for (const [ordinal, record] of nativeRecords.entries()) {
+        await this.store.appendEvent({
+          id: `event_inference_native_${sha(`${requestId}\0${ordinal}\0${canonicalJson(record)}`).slice(0, 32)}`,
+          runId: capability.runId,
+          type: "inference.native.raw",
+          message: "Raw bounded inference-provider record retained",
+          payload: {
+            requestId,
+            role,
+            provider: capability.provider,
+            model: capability.model,
+            ordinal,
+            providerSessionId: result.providerSessionId ?? null,
+            providerSessionReused: result.providerSessionReused ?? null,
+            rawNative: record,
+          },
+          createdAt: new Date().toISOString(),
+        });
+      }
       const cost = costMicros(this.policy, result.inputTokens, result.outputTokens);
       await this.store.completeInferenceRequest({
         id: requestId, state: "completed", responseHash: sha(result.body), providerRequestId: result.providerRequestId,
+        ...(result.providerSessionId ? {
+          providerSessionId: result.providerSessionId,
+          providerSessionReused: result.providerSessionReused,
+        } : {}),
         inputTokens: result.inputTokens, outputTokens: result.outputTokens, costMicros: cost,
+      });
+      await this.store.appendEvent({
+        id: `event_inference_completed_${sha(requestId).slice(0, 32)}`,
+        runId: capability.runId,
+        type: "inference.request.completed",
+        message: "Scoped inference request completed within its durable budget",
+        payload: {
+          requestId,
+          role,
+          providerRequestId: result.providerRequestId,
+          providerSessionId: result.providerSessionId ?? null,
+          providerSessionReused: result.providerSessionReused ?? null,
+          inputTokens: result.inputTokens,
+          outputTokens: result.outputTokens,
+          costMicros: cost,
+          nativeRecordCount: nativeRecords.length,
+        },
+        createdAt: new Date().toISOString(),
       });
       return result;
     } catch (error) {
@@ -410,5 +487,25 @@ export async function listenScopedInferenceGatewayUnix(server: Server, socketPat
   return async () => {
     await new Promise<void>((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise()));
     if (existsSync(path)) unlinkSync(path);
+  };
+}
+
+/**
+ * Colima/Docker Desktop cannot reliably bind-mount a macOS Unix socket into a
+ * Linux VM. This loopback listener is reachable only through the engine's
+ * special host gateway; the fixed dual-homed bridge remains the sole writer-
+ * network peer and the run-scoped bearer is still mandatory on every request.
+ */
+export async function listenScopedInferenceGatewayLoopback(server: Server, port: number): Promise<() => Promise<void>> {
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    throw new Error("Inference gateway loopback port is invalid");
+  }
+  await new Promise<void>((resolvePromise, reject) => {
+    const onError = (error: Error) => { server.off("listening", onListening); reject(error); };
+    const onListening = () => { server.off("error", onError); resolvePromise(); };
+    server.once("error", onError); server.once("listening", onListening); server.listen(port, "127.0.0.1");
+  });
+  return async () => {
+    await new Promise<void>((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise()));
   };
 }

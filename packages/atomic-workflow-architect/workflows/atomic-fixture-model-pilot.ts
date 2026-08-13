@@ -87,6 +87,7 @@ export default workflow({
     verifier_initial_path: Type.String(), checks_final_path: Type.String(), verifier_final_path: Type.String(),
     memory_proposal_path: Type.String(), draft_pr_mock_path: Type.String(), context_pack_path: Type.String(),
     run_contract_path: Type.String(), launch_manifest_path: Type.String(), repair_count: Type.Number(),
+    source_after_sha256: Type.String(),
     checks_passed: Type.Boolean(), verifier_passed: Type.Boolean(), live_provider_verified: Type.Boolean(),
   },
   run: async (ctx: any) => {

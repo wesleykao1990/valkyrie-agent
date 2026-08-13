@@ -24,9 +24,10 @@ import { buildScopedInferencePolicy, createConfiguredInferenceUpstream } from ".
 import {
   ScopedInferenceGateway,
   createScopedInferenceGatewayServer,
-  listenScopedInferenceGatewayUnix,
+  listenScopedInferenceGatewayLoopback,
 } from "./scoped-inference-gateway.ts";
 import { DockerCliBridgeEngine, ScopedInferenceBridge } from "./scoped-inference-bridge.ts";
+import { DirectModelPilotCoordinator } from "./direct-model-pilot.ts";
 
 // Local databases, context packs, contracts, and native output are sensitive.
 // New POSIX files/directories created by the server must be owner-only.
@@ -58,6 +59,7 @@ const workspaces = new WorkspaceManager(store, join(config.dataDir, "workspaces"
 const adapters = createRuntimeAdapters(store, workspaces, config);
 let atomicFixturePilot: AtomicFixturePilotCoordinator | undefined;
 let atomicModelPilot: AtomicModelPilotLifecycleCoordinator | undefined;
+let directModelPilot: DirectModelPilotCoordinator | undefined;
 let closeInferenceGateway: (() => Promise<void>) | undefined;
 let fixtureRepositoryCommit: string | undefined;
 let writerRootForPilots: string | undefined;
@@ -134,8 +136,7 @@ if (config.atomicFixtureModelPilot.enabled) {
   const pilotRoot = config.atomicFixturePilot.root;
   const contextRoot = join(pilotRoot, "model-run-contexts");
   const providerStateRoot = join(pilotRoot, "model-oci-state");
-  const gatewaySocketRoot = join(pilotRoot, "model-gateway-socket");
-  for (const path of [contextRoot, providerStateRoot, gatewaySocketRoot]) {
+  for (const path of [contextRoot, providerStateRoot]) {
     mkdirSync(path, { recursive: true, mode: 0o700 });
   }
   const modelProvider = new OciSandboxProvider({
@@ -181,8 +182,10 @@ if (config.atomicFixtureModelPilot.enabled) {
   const upstream = createConfiguredInferenceUpstream(config.atomicFixtureModelPilot);
   const gateway = new ScopedInferenceGateway(store, upstream, policy);
   const gatewayServer = createScopedInferenceGatewayServer(gateway);
-  const socketPath = join(gatewaySocketRoot, "inference.sock");
-  closeInferenceGateway = await listenScopedInferenceGatewayUnix(gatewayServer, socketPath);
+  closeInferenceGateway = await listenScopedInferenceGatewayLoopback(
+    gatewayServer,
+    config.atomicFixtureModelPilot.gatewayPort,
+  );
   const bridgeUser = config.atomicFixturePilot.user
     ?? `${typeof process.getuid === "function" ? process.getuid() : 65532}:${typeof process.getgid === "function" ? process.getgid() : 65532}`;
   const bridge = new ScopedInferenceBridge({
@@ -193,7 +196,11 @@ if (config.atomicFixtureModelPilot.enabled) {
     ),
     image: config.atomicFixturePilot.image!,
     networkName: config.atomicFixtureModelPilot.networkName!,
-    socketPath,
+    hostGateway: {
+      hostname: "host.docker.internal",
+      port: config.atomicFixtureModelPilot.gatewayPort,
+      egressNetworkName: "bridge",
+    },
     user: bridgeUser,
   });
   const reconciledBridges = await bridge.reconcileStartup();
@@ -236,13 +243,72 @@ if (config.atomicFixtureModelPilot.enabled) {
     executor,
     maxCostUsd: config.atomicFixtureModelPilot.maxCostUsd,
   });
+
+  if (config.directCodexModelPilotEnabled) {
+    const directContextRoot = join(pilotRoot, "direct-model-run-contexts");
+    const directProviderStateRoot = join(pilotRoot, "direct-model-oci-state");
+    for (const path of [directContextRoot, directProviderStateRoot]) mkdirSync(path, { recursive: true, mode: 0o700 });
+    const directProvider = new OciSandboxProvider({
+      enabled: true,
+      engineCommand: config.atomicFixturePilot.engineCommand!,
+      ...(config.atomicFixturePilot.engineSocket ? { engineSocket: config.atomicFixturePilot.engineSocket } : {}),
+      image: config.atomicFixturePilot.image!,
+      workspaceRoot: writerRootForPilots,
+      contextRoot: directContextRoot,
+      artifactRoot: artifactRootForPilots,
+      stateRoot: directProviderStateRoot,
+      networkPolicy: { mode: "none" },
+      resourceBounds: {
+        memoryBytes: 2 * 1024 * 1024 * 1024,
+        cpus: 2,
+        pidsLimit: 256,
+        tmpfsBytes: 128 * 1024 * 1024,
+      },
+      ...(config.atomicFixturePilot.user ? { user: config.atomicFixturePilot.user } : {}),
+    });
+    const directWorkspaces = new WriterWorkspaceManager({
+      store,
+      root: writerRootForPilots,
+      gitCommand: "/usr/bin/git",
+      leaseTtlMs: 45_000,
+    });
+    const directBoundary = new WriterSandboxBoundary({
+      store,
+      workspaces: directWorkspaces,
+      provider: directProvider,
+      artifactRoot: artifactRootForPilots,
+      ownerId: "direct_codex_model_pilot",
+      leaseTtlMs: 45_000,
+      heartbeatIntervalMs: 5_000,
+    });
+    directModelPilot = new DirectModelPilotCoordinator({
+      store,
+      brain,
+      boundary: directBoundary,
+      provider: directProvider,
+      gateway,
+      policy,
+      repositoryPath: config.atomicFixturePilot.repositoryPath!,
+      repositoryCommit: fixtureRepositoryCommit,
+      contextRoot: directContextRoot,
+      maxCostUsd: config.atomicFixtureModelPilot.maxCostUsd,
+      inferenceAuthenticated: true,
+    });
+  }
 }
 
-const service = new ControlPlaneService(store, brain, workspaces, adapters, { atomicFixturePilot, atomicModelPilot });
+const service = new ControlPlaneService(store, brain, workspaces, adapters, {
+  atomicFixturePilot,
+  atomicModelPilot,
+  directModelPilot,
+  directClaudeModelPilotEnabled: config.directClaudeModelPilotEnabled,
+});
 const [existingTasks, existingRuns] = await Promise.all([store.listTasks(), store.listRuns(1)]);
 if (config.seedDemoData && existingTasks.length === 0 && existingRuns.length === 0) await service.resetDemo(true);
 if (atomicFixturePilot) await atomicFixturePilot.bootstrap();
 if (atomicModelPilot) await atomicModelPilot.bootstrap();
+// The direct candidate deliberately reuses the exact M5b project/task seed and
+// therefore has no independent roadmap bootstrap.
 const atomicFixtureReconciliation = atomicFixturePilot ? await atomicFixturePilot.reconcileStartup() : null;
 if (atomicFixtureReconciliation && (
   atomicFixtureReconciliation.sandbox.instancesExamined > 0
@@ -262,6 +328,7 @@ if (atomicModelReconciliation && (
 )) {
   console.log(`Atomic model startup reconciliation: ${JSON.stringify(atomicModelReconciliation)}`);
 }
+if (directModelPilot) await directModelPilot.reconcileStartup();
 const reconciliation = await service.reconcileStartup();
 if (Object.values(reconciliation).some((value) => value > 0)) {
   console.log(`startup reconciliation: ${JSON.stringify(reconciliation)}`);
@@ -288,6 +355,7 @@ function shutdown() {
   void (async () => {
     await atomicFixturePilot?.shutdown();
     await atomicModelPilot?.shutdown();
+    await directModelPilot?.shutdown();
     await closeInferenceGateway?.();
     await shutdownControlPlane(server, adapters.values(), store);
   })().then(

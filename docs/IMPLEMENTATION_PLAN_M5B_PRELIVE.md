@@ -1,8 +1,9 @@
 # Milestone 5b pre-live implementation plan
 
-Status: credential-free boundary and authenticated service/Hermes lifecycle are
-deterministic-test verified in SQLite and PostgreSQL; only provider selection,
-credential injection, and the live model exercise remain pending.
+Status: superseded in part by the subscription-broker follow-up. The credential-free
+boundary and authenticated service/Hermes lifecycle are deterministic-test verified
+in SQLite and PostgreSQL; see `IMPLEMENTATION_PLAN_M5B_SUBSCRIPTION.md` for the
+implemented ChatGPT-subscription path and migration 008.
 
 ## Objective
 
@@ -47,10 +48,11 @@ still be composed before live enablement.
 11. Provide `npm run smoke:atomic-model`; it makes no call until a separately
     configured server exists and stops before approval by default.
 
-## Still required before a live pilot
+## Still required before a live pilot (updated by the subscription follow-up)
 
-1. Select/review the provider and model, accepted digests, token prices, spend
-   ceiling, and dedicated credential or reviewed credential-free local endpoint.
+1. Authenticate the dedicated Codex profile for the reviewed subscription model,
+   or select the existing API/local alternative. API pricing/credential review is
+   not required for `codex-subscription`.
 2. Create and inspect the dedicated local Docker `Internal=true` bridge named in
    `ATOMIC_FIXTURE_MODEL_NETWORK`, then start the default-off configured server.
 3. Run the actual Docker/Atomic/provider pilot and record native IDs, usage,
@@ -58,7 +60,10 @@ still be composed before live enablement.
 
 ## Migrations and rollback
 
-Migration 007 will be forward-only and checksummed. It will store capability hashes and usage/accounting metadata, never plaintext provider credentials or bearer capabilities. A pre-v7 database backup is required for binary rollback; an older binary must fail closed on the newer ledger.
+Migration 007 is forward-only and checksummed. Migration 008 adds bounded
+multi-turn request identity. Neither stores plaintext provider credentials or
+bearer capabilities. A pre-v8 database backup is required for binary rollback;
+an older binary must fail closed on the newer ledger.
 
 ## Security impact
 

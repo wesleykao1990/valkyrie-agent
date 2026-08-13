@@ -14,6 +14,7 @@ START_HERE.md
 apps/control-plane/public/app.js
 apps/control-plane/public/index.html
 apps/control-plane/public/styles.css
+apps/control-plane/schemas/codex-subscription-broker-output.schema.json
 apps/control-plane/src/atomic-fixture-pilot.ts
 apps/control-plane/src/atomic-model-pilot-configured.ts
 apps/control-plane/src/atomic-model-pilot-contract.ts
@@ -26,8 +27,10 @@ apps/control-plane/src/atomic-rpc-client.ts
 apps/control-plane/src/atomic-runtime-adapter.ts
 apps/control-plane/src/atomic-workflow-protocol.ts
 apps/control-plane/src/auth.ts
+apps/control-plane/src/codex-subscription-inference.ts
 apps/control-plane/src/config.ts
 apps/control-plane/src/direct-cli-runtimes.ts
+apps/control-plane/src/direct-model-pilot.ts
 apps/control-plane/src/governed-artifact-export.ts
 apps/control-plane/src/http.ts
 apps/control-plane/src/ids.ts
@@ -82,6 +85,9 @@ docs/IMPLEMENTATION_PLAN_M3_MINIMUM.md
 docs/IMPLEMENTATION_PLAN_M4.md
 docs/IMPLEMENTATION_PLAN_M5.md
 docs/IMPLEMENTATION_PLAN_M5B_PRELIVE.md
+docs/IMPLEMENTATION_PLAN_M5B_SUBSCRIPTION.md
+docs/IMPLEMENTATION_PLAN_M6.md
+docs/IMPLEMENTATION_PLAN_POST_M6_GAPS.md
 docs/NEXT_SESSION_PROMPT.md
 docs/PROMPT_FOR_CODEX_OR_CLAUDE.md
 docs/PROTOTYPE_SCOPE.md
@@ -95,6 +101,9 @@ docs/adr/ADR-P003-read-only-native-runtime-pilot.md
 docs/adr/ADR-P004-external-writer-boundary.md
 docs/adr/ADR-P005-atomic-writer-pilot.md
 docs/adr/ADR-P006-scoped-inference-boundary.md
+docs/adr/ADR-P007-subscription-inference-broker.md
+docs/adr/ADR-P008-direct-runtime-comparison.md
+docs/adr/ADR-P009-risk-based-execution-shapes.md
 fixtures/atomic-pilot-template/.atomic/settings.json
 fixtures/atomic-pilot-template/README.md
 fixtures/atomic-pilot-template/package.json
@@ -108,6 +117,10 @@ infra/postgres/004_fenced_writer_leases.sql
 infra/postgres/005_sandbox_instances.sql
 infra/postgres/006_pilot_approval_bindings.sql
 infra/postgres/007_scoped_inference_capabilities.sql
+infra/postgres/008_multi_turn_inference_requests.sql
+infra/postgres/009_runtime_comparisons.sql
+infra/postgres/010_engineering_routing_assessments.sql
+infra/postgres/011_inference_session_lineages.sql
 infra/sqlite/001_initial.sql
 infra/sqlite/002_storage_guarantees.sql
 infra/sqlite/003_legacy_ownership_guards.sql
@@ -115,6 +128,10 @@ infra/sqlite/004_fenced_writer_leases.sql
 infra/sqlite/005_sandbox_instances.sql
 infra/sqlite/006_pilot_approval_bindings.sql
 infra/sqlite/007_scoped_inference_capabilities.sql
+infra/sqlite/008_multi_turn_inference_requests.sql
+infra/sqlite/009_runtime_comparisons.sql
+infra/sqlite/010_engineering_routing_assessments.sql
+infra/sqlite/011_inference_session_lineages.sql
 package-lock.json
 package.json
 packages/atomic-workflow-architect/AGENTS.md
@@ -135,6 +152,7 @@ packages/atomic-workflow-architect/lib/atomic-fixture-model-pilot-core.d.mts
 packages/atomic-workflow-architect/lib/atomic-fixture-model-pilot-core.mjs
 packages/atomic-workflow-architect/lib/atomic-fixture-pilot-core.d.mts
 packages/atomic-workflow-architect/lib/atomic-fixture-pilot-core.mjs
+packages/atomic-workflow-architect/lib/atomic-lite-writer-core.mjs
 packages/atomic-workflow-architect/lib/router-core.d.mts
 packages/atomic-workflow-architect/lib/router-core.d.ts
 packages/atomic-workflow-architect/lib/router-core.mjs
@@ -190,6 +208,7 @@ packages/atomic-workflow-architect/test-stubs/typebox.d.ts
 packages/atomic-workflow-architect/tsconfig.json
 packages/atomic-workflow-architect/workflows/atomic-fixture-model-pilot.ts
 packages/atomic-workflow-architect/workflows/atomic-fixture-pilot.ts
+packages/atomic-workflow-architect/workflows/atomic-lite-writer.ts
 packages/atomic-workflow-architect/workflows/idea-to-decision.ts
 packages/atomic-workflow-architect/workflows/project-blueprint.ts
 packages/atomic-workflow-architect/workflows/request-preflight.ts
@@ -202,7 +221,10 @@ project-brain/Projects/Signal Ledger/Project.md
 project-brain/Shared/Agent Policies.md
 scripts/atomic-fixture-live-smoke.ts
 scripts/atomic-model-pilot-live-smoke.ts
+scripts/codex-subscription-smoke.ts
+scripts/direct-model-comparison-live-smoke.ts
 scripts/fake-atomic-rpc.ts
+scripts/fake-codex-subscription.ts
 scripts/fake-direct-runtime.ts
 scripts/fake-oci-engine.ts
 scripts/http-smoke.ts
@@ -211,6 +233,7 @@ scripts/mcp-smoke.ts
 scripts/migrate-storage.ts
 scripts/reset-demo.ts
 scripts/setup-atomic-fixture.ts
+scripts/setup-codex-subscription-profile.ts
 scripts/setup-hermes-profile.ts
 scripts/setup-local-pilot.ts
 scripts/smoke-environment.ts
@@ -219,6 +242,7 @@ scripts/test-unit.ts
 tests/atomic-fixture-model-workflow.test.ts
 tests/atomic-fixture-pilot-integration.test.ts
 tests/atomic-fixture-workflow.test.ts
+tests/atomic-lite-workflow.test.ts
 tests/atomic-model-pilot-configured.test.ts
 tests/atomic-model-pilot-contract.test.ts
 tests/atomic-model-pilot-coordinator.test.ts
@@ -229,8 +253,11 @@ tests/atomic-rpc-client.test.ts
 tests/atomic-runtime-adapter.test.ts
 tests/atomic-workflow-protocol.test.ts
 tests/auth.test.ts
+tests/codex-subscription-inference.test.ts
 tests/comparison.test.ts
 tests/direct-cli-runtimes.test.ts
+tests/direct-model-pilot.test.ts
+tests/engineering-routing.test.ts
 tests/flow.test.ts
 tests/governed-artifact-export.test.ts
 tests/mcp-auth.test.ts

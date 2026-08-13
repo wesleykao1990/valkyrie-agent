@@ -81,6 +81,7 @@ test("Atomic model workflow dispatch and output keep fake/live evidence distinct
     context_pack_path: ".valkyrie-model-output/context-pack.json",
     run_contract_path: ".valkyrie-model-output/run-contract.json",
     launch_manifest_path: ".valkyrie-model-output/atomic-model-launch-manifest.json",
+    source_after_sha256: "e".repeat(64),
     repair_count: 1, checks_passed: true, verifier_passed: true, live_provider_verified: false,
   });
   assert.equal(output.repair_count, 1);

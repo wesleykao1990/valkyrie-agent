@@ -37,7 +37,7 @@
       "repair": "fixture-repair",
       "verifier_final": "fixture-verifier-final"
     },
-    "max_requests": 4,
+    "max_requests": 16,
     "max_input_tokens": 32000,
     "max_output_tokens": 8000,
     "max_cost_micros": 1000000,

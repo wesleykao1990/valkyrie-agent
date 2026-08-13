@@ -19,6 +19,7 @@
     "reset": "node --experimental-strip-types scripts/reset-demo.ts",
     "setup:atomic": "npm install --ignore-scripts --no-save --prefix data/runtime/atomic @bastani/atomic@0.9.12",
     "setup:atomic-fixture": "node --experimental-strip-types scripts/setup-atomic-fixture.ts",
+    "setup:codex-subscription": "node --experimental-strip-types scripts/setup-codex-subscription-profile.ts",
     "setup:pilot": "node --experimental-strip-types scripts/setup-local-pilot.ts",
     "setup:hermes": "node --experimental-strip-types scripts/setup-hermes-profile.ts",
     "mcp:quiet": "node --experimental-strip-types apps/mcp-server/src/index.ts",
@@ -26,6 +27,8 @@
     "smoke:native": "node --experimental-strip-types scripts/live-native-smoke.ts",
     "smoke:atomic-fixture": "node --experimental-strip-types scripts/atomic-fixture-live-smoke.ts",
     "smoke:atomic-model": "node --experimental-strip-types scripts/atomic-model-pilot-live-smoke.ts",
+    "smoke:m6-comparison": "node --experimental-strip-types scripts/direct-model-comparison-live-smoke.ts",
+    "smoke:codex-subscription": "node --experimental-strip-types scripts/codex-subscription-smoke.ts",
     "smoke:sandbox": "node --experimental-strip-types --test --test-name-pattern=live.Docker-compatible.sandbox tests/oci-sandbox-provider.test.ts",
     "verify": "npm run typecheck && npm test && npm run test:postgres && npm run verify:atomic && npm run smoke:http && npm run smoke:mcp",
     "smoke:http": "node --experimental-strip-types scripts/http-smoke.ts"

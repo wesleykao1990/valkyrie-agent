@@ -7,12 +7,21 @@ const CONTAINER = /^[a-f0-9]{64}$/;
 const IMAGE = /^[A-Za-z0-9][A-Za-z0-9./:_-]*@sha256:[a-f0-9]{64}$/;
 const SAFE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 const NETWORK = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
-const BRIDGE_SCRIPT = [
+const UNIX_BRIDGE_SCRIPT = [
   "const n=require('node:net');",
   "const s=n.createServer(c=>{const u=n.createConnection('/gateway/inference.sock');c.pipe(u);u.pipe(c);",
   "const x=()=>{c.destroy();u.destroy()};c.on('error',x);u.on('error',x)});",
   "s.listen(8790,'0.0.0.0');",
 ].join("");
+
+function tcpBridgeScript(host: string, port: number): string {
+  return [
+    "const n=require('node:net');",
+    `const s=n.createServer(c=>{const u=n.createConnection(${port},${JSON.stringify(host)});c.pipe(u);u.pipe(c);`,
+    "const x=()=>{c.destroy();u.destroy()};c.on('error',x);u.on('error',x)});",
+    "s.listen(8790,'0.0.0.0');",
+  ].join("");
+}
 
 function sha(value: string): string { return createHash("sha256").update(value).digest("hex"); }
 
@@ -61,56 +70,69 @@ export interface ScopedInferenceBridgeOptions {
   engine: BridgeEngine;
   image: string;
   networkName: string;
-  socketPath: string;
+  socketPath?: string;
+  hostGateway?: { hostname: "host.docker.internal" | "host.lima.internal"; port: number; egressNetworkName: "bridge" };
   user: string;
   timeoutMs?: number;
 }
 
-export interface ScopedInferenceBridgeHandle { runId: string; id: string; name: string; socketPath: string; }
+export interface ScopedInferenceBridgeHandle { runId: string; id: string; name: string; gatewayBinding: string; }
 
 export class ScopedInferenceBridge {
   private readonly timeoutMs: number;
   private readonly options: ScopedInferenceBridgeOptions;
+  private readonly gatewayBinding: string;
+  private readonly script: string;
   constructor(options: ScopedInferenceBridgeOptions) {
     this.timeoutMs = options.timeoutMs ?? 10_000;
     if (!IMAGE.test(options.image) || !NETWORK.test(options.networkName) || !/^[0-9]{1,10}:[0-9]{1,10}$/.test(options.user)) {
       throw new Error("Inference bridge image/network/user policy is invalid");
     }
-    const socket = resolve(options.socketPath);
-    if (!isAbsolute(options.socketPath) || dirname(socket) === socket) throw new Error("Inference bridge socket path must be absolute");
-    const parent = realpathSync(dirname(socket));
-    const parentStat = lstatSync(parent);
-    if (!parentStat.isDirectory() || parentStat.isSymbolicLink()
-        || (process.platform !== "win32" && (parentStat.mode & 0o077) !== 0)) {
-      throw new Error("Inference bridge socket parent must be canonical, private, and non-symlinked");
+    if (Boolean(options.socketPath) === Boolean(options.hostGateway)) {
+      throw new Error("Inference bridge requires exactly one Unix-socket or host-gateway transport");
     }
-    this.options = { ...options, socketPath: join(parent, basename(socket)) };
+    if (options.socketPath) {
+      const socket = resolve(options.socketPath);
+      if (!isAbsolute(options.socketPath) || dirname(socket) === socket) throw new Error("Inference bridge socket path must be absolute");
+      const parent = realpathSync(dirname(socket));
+      const parentStat = lstatSync(parent);
+      if (!parentStat.isDirectory() || parentStat.isSymbolicLink()
+          || (process.platform !== "win32" && (parentStat.mode & 0o077) !== 0)) {
+        throw new Error("Inference bridge socket parent must be canonical, private, and non-symlinked");
+      }
+      this.options = { ...options, socketPath: join(parent, basename(socket)) };
+      this.gatewayBinding = `unix:${join(parent, basename(socket))}`;
+      this.script = UNIX_BRIDGE_SCRIPT;
+      return;
+    }
+    const gateway = options.hostGateway!;
+    if (!Number.isSafeInteger(gateway.port) || gateway.port < 1 || gateway.port > 65_535) {
+      throw new Error("Inference bridge host-gateway port is invalid");
+    }
+    this.options = { ...options };
+    this.gatewayBinding = `tcp:${gateway.hostname}:${gateway.port}:${gateway.egressNetworkName}`;
+    this.script = tcpBridgeScript(gateway.hostname, gateway.port);
   }
 
   async start(runId: string): Promise<ScopedInferenceBridgeHandle> {
     if (!SAFE.test(runId)) throw new Error("Inference bridge run ID is invalid");
-    const socket = resolve(this.options.socketPath);
-    const stat = lstatSync(socket);
-    if (!stat.isSocket() || stat.isSymbolicLink()) {
-      throw new Error("Inference bridge requires the exact local Unix gateway socket");
+    if (this.options.socketPath) {
+      const socket = resolve(this.options.socketPath);
+      const stat = lstatSync(socket);
+      if (!stat.isSocket() || stat.isSymbolicLink()) {
+        throw new Error("Inference bridge requires the exact local Unix gateway socket");
+      }
+      const entries = readdirSync(dirname(socket));
+      if (entries.length !== 1 || entries[0] !== basename(socket)) {
+        throw new Error("Inference bridge socket parent must be a dedicated run directory");
+      }
     }
-    const entries = readdirSync(dirname(socket));
-    if (entries.length !== 1 || entries[0] !== basename(socket)) {
-      throw new Error("Inference bridge socket parent must be a dedicated run directory");
-    }
-    const networkResult = await this.options.engine.invoke(
-      "network-inspect", ["network", "inspect", "--format", "{{json .}}", this.options.networkName], this.timeoutMs,
-    );
-    let network: any;
-    try { network = JSON.parse(networkResult.stdout); } catch { throw new Error("Inference bridge network inspection is invalid"); }
-    if (!network || network.Name !== this.options.networkName || network.Internal !== true
-        || network.Ingress === true || network.Driver !== "bridge" || network.Scope !== "local") {
-      throw new Error("Inference bridge requires the exact local internal network");
-    }
+    await this.assertNetwork(this.options.networkName, true);
+    if (this.options.hostGateway) await this.assertNetwork(this.options.hostGateway.egressNetworkName, false);
     const name = `valkyrie-inference-${sha(runId).slice(0, 20)}`;
     const labels = {
       "valkyrie.managed": "true", "valkyrie.kind": "inference-bridge",
-      "valkyrie.run-id": runId, "valkyrie.socket-sha256": sha(socket),
+      "valkyrie.run-id": runId, "valkyrie.gateway-sha256": sha(this.gatewayBinding),
     };
     const args = [
       "create", "--name", name, "--hostname", "valkyrie-inference", "--network", this.options.networkName,
@@ -119,8 +141,8 @@ export class ScopedInferenceBridge {
       "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--security-opt", "seccomp=builtin",
       "--user", this.options.user, "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=16777216",
       ...Object.entries(labels).flatMap(([key, value]) => ["--label", `${key}=${value}`]),
-      "--mount", `type=bind,src=${dirname(socket)},dst=/gateway,readonly`, "--workdir", "/tmp",
-      "--entrypoint", "/usr/local/bin/node", this.options.image, "-e", BRIDGE_SCRIPT,
+      ...(this.options.socketPath ? ["--mount", `type=bind,src=${dirname(this.options.socketPath)},dst=/gateway,readonly`] : []),
+      "--workdir", "/tmp", "--entrypoint", "/usr/local/bin/node", this.options.image, "-e", this.script,
     ];
     let id: string;
     try {
@@ -128,7 +150,7 @@ export class ScopedInferenceBridge {
       id = created.stdout.trim();
       if (!CONTAINER.test(id)) throw new Error("Inference bridge create did not return a full container ID");
     } catch (error) {
-      const cleanupErrors = await this.cleanupUncertain(labels, name, socket);
+      const cleanupErrors = await this.cleanupUncertain(labels, name);
       if (cleanupErrors.length > 0) {
         throw new AggregateError([error, ...cleanupErrors], "Inference bridge create failed and cleanup was not fully proven");
       }
@@ -136,9 +158,16 @@ export class ScopedInferenceBridge {
     }
     try {
       const inspected = await this.options.engine.invoke("inspect", ["inspect", id], this.timeoutMs);
-      this.assertInspect(JSON.parse(inspected.stdout), id, labels, socket, name);
+      this.assertInspect(JSON.parse(inspected.stdout), id, labels, name, false);
+      if (this.options.hostGateway) {
+        await this.options.engine.invoke(
+          "network-connect", ["network", "connect", this.options.hostGateway.egressNetworkName, id], this.timeoutMs,
+        );
+        const connected = await this.options.engine.invoke("inspect", ["inspect", id], this.timeoutMs);
+        this.assertInspect(JSON.parse(connected.stdout), id, labels, name, true);
+      }
       await this.options.engine.invoke("start", ["start", id], this.timeoutMs);
-      return { runId, id, name, socketPath: socket };
+      return { runId, id, name, gatewayBinding: this.gatewayBinding };
     } catch (error) {
       await this.removeExact(id).catch(() => undefined);
       throw error;
@@ -146,16 +175,15 @@ export class ScopedInferenceBridge {
   }
 
   async stop(handle: ScopedInferenceBridgeHandle): Promise<void> {
-    const socket = resolve(this.options.socketPath);
     const expectedName = `valkyrie-inference-${sha(handle.runId).slice(0, 20)}`;
     const labels = {
       "valkyrie.managed": "true", "valkyrie.kind": "inference-bridge",
-      "valkyrie.run-id": handle.runId, "valkyrie.socket-sha256": sha(socket),
+      "valkyrie.run-id": handle.runId, "valkyrie.gateway-sha256": sha(this.gatewayBinding),
     };
     if (!CONTAINER.test(handle.id) || !SAFE.test(handle.runId) || handle.name !== expectedName
-        || resolve(handle.socketPath) !== socket) throw new Error("Inference bridge handle is invalid");
+        || handle.gatewayBinding !== this.gatewayBinding) throw new Error("Inference bridge handle is invalid");
     const inspected = await this.options.engine.invoke("inspect", ["inspect", handle.id], this.timeoutMs);
-    this.assertInspect(JSON.parse(inspected.stdout), handle.id, labels, socket, expectedName);
+    this.assertInspect(JSON.parse(inspected.stdout), handle.id, labels, expectedName, Boolean(this.options.hostGateway));
     await this.options.engine.invoke("stop", ["stop", "--time", "3", handle.id], this.timeoutMs).catch(async () => {
       await this.options.engine.invoke("kill", ["kill", handle.id], this.timeoutMs);
     });
@@ -168,12 +196,11 @@ export class ScopedInferenceBridge {
    * ownership labels still match this configured provider.
    */
   async reconcileStartup(): Promise<number> {
-    const socket = resolve(this.options.socketPath);
     const inventory = await this.options.engine.invoke("inventory", [
       "ps", "--no-trunc", "--all",
       "--filter", "label=valkyrie.managed=true",
       "--filter", "label=valkyrie.kind=inference-bridge",
-      "--filter", `label=valkyrie.socket-sha256=${sha(socket)}`,
+      "--filter", `label=valkyrie.gateway-sha256=${sha(this.gatewayBinding)}`,
       "--format", "{{.ID}}",
     ], this.timeoutMs);
     const ids = inventory.stdout.split(/\r?\n/u).filter(Boolean);
@@ -192,10 +219,10 @@ export class ScopedInferenceBridge {
         "valkyrie.managed": "true",
         "valkyrie.kind": "inference-bridge",
         "valkyrie.run-id": runId,
-        "valkyrie.socket-sha256": sha(socket),
+        "valkyrie.gateway-sha256": sha(this.gatewayBinding),
       };
       const name = `valkyrie-inference-${sha(runId).slice(0, 20)}`;
-      this.assertInspect(raw, id, labels, socket, name);
+      this.assertInspect(raw, id, labels, name, Boolean(this.options.hostGateway));
       await this.removeExact(id);
       removed += 1;
     }
@@ -206,7 +233,7 @@ export class ScopedInferenceBridge {
     await this.options.engine.invoke("rm", ["rm", "--force", "--volumes", id], this.timeoutMs);
   }
 
-  private async cleanupUncertain(labels: Record<string, string>, name: string, socket: string): Promise<unknown[]> {
+  private async cleanupUncertain(labels: Record<string, string>, name: string): Promise<unknown[]> {
     const errors: unknown[] = [];
     let inventory: string;
     try {
@@ -220,14 +247,32 @@ export class ScopedInferenceBridge {
       if (!CONTAINER.test(id)) { errors.push(new Error("Inference bridge inventory returned a malformed container ID")); continue; }
       try {
         const inspected = await this.options.engine.invoke("inspect", ["inspect", id], this.timeoutMs);
-        this.assertInspect(JSON.parse(inspected.stdout), id, labels, socket, name);
+        this.assertInspect(JSON.parse(inspected.stdout), id, labels, name, false);
         await this.removeExact(id);
       } catch (error) { errors.push(error); }
     }
     return errors;
   }
 
-  private assertInspect(raw: unknown, id: string, labels: Record<string, string>, socket: string, expectedName?: string): void {
+  private async assertNetwork(name: string, internal: boolean): Promise<void> {
+    const result = await this.options.engine.invoke(
+      "network-inspect", ["network", "inspect", "--format", "{{json .}}", name], this.timeoutMs,
+    );
+    let network: any;
+    try { network = JSON.parse(result.stdout); } catch { throw new Error("Inference bridge network inspection is invalid"); }
+    if (!network || network.Name !== name || network.Internal !== internal
+        || network.Ingress === true || network.Driver !== "bridge" || network.Scope !== "local") {
+      throw new Error(`Inference bridge requires the exact local ${internal ? "internal" : "egress"} network`);
+    }
+  }
+
+  private assertInspect(
+    raw: unknown,
+    id: string,
+    labels: Record<string, string>,
+    expectedName?: string,
+    requireEgress = false,
+  ): void {
     const value = Array.isArray(raw) ? raw[0] : raw;
     if (!value || typeof value !== "object") throw new Error("Inference bridge inspect is invalid");
     const item = value as any;
@@ -237,7 +282,8 @@ export class ScopedInferenceBridge {
         || item.Config?.Image !== this.options.image || item.Config?.User !== this.options.user
         || Object.entries(labels).some(([key, expected]) => item.Config?.Labels?.[key] !== expected)
         || item.HostConfig?.NetworkMode !== this.options.networkName || !networks
-        || Object.keys(networks).length !== 1 || !(this.options.networkName in networks)
+        || Object.keys(networks).length !== (requireEgress ? 2 : 1) || !(this.options.networkName in networks)
+        || (requireEgress && !(this.options.hostGateway!.egressNetworkName in networks))
         || item.HostConfig?.ReadonlyRootfs !== true || item.HostConfig?.Privileged !== false
         || item.HostConfig?.IpcMode !== "none" || item.HostConfig?.RestartPolicy?.Name !== "no"
         || !Array.isArray(item.HostConfig?.CapDrop) || item.HostConfig.CapDrop[0] !== "ALL"
@@ -248,8 +294,11 @@ export class ScopedInferenceBridge {
         || !item.HostConfig.SecurityOpt.includes("seccomp=builtin")
         || item.HostConfig?.Tmpfs?.["/tmp"] !== "rw,nosuid,nodev,noexec,size=16777216"
         || canonicalArray(item.Config?.Entrypoint) !== canonicalArray(["/usr/local/bin/node"])
-        || canonicalArray(item.Config?.Cmd) !== canonicalArray(["-e", BRIDGE_SCRIPT])
-        || mounts.length !== 1 || mounts[0].Source !== dirname(socket) || mounts[0].Destination !== "/gateway" || mounts[0].RW !== false) {
+        || canonicalArray(item.Config?.Cmd) !== canonicalArray(["-e", this.script])
+        || (this.options.socketPath
+          ? mounts.length !== 1 || mounts[0].Source !== dirname(this.options.socketPath)
+            || mounts[0].Destination !== "/gateway" || mounts[0].RW !== false
+          : mounts.length !== 0)) {
       throw new Error("Inference bridge effective ownership or isolation policy changed");
     }
   }

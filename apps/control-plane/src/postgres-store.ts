@@ -16,6 +16,9 @@ import {
   validateInferenceCapability,
   validateInferenceCompletion,
   validateInferenceReservation,
+  validateComparisonCandidate,
+  validateComparisonRecord,
+  validateEngineeringRoutingAssessment,
   validateApprovalRequestBinding,
   validateApprovalResolutionBinding,
   validateApprovalExpiry,
@@ -40,6 +43,12 @@ import {
   type InferenceRequest,
   type ReserveInferenceRequestInput,
   type CompleteInferenceRequestInput,
+  type CreateEngineeringRoutingAssessmentInput,
+  type CreateEngineeringRoutingAssessmentResult,
+  type EngineeringRoutingAssessmentRecord,
+  type ComparisonCandidate,
+  type ComparisonMetrics,
+  type ComparisonRecord,
   type MigrationResult,
   type MutableRunPatch,
   type OutboxEvent,
@@ -238,7 +247,7 @@ export class PostgresStore implements ControlPlaneStore {
   async resetOperationalData(): Promise<void> {
     await this.transaction(async (client) => {
       await client.query(`TRUNCATE TABLE
-        idempotency_keys,outbox_events,inference_requests,inference_capabilities,sandbox_instances,workspace_leases,artifacts,approvals,run_events,
+        idempotency_keys,outbox_events,inference_requests,inference_capabilities,engineering_routing_assessments,comparison_candidates,comparisons,sandbox_instances,workspace_leases,artifacts,approvals,run_events,
         memory_proposals,workspaces,runs,tasks RESTART IDENTITY`);
     });
   }
@@ -1174,7 +1183,8 @@ export class PostgresStore implements ControlPlaneStore {
       const capability = this.mapInferenceCapability(row);
       const observedAt = input.reservedAt ?? await this.observeApprovalClock(client);
       const existing = (await client.query(`SELECT * FROM inference_requests
-        WHERE id=$1 OR (capability_id=$2 AND role=$3) FOR UPDATE`, [input.id, capability.id, input.role])).rows[0];
+        WHERE id=$1 OR (capability_id=$2 AND role=$3 AND request_hash=$4) FOR UPDATE`,
+      [input.id, capability.id, input.role, input.requestHash])).rows[0];
       if (existing) {
         const request = this.mapInferenceRequest(existing);
         if (request.id !== input.id || request.capabilityId !== capability.id || request.runId !== input.runId
@@ -1189,16 +1199,23 @@ export class PostgresStore implements ControlPlaneStore {
       if (capability.runId !== input.runId || !capability.roles.includes(input.role)) {
         throw new StorageConflictError("Inference request is outside its run or role scope");
       }
+      const activeRoleRequest = (await client.query(`SELECT id FROM inference_requests
+        WHERE capability_id=$1 AND role=$2 AND state='reserved' LIMIT 1`, [capability.id, input.role])).rows[0];
+      if (activeRoleRequest) {
+        throw new StorageConflictError("Inference role already has an active request");
+      }
       const count = Number((await client.query("SELECT count(*) AS count FROM inference_requests WHERE capability_id=$1", [capability.id])).rows[0].count);
       if (count >= capability.maxRequests) throw new StorageConflictError("Inference request count budget is exhausted");
       const request: InferenceRequest = {
         id: input.id, capabilityId: capability.id, runId: input.runId, role: input.role,
         requestHash: input.requestHash, state: "reserved", providerRequestId: null, responseHash: null,
         inputTokens: 0, outputTokens: 0, costMicros: 0, reservedAt: observedAt, completedAt: null, failureCode: null,
+        providerSessionId: null, providerSessionReused: false,
       };
       await client.query(`INSERT INTO inference_requests
         (id,capability_id,run_id,role,request_hash,state,provider_request_id,response_hash,input_tokens,output_tokens,
-         cost_micros,reserved_at,completed_at,failure_code) VALUES ($1,$2,$3,$4,$5,'reserved',NULL,NULL,0,0,0,$6,NULL,NULL)`,
+         cost_micros,reserved_at,completed_at,failure_code,provider_session_id,provider_session_reused)
+         VALUES ($1,$2,$3,$4,$5,'reserved',NULL,NULL,0,0,0,$6,NULL,NULL,NULL,false)`,
       [request.id, request.capabilityId, request.runId, request.role, request.requestHash, request.reservedAt]);
       await this.insertOutbox(client, "inference.request.reserved", request.id, {
         requestId: request.id, capabilityId: capability.id, runId: request.runId, role: request.role,
@@ -1218,10 +1235,14 @@ export class PostgresStore implements ControlPlaneStore {
       const capability = this.mapInferenceCapability(capabilityRow);
       const completedAt = input.completedAt ?? await this.observeApprovalClock(client);
       if (request.state !== "reserved") {
+        const providerSessionId = input.providerSessionId ?? null;
+        const providerSessionReused = input.providerSessionReused ?? false;
         const matches = request.state === input.state && request.responseHash === (input.responseHash ?? null)
           && request.providerRequestId === (input.providerRequestId ?? null) && request.inputTokens === input.inputTokens
           && request.outputTokens === input.outputTokens && request.costMicros === input.costMicros
-          && request.failureCode === (input.failureCode ?? null);
+          && request.failureCode === (input.failureCode ?? null)
+          && request.providerSessionId === providerSessionId
+          && request.providerSessionReused === providerSessionReused;
         if (!matches) throw new StorageConflictError("Inference request was already completed differently");
         return { capability, request, replayed: true };
       }
@@ -1234,9 +1255,11 @@ export class PostgresStore implements ControlPlaneStore {
         throw new StorageConflictError("Inference completion exceeds its aggregate token or cost budget");
       }
       await client.query(`UPDATE inference_requests SET state=$1,provider_request_id=$2,response_hash=$3,input_tokens=$4,
-        output_tokens=$5,cost_micros=$6,completed_at=$7,failure_code=$8 WHERE id=$9 AND state='reserved'`, [
+        output_tokens=$5,cost_micros=$6,completed_at=$7,failure_code=$8,provider_session_id=$9,provider_session_reused=$10
+        WHERE id=$11 AND state='reserved'`, [
         input.state, input.providerRequestId ?? null, input.responseHash ?? null, input.inputTokens,
-        input.outputTokens, input.costMicros, completedAt, input.failureCode ?? null, input.id,
+        input.outputTokens, input.costMicros, completedAt, input.failureCode ?? null,
+        input.providerSessionId ?? null, input.providerSessionReused ?? false, input.id,
       ]);
       const count = Number((await client.query("SELECT count(*) AS count FROM inference_requests WHERE capability_id=$1", [capability.id])).rows[0].count);
       const costTotal = Number(totals.cost_micros) + input.costMicros;
@@ -1246,6 +1269,8 @@ export class PostgresStore implements ControlPlaneStore {
       await this.insertOutbox(client, `inference.request.${input.state}`, input.id, {
         requestId: input.id, capabilityId: capability.id, runId: request.runId, role: request.role,
         inputTokens: input.inputTokens, outputTokens: input.outputTokens, costMicros: input.costMicros,
+        providerSessionId: input.providerSessionId ?? null,
+        providerSessionReused: input.providerSessionReused ?? false,
       }, input.responseHash ?? input.failureCode!);
       const finalRequest = this.mapInferenceRequest((await client.query("SELECT * FROM inference_requests WHERE id=$1", [input.id])).rows[0]);
       const finalCapability = this.mapInferenceCapability((await client.query("SELECT * FROM inference_capabilities WHERE id=$1", [capability.id])).rows[0]);
@@ -1295,6 +1320,204 @@ export class PostgresStore implements ControlPlaneStore {
   async listInferenceRequests(runId: string): Promise<InferenceRequest[]> {
     return (await this.pool.query("SELECT * FROM inference_requests WHERE run_id=$1 ORDER BY reserved_at,id", [runId])).rows
       .map(this.mapInferenceRequest);
+  }
+
+  async createEngineeringRoutingAssessment(
+    inputOrAssessment: CreateEngineeringRoutingAssessmentInput | EngineeringRoutingAssessmentRecord,
+    idempotency?: IdempotencyInput,
+  ): Promise<CreateEngineeringRoutingAssessmentResult> {
+    const isRecord = "id" in inputOrAssessment;
+    const assessment = (isRecord
+      ? inputOrAssessment
+      : inputOrAssessment.assessment ?? inputOrAssessment.record) as EngineeringRoutingAssessmentRecord | undefined;
+    const effectiveIdempotency = isRecord ? idempotency : inputOrAssessment.idempotency;
+    if (!assessment) throw new StorageConflictError("Routing assessment record is required");
+    return this.transaction(async (client) => {
+      // Serialize same-assessment creation even when the caller did not supply
+      // a transport idempotency key; the ID itself is an immutable replay key.
+      await client.query("SELECT pg_advisory_xact_lock(hashtext('engineering-routing-assessment'),hashtext($1))", [assessment.id]);
+      if (effectiveIdempotency) {
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))", [effectiveIdempotency.scope, effectiveIdempotency.key]);
+      }
+      const existingLedger = effectiveIdempotency
+        ? await this.getIdempotencyRow(client, effectiveIdempotency.scope, effectiveIdempotency.key)
+        : null;
+      if (existingLedger) {
+        if (existingLedger.requestHash !== effectiveIdempotency!.requestHash) throw new IdempotencyConflictError();
+        if (existingLedger.resourceType !== "engineering-routing-assessment") {
+          throw new IdempotencyConflictError("Idempotency key refers to another resource type");
+        }
+        const existing = (await client.query("SELECT * FROM engineering_routing_assessments WHERE id=$1 FOR UPDATE", [existingLedger.resourceId])).rows[0];
+        if (!existing) throw new StorageConflictError("Routing assessment idempotency record refers to a missing assessment");
+        const mapped = this.mapEngineeringRoutingAssessment(existing);
+        return { assessment: mapped, replayed: true };
+      }
+
+      validateEngineeringRoutingAssessment(assessment);
+
+      const existing = (await client.query("SELECT * FROM engineering_routing_assessments WHERE id=$1 FOR UPDATE", [assessment.id])).rows[0];
+      if (existing) {
+        const mapped = this.mapEngineeringRoutingAssessment(existing);
+        if (canonicalJson(mapped) !== canonicalJson(assessment)) {
+          throw new StorageConflictError("Routing assessment ID was reused with different content");
+        }
+        if (effectiveIdempotency) {
+          await this.insertIdempotency(client, effectiveIdempotency, "engineering-routing-assessment", mapped.id, {
+            assessmentId: mapped.id,
+          });
+        }
+        return { assessment: mapped, replayed: true };
+      }
+
+      const project = (await client.query("SELECT id FROM projects WHERE id=$1", [assessment.projectId])).rows[0];
+      if (!project) throw new StorageConflictError("Routing assessment project was not found");
+      if (assessment.taskId !== null) {
+        const task = (await client.query("SELECT project_id FROM tasks WHERE id=$1", [assessment.taskId])).rows[0];
+        if (!task) throw new StorageConflictError("Routing assessment task was not found");
+        if (String(task.project_id) !== assessment.projectId) {
+          throw new StorageConflictError("Routing assessment task belongs to another project");
+        }
+      }
+      await client.query(`INSERT INTO engineering_routing_assessments
+        (id,project_id,task_id,literal_request,request_hash,context_digest,context_sources_json,dimensions_json,
+         hard_signals_json,preference,final_action,baseline_shape,selected_shape,score,reasons_json,policy_version,
+         execution_supported,unsupported_reasons_json,status,run_id,created_at,expires_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9::jsonb,$10,$11,$12,$13,$14,$15::jsonb,$16,$17,$18::jsonb,$19,$20,$21,$22)`, [
+        assessment.id, assessment.projectId, assessment.taskId, assessment.literalRequest, assessment.requestHash,
+        assessment.contextDigest, JSON.stringify(assessment.contextSources), JSON.stringify(assessment.dimensions),
+        JSON.stringify(assessment.hardSignals),
+        assessment.preference, assessment.finalAction, assessment.baselineShape, assessment.selectedShape,
+        assessment.score, JSON.stringify(assessment.reasons),
+        assessment.policyVersion, assessment.executionSupported, JSON.stringify(assessment.unsupportedReasons), assessment.status,
+        assessment.runId, assessment.createdAt, assessment.expiresAt,
+      ]);
+      await this.insertOutbox(client, "engineering.routing.assessment.created", assessment.id, {
+        assessmentId: assessment.id, projectId: assessment.projectId, taskId: assessment.taskId,
+        requestHash: assessment.requestHash, contextDigest: assessment.contextDigest,
+        contextSources: assessment.contextSources, dimensions: assessment.dimensions, hardSignals: assessment.hardSignals,
+        preference: assessment.preference, finalAction: assessment.finalAction,
+        baselineShape: assessment.baselineShape, selectedShape: assessment.selectedShape,
+        score: assessment.score, reasons: assessment.reasons, policyVersion: assessment.policyVersion,
+        executionSupported: assessment.executionSupported, unsupportedReasons: assessment.unsupportedReasons,
+        status: assessment.status, runId: assessment.runId,
+      }, assessment.id);
+      if (effectiveIdempotency) {
+        await this.insertIdempotency(client, effectiveIdempotency, "engineering-routing-assessment", assessment.id, {
+          assessmentId: assessment.id,
+        });
+      }
+      return { assessment, replayed: false };
+    });
+  }
+
+  async getEngineeringRoutingAssessment(id: string): Promise<EngineeringRoutingAssessmentRecord | null> {
+    const row = (await this.pool.query("SELECT * FROM engineering_routing_assessments WHERE id=$1", [id])).rows[0];
+    return row ? this.mapEngineeringRoutingAssessment(row) : null;
+  }
+
+  async listEngineeringRoutingAssessments(projectId?: string, limit = 100): Promise<EngineeringRoutingAssessmentRecord[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+      throw new StorageConflictError("Routing assessment list limit must be between 1 and 1000");
+    }
+    if (projectId !== undefined && (typeof projectId !== "string" || !projectId || projectId.length > 128
+        || /[\u0000-\u001f\u007f]/.test(projectId))) {
+      throw new StorageConflictError("Routing assessment project ID is invalid");
+    }
+    const result = projectId
+      ? await this.pool.query(`SELECT * FROM engineering_routing_assessments
+        WHERE project_id=$1 ORDER BY created_at DESC,id DESC LIMIT $2`, [projectId, limit])
+      : await this.pool.query(`SELECT * FROM engineering_routing_assessments
+        ORDER BY created_at DESC,id DESC LIMIT $1`, [limit]);
+    return result.rows.map(this.mapEngineeringRoutingAssessment);
+  }
+
+  async createComparison(comparison: ComparisonRecord): Promise<ComparisonRecord> {
+    validateComparisonRecord(comparison);
+    return this.transaction(async (client) => {
+      const existing = (await client.query("SELECT * FROM comparisons WHERE id=$1 FOR UPDATE", [comparison.id])).rows[0];
+      if (existing) {
+        const mapped = this.mapComparison(existing);
+        if (canonicalJson(mapped) !== canonicalJson(comparison)) throw new StorageConflictError("Comparison ID was reused with different content");
+        return mapped;
+      }
+      await client.query(`INSERT INTO comparisons
+        (id,project_id,task_id,objective,contract_hash,status,selection_policy,created_at,completed_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [
+        comparison.id, comparison.projectId, comparison.taskId, comparison.objective, comparison.contractHash,
+        comparison.status, comparison.selectionPolicy, comparison.createdAt, comparison.completedAt,
+      ]);
+      await this.insertOutbox(client, "comparison.created", comparison.id, { comparisonId: comparison.id, projectId: comparison.projectId }, comparison.id);
+      return comparison;
+    });
+  }
+
+  async getComparison(id: string): Promise<ComparisonRecord | null> {
+    const row = (await this.pool.query("SELECT * FROM comparisons WHERE id=$1", [id])).rows[0];
+    return row ? this.mapComparison(row) : null;
+  }
+
+  async completeComparison(id: string, status: "complete" | "failed", completedAt: string): Promise<ComparisonRecord> {
+    return this.transaction(async (client) => {
+      const row = (await client.query("SELECT * FROM comparisons WHERE id=$1 FOR UPDATE", [id])).rows[0];
+      if (!row) throw new StorageConflictError("Comparison was not found");
+      const current = this.mapComparison(row);
+      if (current.status !== "running") {
+        if (current.status !== status || current.completedAt !== completedAt) throw new StorageConflictError("Comparison terminal replay changed content");
+        return current;
+      }
+      await client.query("UPDATE comparisons SET status=$1,completed_at=$2 WHERE id=$3 AND status='running'", [status, completedAt, id]);
+      await this.insertOutbox(client, "comparison.completed", id, { comparisonId: id, status }, status);
+      return { ...current, status, completedAt };
+    });
+  }
+
+  async attachComparisonCandidate(candidate: ComparisonCandidate): Promise<ComparisonCandidate> {
+    validateComparisonCandidate(candidate, false);
+    return this.transaction(async (client) => {
+      const existing = (await client.query(`SELECT * FROM comparison_candidates
+        WHERE comparison_id=$1 AND run_id=$2 FOR UPDATE`, [candidate.comparisonId, candidate.runId])).rows[0];
+      if (existing) {
+        const mapped = this.mapComparisonCandidate(existing);
+        if (canonicalJson(mapped) !== canonicalJson(candidate)) throw new StorageConflictError("Comparison candidate replay changed content");
+        return mapped;
+      }
+      await client.query(`INSERT INTO comparison_candidates
+        (comparison_id,run_id,runtime,workflow,ordinal,status,metrics_json,evidence_digest,created_at,updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, [
+        candidate.comparisonId, candidate.runId, candidate.runtime, candidate.workflow, candidate.ordinal,
+        candidate.status, null, null, candidate.createdAt, candidate.updatedAt,
+      ]);
+      await this.insertOutbox(client, "comparison.candidate.attached", candidate.runId, { comparisonId: candidate.comparisonId, runId: candidate.runId }, candidate.comparisonId);
+      return candidate;
+    });
+  }
+
+  async finalizeComparisonCandidate(candidate: ComparisonCandidate): Promise<ComparisonCandidate> {
+    validateComparisonCandidate(candidate, true);
+    return this.transaction(async (client) => {
+      const row = (await client.query(`SELECT * FROM comparison_candidates
+        WHERE comparison_id=$1 AND run_id=$2 FOR UPDATE`, [candidate.comparisonId, candidate.runId])).rows[0];
+      if (!row) throw new StorageConflictError("Comparison candidate was not attached");
+      const existing = this.mapComparisonCandidate(row);
+      if (existing.status !== "running") {
+        if (canonicalJson(existing) !== canonicalJson(candidate)) throw new StorageConflictError("Final comparison candidate replay changed content");
+        return existing;
+      }
+      if (existing.runtime !== candidate.runtime || existing.workflow !== candidate.workflow || existing.ordinal !== candidate.ordinal
+          || existing.createdAt !== candidate.createdAt) throw new StorageConflictError("Comparison candidate identity changed during finalization");
+      await client.query(`UPDATE comparison_candidates SET status=$1,metrics_json=$2,evidence_digest=$3,updated_at=$4
+        WHERE comparison_id=$5 AND run_id=$6`, [
+        candidate.status, candidate.metrics, candidate.evidenceDigest, candidate.updatedAt,
+        candidate.comparisonId, candidate.runId,
+      ]);
+      await this.insertOutbox(client, "comparison.candidate.finalized", candidate.runId, { comparisonId: candidate.comparisonId, runId: candidate.runId, status: candidate.status }, candidate.evidenceDigest!);
+      return candidate;
+    });
+  }
+
+  async listComparisonCandidates(comparisonId: string): Promise<ComparisonCandidate[]> {
+    return (await this.pool.query(`SELECT * FROM comparison_candidates
+      WHERE comparison_id=$1 ORDER BY ordinal,run_id`, [comparisonId])).rows.map(this.mapComparisonCandidate);
   }
 
   async createArtifact(artifact: Artifact): Promise<void> {
@@ -1555,6 +1778,40 @@ export class PostgresStore implements ControlPlaneStore {
     responseHash: row.response_hash ? String(row.response_hash) : null, inputTokens: Number(row.input_tokens),
     outputTokens: Number(row.output_tokens), costMicros: Number(row.cost_micros), reservedAt: isoString(row.reserved_at),
     completedAt: nullableIsoString(row.completed_at), failureCode: row.failure_code ? String(row.failure_code) : null,
+    providerSessionId: row.provider_session_id ? String(row.provider_session_id) : null,
+    providerSessionReused: row.provider_session_reused === true || row.provider_session_reused === 1,
+  });
+
+  private mapEngineeringRoutingAssessment = (row: any): EngineeringRoutingAssessmentRecord => ({
+    id: String(row.id), projectId: String(row.project_id), taskId: row.task_id === null || row.task_id === undefined ? null : String(row.task_id),
+    literalRequest: String(row.literal_request), requestHash: String(row.request_hash), contextDigest: String(row.context_digest),
+    contextSources: decodeJson(row.context_sources_json, {}) as EngineeringRoutingAssessmentRecord["contextSources"],
+    dimensions: decodeJson(row.dimensions_json, {}) as EngineeringRoutingAssessmentRecord["dimensions"],
+    hardSignals: decodeJson(row.hard_signals_json, {}) as EngineeringRoutingAssessmentRecord["hardSignals"],
+    preference: String(row.preference) as EngineeringRoutingAssessmentRecord["preference"],
+    finalAction: String(row.final_action) as EngineeringRoutingAssessmentRecord["finalAction"],
+    baselineShape: String(row.baseline_shape) as EngineeringRoutingAssessmentRecord["baselineShape"],
+    selectedShape: String(row.selected_shape) as EngineeringRoutingAssessmentRecord["selectedShape"], score: Number(row.score),
+    reasons: decodeJson(row.reasons_json, []) as string[], policyVersion: String(row.policy_version),
+    executionSupported: row.execution_supported === true || row.execution_supported === 1,
+    unsupportedReasons: decodeJson(row.unsupported_reasons_json, []) as string[],
+    status: String(row.status) as EngineeringRoutingAssessmentRecord["status"],
+    runId: row.run_id === null || row.run_id === undefined ? null : String(row.run_id),
+    createdAt: isoString(row.created_at), expiresAt: isoString(row.expires_at),
+  });
+
+  private mapComparison = (row: any): ComparisonRecord => ({
+    id: String(row.id), projectId: String(row.project_id), taskId: String(row.task_id), objective: String(row.objective),
+    contractHash: String(row.contract_hash), status: String(row.status) as ComparisonRecord["status"],
+    selectionPolicy: String(row.selection_policy), createdAt: isoString(row.created_at), completedAt: nullableIsoString(row.completed_at),
+  });
+
+  private mapComparisonCandidate = (row: any): ComparisonCandidate => ({
+    comparisonId: String(row.comparison_id), runId: String(row.run_id), runtime: String(row.runtime),
+    workflow: String(row.workflow), ordinal: Number(row.ordinal), status: String(row.status) as ComparisonCandidate["status"],
+    metrics: row.metrics_json ? decodeJson(row.metrics_json, null as ComparisonMetrics | null) : null,
+    evidenceDigest: row.evidence_digest ? String(row.evidence_digest) : null,
+    createdAt: isoString(row.created_at), updatedAt: isoString(row.updated_at),
   });
 
   private mapArtifact = (row: any): Artifact => ({

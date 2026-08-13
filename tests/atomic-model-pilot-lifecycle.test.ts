@@ -126,7 +126,7 @@ async function completeSandbox(store: ControlPlaneStore, run: Run, root: string,
     model: "fake-model",
     api: "openai-completions",
     roles: ["implementer", "verifier_initial", "repair", "verifier_final"],
-    maxRequests: 4,
+    maxRequests: 16,
     maxInputTokens: 32_000,
     maxOutputTokens: 8_000,
     maxCostMicros: 1_000_000,
@@ -155,6 +155,15 @@ async function completeSandbox(store: ControlPlaneStore, run: Run, root: string,
       costMicros: 20,
     });
   }
+  const secondImplementer = `ireq_${hash(`${run.id}\0implementer\0second`).slice(0, 24)}`;
+  await store.reserveInferenceRequest({
+    id: secondImplementer, tokenHash: hash(`token-${run.id}`), runId: run.id,
+    role: "implementer", requestHash: "9".repeat(64),
+  });
+  await store.completeInferenceRequest({
+    id: secondImplementer, state: "completed", providerRequestId: "provider_implementer_second",
+    responseHash: "a".repeat(64), inputTokens: 10, outputTokens: 5, costMicros: 20,
+  });
   await store.revokeInferenceCapability(capabilityId, clock.now().toISOString());
   const snapshot = exports.map((item) => ({
     relativePath: item.sourceRelativePath,
@@ -176,9 +185,9 @@ async function completeSandbox(store: ControlPlaneStore, run: Run, root: string,
       atomicModelCapabilityId: capabilityId,
       atomicModelPolicySha256: "2".repeat(64),
       repairCount: 0,
-      nativeInputTokens: 30,
-      nativeOutputTokens: 15,
-      nativeCostMicros: 60,
+      nativeInputTokens: 40,
+      nativeOutputTokens: 20,
+      nativeCostMicros: 80,
       nativeSessionId: "native-session",
       nativeWorkflowRunId: "native-workflow",
       liveProviderVerified: false,
@@ -344,7 +353,7 @@ test("Atomic model lifecycle reaches evidence-bound review and records only a sa
     const accepted = await item.service.getRun(detail.run.id);
     assert.equal(accepted.run.status, "completed");
     assert.equal(accepted.run.stage, "accepted_mock_final_action");
-    assert.equal(accepted.run.costUsd, 0.00006);
+    assert.equal(accepted.run.costUsd, 0.00008);
     assert.equal(accepted.run.metadata.safeMockAcceptanceReceipt, true);
     assert.equal(accepted.run.metadata.externalActionPerformed, false);
     assert.equal(accepted.run.metadata.liveProviderVerified, false);
@@ -385,7 +394,7 @@ test("Atomic model approval expires during uptime and cancellation cannot resurr
       model: "fake-model",
       api: "openai-completions",
       roles: ["implementer", "verifier_initial", "repair", "verifier_final"],
-      maxRequests: 4,
+      maxRequests: 16,
       maxInputTokens: 100,
       maxOutputTokens: 100,
       maxCostMicros: 100,

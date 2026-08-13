@@ -2,6 +2,11 @@
 
 Status: proposed
 
+Follow-up: proposed ADR-P007 adds a ChatGPT-subscription-backed Codex adapter to
+this same gateway and migration 008 corrects the ledger for bounded multi-turn
+custom-tool conversations. P006 remains the outer credential/capability/network
+boundary.
+
 ## Context
 
 M5a proved the real Atomic 0.9.12 JSONL/workflow boundary in an isolated writer with no model and no network. M5b needs model-backed implementation and an independent verifier without exposing provider credentials or general egress to that writer.
@@ -41,4 +46,8 @@ M5b is single-active-control-plane-instance until durable cancellation ownership
 
 ## Consequences
 
-The gateway and capability ledger add code and an operational component, but make the credential and network boundary testable before live spend. The credential-free implementation is complete; a live pilot remains blocked on Wesley's provider/model and credential/local-endpoint decision plus an actual end-to-end exercise and human evidence review.
+The gateway and capability ledger add code and an operational component, but make
+the credential and network boundary testable before live use. The subscription
+adapter, dedicated login, and fixed end-to-end exercise are live-verified through
+the evidence gate. A separate operator decision and any external action remain
+outside that proof.

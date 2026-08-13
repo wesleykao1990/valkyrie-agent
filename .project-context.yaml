@@ -18,7 +18,7 @@ modules:
     live_compatibility_validated: true
     live_enabled: false
     tool_only_fixture_compatibility: live-verified-no-model
-    model_workflow_compatibility_validated: deterministic-lifecycle-only-live-provider-pending
+    model_workflow_compatibility_validated: subscription-live-verified-stopped-at-approval
     native_cross_process_durability_validated: false
     license: private-all-rights-reserved
 canonical_knowledge:
@@ -31,7 +31,7 @@ project_brain:
   candidate_backend: openviking
   automatic_capture: false
 runtime_policy:
-  atomic_status: connectivity-plus-literal-tool-only-fixture-gated
+  atomic_status: connectivity-plus-fixed-pilots-and-package-local-lite-contract
   atomic_fixture_workflow: atomic-fixture-pilot
   atomic_fixture_default_enabled: false
   atomic_fixture_model_execution: false
@@ -39,12 +39,32 @@ runtime_policy:
   atomic_fixture_final_action: safe-mock-receipt-only
   atomic_fixture_memory_promotion: false
   atomic_model_fixture_workflow: atomic-fixture-model-pilot
-  atomic_model_fixture_status: credential-free-lifecycle-tested-default-off-live-provider-pending
-  atomic_model_provider_live_verified: false
+  atomic_model_fixture_status: subscription-live-verified-default-off-stopped-at-approval
+  atomic_model_upstream_modes:
+    - openai-compatible
+    - codex-subscription
+  codex_subscription_transport_verified: true
+  codex_subscription_dedicated_profile_authenticated: true
+  codex_provider_session_continuity: process-local-contract-tested-cross-process-disabled
+  atomic_model_provider_live_verified: true
   atomic_cross_process_resume: false
   direct_coding_agents:
     - codex
     - claude-code
+  direct_codex_model_workflow: direct-codex-fixture-model-pilot
+  direct_codex_model_status: live-verified-default-off-stopped-at-approval
+  direct_claude_code_model_status: separately-gated-unavailable
+  runtime_comparison_ledger: migration-009-live-verified-two-candidate-evidence-ready
+  engineering_execution_shapes:
+    - direct
+    - atomic-lite
+    - atomic-full
+  engineering_routing_policy: authenticated-durable-assessment-live-launch-unsupported
+  engineering_routing_ledger: migration-010
+  inference_session_lineage_ledger: migration-011
+  atomic_lite_workflow: package-contract-tested-not-runtime-registered
+  hermes_routing_role: request-and-preference-only
+  control_plane_routing_role: authoritative-policy-decision
   one_root_runtime_per_run: true
   external_sandbox_required_for_real_writers: true
 storage:
@@ -60,7 +80,9 @@ milestones:
   transactional_postgres_storage: complete
   atomic_package_integration_non_live: complete
   native_connectivity_minimum: implemented-disabled-by-default
-  atomic_model_workflow: credential-free-lifecycle-implemented-live-provider-pending
+  atomic_model_workflow: subscription-live-verified-stopped-at-approval
   real_workspace_boundary: complete-local-live-verified-disabled-by-default
   atomic_tool_only_fixture_slice: live-verified-disabled-by-default
-  atomic_model_backed_pilot: credential-free-implementation-complete-live-provider-and-human-evidence-pending
+  atomic_model_backed_pilot: live-verified-through-evidence-gate-operator-decision-pending
+  direct_runtime_comparison: live-verified-both-candidate-approvals-pending-no-default-selected
+  post_m6_routing_efficiency_gaps: implemented-general-launch-deferred-to-m7

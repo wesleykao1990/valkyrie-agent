@@ -179,6 +179,149 @@ async function exerciseSandboxInstanceContract(store: ControlPlaneStore, prefix:
   }), true);
 }
 
+async function exerciseComparisonContract(store: ControlPlaneStore, prefix: string, clock: MutableStoreClock): Promise<void> {
+  const createdAt = new Date(clock.current()).toISOString();
+  const taskId = `${prefix}_comparison_task`;
+  await store.createTask({
+    id: taskId, projectId: "ovalo", source: "fixture", sourceId: null, title: "Comparison fixture",
+    objective: "Compare exact fixture", status: "planned", priority: "normal", createdAt,
+  });
+  const candidateRun = {
+    ...run(`${prefix}_comparison_run`), taskId, rootRuntime: "codex" as const,
+    workflow: "direct-codex-fixture-model-pilot", createdAt,
+  };
+  await store.createRun(candidateRun);
+  const comparison = {
+    id: `${prefix}_comparison`, projectId: "ovalo", taskId, objective: "Compare exact fixture",
+    contractHash: "a".repeat(64), status: "running" as const,
+    selectionPolicy: "Human selects only after evidence; completion is not acceptance.",
+    createdAt, completedAt: null,
+  };
+  assert.deepEqual(await store.createComparison(comparison), comparison);
+  assert.deepEqual(await store.createComparison(comparison), comparison, "comparison creation replays exactly");
+  const attached = {
+    comparisonId: comparison.id, runId: candidateRun.id, runtime: "codex", workflow: candidateRun.workflow,
+    ordinal: 1, status: "running" as const, metrics: null, evidenceDigest: null, createdAt, updatedAt: createdAt,
+  };
+  assert.deepEqual(await store.attachComparisonCandidate(attached), attached);
+  const finalized = {
+    ...attached, status: "evidence_ready" as const, evidenceDigest: "b".repeat(64),
+    metrics: {
+      correctness: "passed" as const, defectsCaught: 0, inputTokens: 100, outputTokens: 20, costMicros: 0,
+      elapsedMs: 1234, humanReviewArtifacts: 11, eventCount: 9,
+      recoveryReliability: "not_exercised" as const, resumability: "control_plane_only" as const,
+      integrationComplexity: 4,
+    },
+    updatedAt: new Date(clock.current() + 1_000).toISOString(),
+  };
+  assert.deepEqual(await store.finalizeComparisonCandidate(finalized), finalized);
+  assert.deepEqual(await store.finalizeComparisonCandidate(finalized), finalized, "metric finalization replays exactly");
+  assert.deepEqual(await store.listComparisonCandidates(comparison.id), [finalized]);
+  await assert.rejects(store.finalizeComparisonCandidate({ ...finalized, evidenceDigest: "c".repeat(64) }), /replay changed/i);
+  const outbox = await store.listPendingOutbox(1000);
+  assert.ok(outbox.some((item) => item.topic === "comparison.created" && item.aggregateId === comparison.id));
+  assert.ok(outbox.some((item) => item.topic === "comparison.candidate.finalized" && item.aggregateId === candidateRun.id));
+}
+
+async function exerciseEngineeringRoutingAssessmentContract(
+  store: ControlPlaneStore,
+  prefix: string,
+  clock: MutableStoreClock,
+): Promise<void> {
+  await store.seedProjects([{
+    id: `${prefix}_other_project`, name: "Other", objective: "Other", currentMilestone: "M1", health: "on_track",
+    linearTeam: "OTHER", repository: "other/repo", vaultPath: "Projects/Other", memoryNamespace: `projects/${prefix}/other`,
+  }]);
+  const createdAt = new Date(clock.current()).toISOString();
+  const taskId = `${prefix}_routing_task`;
+  const otherTaskId = `${prefix}_routing_other_task`;
+  await store.createTask({
+    id: taskId, projectId: "ovalo", source: "fixture", sourceId: null, title: "Routing task",
+    objective: "Assess route", status: "planned", priority: "normal", createdAt,
+  });
+  await store.createTask({
+    id: otherTaskId, projectId: `${prefix}_other_project`, source: "fixture", sourceId: null, title: "Other task",
+    objective: "Other route", status: "planned", priority: "normal", createdAt,
+  });
+  const literalRequest = `${prefix}: change the bounded fixture and run checks`;
+  const assessment = {
+    id: `${prefix}_routing_assessment`, projectId: "ovalo", taskId: taskId,
+    literalRequest, requestHash: "1".repeat(64), contextDigest: "2".repeat(64),
+    contextSources: {
+      linear: { status: "current", issueId: `${prefix}_linear` },
+      git: "current",
+      projectBrain: { status: "accepted", revision: "r1" },
+    },
+    dimensions: { structure: 1, verifiability: 1, iteration: 0, risk: 1, duration: 0, isolation: 1 } as const,
+    hardSignals: { explicitLoop: false, durableBackground: false, approvalOrEvidenceGate: false, multipleCandidates: false } as const,
+    preference: "atomic-full" as const, finalAction: "prepare_reviewable_result" as const,
+    baselineShape: "atomic-lite" as const, selectedShape: "atomic-full" as const,
+    score: 4, reasons: ["rubric:atomic-lite", "preference:atomic-full:applied"], policyVersion: "p009-v1",
+    executionSupported: true, unsupportedReasons: [], status: "assessed" as const, runId: null,
+    createdAt, expiresAt: new Date(clock.current() + 60_000).toISOString(),
+  };
+  const idempotency = { scope: "engineering-routing-assessment", key: `${prefix}_routing_key`, requestHash: "3".repeat(64) };
+  const created = await store.createEngineeringRoutingAssessment(assessment, idempotency);
+  assert.equal(created.replayed, false);
+  assert.deepEqual(created.assessment, assessment);
+  assert.deepEqual(await store.getEngineeringRoutingAssessment(assessment.id), assessment);
+  assert.deepEqual(await store.listEngineeringRoutingAssessments("ovalo", 10), [assessment]);
+  const ledger = await store.getIdempotencyRecord(idempotency.scope, idempotency.key);
+  assert.deepEqual({ resourceType: ledger?.resourceType, resourceId: ledger?.resourceId }, {
+    resourceType: "engineering-routing-assessment", resourceId: assessment.id,
+  });
+  const routingOutbox = (await store.listPendingOutbox(1_000)).find((event) => event.aggregateId === assessment.id
+    && event.topic === "engineering.routing.assessment.created");
+  assert.ok(routingOutbox);
+  assert.equal(routingOutbox?.payload.literalRequest, undefined);
+  assert.equal(JSON.stringify(routingOutbox?.payload).includes(literalRequest), false);
+  assert.deepEqual(await store.createEngineeringRoutingAssessment({ assessment, idempotency }), {
+    assessment, replayed: true,
+  });
+  await assert.rejects(store.createEngineeringRoutingAssessment({
+    ...assessment, literalRequest: `${literalRequest} changed`, requestHash: "4".repeat(64),
+  }, { ...idempotency, requestHash: "4".repeat(64) }), /idempotency|different content/i);
+  await assert.rejects(store.createEngineeringRoutingAssessment({
+    assessment: { ...assessment, literalRequest: `${literalRequest} changed`, requestHash: "4".repeat(64) },
+    idempotency: { ...idempotency, requestHash: "5".repeat(64) },
+  }), /idempotency|different content/i);
+
+  const concurrentRecords = Array.from({ length: 8 }, (_, index) => ({
+    ...assessment,
+    id: `${prefix}_routing_concurrent_${index}`,
+    literalRequest: `${literalRequest} generated-${index}`,
+    requestHash: "6".repeat(64),
+    createdAt: new Date(clock.current() + index + 1).toISOString(),
+    expiresAt: new Date(clock.current() + 60_000 + index + 1).toISOString(),
+  }));
+  const concurrentKey = { scope: idempotency.scope, key: `${prefix}_routing_concurrent_key`, requestHash: "7".repeat(64) };
+  const concurrentResults = await Promise.all(concurrentRecords.map((record) =>
+    store.createEngineeringRoutingAssessment(record, concurrentKey)));
+  assert.equal(concurrentResults.filter((item) => !item.replayed).length, 1);
+  assert.equal(new Set(concurrentResults.map((item) => item.assessment.id)).size, 1);
+  const firstPersisted = concurrentResults.find((item) => !item.replayed)?.assessment;
+  assert.ok(firstPersisted);
+  for (const item of concurrentResults) assert.deepEqual(item.assessment, firstPersisted);
+  assert.deepEqual(await store.getEngineeringRoutingAssessment(firstPersisted!.id), firstPersisted);
+
+  const mismatchedTask = { ...assessment, id: `${prefix}_routing_cross_project`, taskId: otherTaskId, requestHash: "8".repeat(64) };
+  await assert.rejects(store.createEngineeringRoutingAssessment(mismatchedTask), /another project|belong/i);
+  assert.equal(await store.getEngineeringRoutingAssessment(mismatchedTask.id), null);
+  assert.equal((await store.listPendingOutbox(1_000)).some((event) => event.aggregateId === mismatchedTask.id), false);
+  await assert.rejects(store.createEngineeringRoutingAssessment({ ...assessment, id: `${prefix}_routing_bad_score`, score: 3 }), /score/i);
+  await assert.rejects(store.createEngineeringRoutingAssessment({ ...assessment, id: `${prefix}_routing_bad_digest`, requestHash: "not-a-digest" }), /hash|digest/i);
+  await assert.rejects(store.createEngineeringRoutingAssessment({ ...assessment, id: `${prefix}_routing_bad_status`, status: "unsupported", executionSupported: true }), /supported|unsupported/i);
+  await assert.rejects(store.createEngineeringRoutingAssessment({ ...assessment, id: `${prefix}_routing_run_binding`, runId: `${prefix}_future_run` }), /future|binding/i);
+
+  const unsupported = {
+    ...assessment, id: `${prefix}_routing_unsupported`, preference: "auto" as const,
+    selectedShape: "atomic-lite" as const, executionSupported: false, unsupportedReasons: ["atomic-lite unavailable"],
+    status: "unsupported" as const, requestHash: "9".repeat(64),
+  };
+  assert.equal((await store.createEngineeringRoutingAssessment(unsupported)).assessment.status, "unsupported");
+  assert.equal((await store.listEngineeringRoutingAssessments(undefined, 100)).length, 3);
+}
+
 async function seed(store: ControlPlaneStore): Promise<void> {
   await store.seedProjects([projectSeed]);
 }
@@ -569,8 +712,8 @@ async function exerciseScopedInferenceContract(store: ControlPlaneStore, prefix:
   const capability = {
     id: `${prefix}_capability`, runId: ownedRun.id, projectId: ownedRun.projectId,
     workflow: ownedRun.workflow!, tokenHash: "1".repeat(64), provider: "fake-provider", model: "fake-model",
-    api: "openai-completions" as const, roles: ["implementer", "verifier_initial"] as const,
-    maxRequests: 2, maxInputTokens: 100, maxOutputTokens: 50, maxCostMicros: 1_000,
+    api: "openai-completions" as const, roles: ["implementer", "verifier_initial", "verifier_final"] as const,
+    maxRequests: 5, maxInputTokens: 100, maxOutputTokens: 50, maxCostMicros: 1_000,
     maxElapsedMs: 5_000, issuedAt, expiresAt: new Date(clock.current() + 60_000).toISOString(),
     state: "active" as const, policyHash: "2".repeat(64),
   };
@@ -586,31 +729,83 @@ async function exerciseScopedInferenceContract(store: ControlPlaneStore, prefix:
   assert.equal(first.replayed, false);
   assert.equal((await store.reserveInferenceRequest(firstInput)).replayed, true);
   await assert.rejects(store.reserveInferenceRequest({
+    ...firstInput,
+    id: `${prefix}_inference_request_concurrent_role`,
+    requestHash: "e".repeat(64),
+  }), /already has an active request/i);
+  await assert.rejects(store.reserveInferenceRequest({
     ...firstInput, id: `${prefix}_wrong_role`, role: "repair", requestHash: "9".repeat(64),
   }), /role scope/i);
   const completed = await store.completeInferenceRequest({
     id: first.request.id, state: "completed", responseHash: "4".repeat(64), providerRequestId: `${prefix}_provider_1`,
-    inputTokens: 40, outputTokens: 20, costMicros: 400, completedAt: new Date(clock.current() + 1_000).toISOString(),
+    inputTokens: 40, outputTokens: 20, costMicros: 400, providerSessionId: `${prefix}_provider_session_shared`,
+    providerSessionReused: false, completedAt: new Date(clock.current() + 1_000).toISOString(),
   });
+  assert.equal(completed.request.providerSessionId, `${prefix}_provider_session_shared`);
+  assert.equal(completed.request.providerSessionReused, false);
   assert.equal(completed.replayed, false);
   assert.equal((await store.completeInferenceRequest({
     id: first.request.id, state: "completed", responseHash: "4".repeat(64), providerRequestId: `${prefix}_provider_1`,
-    inputTokens: 40, outputTokens: 20, costMicros: 400, completedAt: new Date(clock.current() + 2_000).toISOString(),
+    inputTokens: 40, outputTokens: 20, costMicros: 400, providerSessionId: `${prefix}_provider_session_shared`,
+    providerSessionReused: false, completedAt: new Date(clock.current() + 2_000).toISOString(),
   })).replayed, true);
+  await assert.rejects(store.completeInferenceRequest({
+    id: first.request.id, state: "completed", responseHash: "4".repeat(64), providerRequestId: `${prefix}_provider_1`,
+    inputTokens: 40, outputTokens: 20, costMicros: 400, providerSessionId: `${prefix}_provider_session_shared`,
+  }), /supplied together|differently/i);
+  const sameRoleSecondTurn = await store.reserveInferenceRequest({
+    id: `${prefix}_inference_request_same_role_2`, tokenHash: capability.tokenHash, runId: ownedRun.id,
+    role: "implementer", requestHash: "8".repeat(64), reservedAt: issuedAt,
+  });
+  assert.equal(sameRoleSecondTurn.replayed, false, "a changed request hash in one role is a new bounded turn");
+  await store.completeInferenceRequest({
+    id: sameRoleSecondTurn.request.id, state: "completed", responseHash: "a".repeat(64),
+    providerRequestId: `${prefix}_provider_same_role_2`, inputTokens: 10, outputTokens: 5,
+    costMicros: 50, providerSessionId: `${prefix}_provider_session_shared`, providerSessionReused: true,
+    completedAt: new Date(clock.current() + 1_500).toISOString(),
+  });
   const second = await store.reserveInferenceRequest({
     id: `${prefix}_inference_request_2`, tokenHash: capability.tokenHash, runId: ownedRun.id,
     role: "verifier_initial", requestHash: "5".repeat(64), reservedAt: issuedAt,
   });
   await assert.rejects(store.completeInferenceRequest({
-    id: second.request.id, state: "completed", responseHash: "6".repeat(64), inputTokens: 61,
+    id: second.request.id, state: "completed", responseHash: "6".repeat(64), inputTokens: 51,
     outputTokens: 1, costMicros: 1, completedAt: new Date(clock.current() + 2_000).toISOString(),
   }), /aggregate token or cost budget/i);
   await store.completeInferenceRequest({
     id: second.request.id, state: "failed", failureCode: "upstream_timeout", inputTokens: 0,
     outputTokens: 0, costMicros: 0, completedAt: new Date(clock.current() + 2_000).toISOString(),
   });
+  const differentRole = await store.reserveInferenceRequest({
+    id: `${prefix}_inference_request_different_role`, tokenHash: capability.tokenHash, runId: ownedRun.id,
+    role: "verifier_final", requestHash: "b".repeat(64), reservedAt: issuedAt,
+  });
+  const differentRoleCompleted = await store.completeInferenceRequest({
+    id: differentRole.request.id, state: "completed", responseHash: "c".repeat(64),
+    providerRequestId: `${prefix}_provider_different_role`, inputTokens: 1, outputTokens: 1, costMicros: 1,
+    providerSessionId: `${prefix}_provider_session_other_role`, providerSessionReused: false,
+    completedAt: new Date(clock.current() + 2_500).toISOString(),
+  });
+  assert.equal(differentRoleCompleted.request.providerSessionReused, false);
+  await assert.rejects(store.completeInferenceRequest({
+    id: differentRole.request.id, state: "completed", responseHash: "c".repeat(64),
+    providerRequestId: `${prefix}_provider_different_role`, inputTokens: 1, outputTokens: 1, costMicros: 1,
+    providerSessionId: `${prefix}_provider_session_other_role`, providerSessionReused: true,
+  }), /differently/i);
+  const invalidSession = await store.reserveInferenceRequest({
+    id: `${prefix}_inference_request_invalid_session`, tokenHash: capability.tokenHash, runId: ownedRun.id,
+    role: "verifier_final", requestHash: "d".repeat(64), reservedAt: issuedAt,
+  });
+  await assert.rejects(store.completeInferenceRequest({
+    id: invalidSession.request.id, state: "failed", failureCode: "upstream_timeout", inputTokens: 0,
+    outputTokens: 0, costMicros: 0, providerSessionId: `${prefix}_provider_session_other_role`, providerSessionReused: false,
+  }), /failed.*session/i);
+  await store.completeInferenceRequest({
+    id: invalidSession.request.id, state: "failed", failureCode: "upstream_timeout", inputTokens: 0,
+    outputTokens: 0, costMicros: 0,
+  });
   assert.equal((await store.getInferenceCapability(capability.id))?.state, "exhausted");
-  assert.equal((await store.listInferenceRequests(ownedRun.id)).length, 2);
+  assert.equal((await store.listInferenceRequests(ownedRun.id)).length, 5);
   assert.equal((await store.revokeInferenceCapability(capability.id))?.state, "exhausted");
 
   const expiring = {
@@ -1355,6 +1550,8 @@ test("SQLite sandbox instances enforce exact fenced lifecycle transitions", asyn
   try {
     await seed(store);
     await exerciseSandboxInstanceContract(store, "sqlite", clock);
+    await exerciseComparisonContract(store, "sqlite", clock);
+    await exerciseEngineeringRoutingAssessmentContract(store, "sqlite", clock);
   } finally {
     await store.close();
   }
@@ -1693,6 +1890,8 @@ test("PostgreSQL storage contract smoke", { skip: !postgresUrl }, async () => {
     await seed(store);
     await exerciseFencedWriterLeaseContract(store, "postgres", clock);
     await exerciseSandboxInstanceContract(store, "postgres", clock);
+    await exerciseComparisonContract(store, "postgres", clock);
+    await exerciseEngineeringRoutingAssessmentContract(store, "postgres", clock);
     await exerciseArtifactBatchContract(store, "postgres");
     await exerciseApprovalRequestContract(store, "postgres");
     await exerciseMismatchedApprovalEventContract(store, "postgres");
@@ -1759,7 +1958,7 @@ test("PostgreSQL storage contract smoke", { skip: !postgresUrl }, async () => {
     const appended = await Promise.all(Array.from({ length: 8 }, () => store.appendEvent(event)));
     assert.equal(new Set(appended.map((value) => value.seq)).size, 1);
     assert.equal((await store.listEvents(winner.id)).length, 1);
-    assert.equal((await store.listPendingOutbox()).filter((value) =>
+    assert.equal((await store.listPendingOutbox(1_000)).filter((value) =>
       value.topic === "run.event.appended" && value.aggregateId === winner.id
     ).length, 1);
 

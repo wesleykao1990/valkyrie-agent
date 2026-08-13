@@ -10,8 +10,15 @@
    external-writer boundary and its completed local live/restart evidence. Read
    `docs/IMPLEMENTATION_PLAN_M5.md` and proposed ADR-P005 before touching the
    default-off Atomic fixture composition. Read
-   `docs/IMPLEMENTATION_PLAN_M5B_PRELIVE.md` and proposed ADR-P006 before changing
-   the scoped model-inference boundary.
+   `docs/IMPLEMENTATION_PLAN_M5B_PRELIVE.md`,
+   `docs/IMPLEMENTATION_PLAN_M5B_SUBSCRIPTION.md`, and proposed ADRs P006–P007
+   before changing the scoped model-inference boundary. Read
+   `docs/IMPLEMENTATION_PLAN_M6.md` and proposed ADR-P008 before changing the
+   direct-runtime comparison or its migration-009 metrics ledger. Read proposed
+   ADR-P009 before changing Direct / Atomic Lite / Atomic Full routing or Hermes'
+   role in that decision, then read `docs/IMPLEMENTATION_PLAN_POST_M6_GAPS.md`
+   before changing authenticated intake, the Atomic Lite contract, or retained
+   provider-session behavior.
 6. For Atomic-specific work only, then read `packages/atomic-workflow-architect/START_HERE.md`, its `skills/atomic-workflow-architect/SKILL.md`, and the relevant integration guide. That package is a module, not the whole Project OS. Only its reviewed `atomic-fixture-pilot` workflow is connected to a live writer, behind an exact default-off fixture gate; the broader package is not generally enabled.
 7. Read `docs/STORAGE.md` before selecting PostgreSQL. Install locked dependencies
    with `npm ci`, then run `npm run verify` (full verification requires local
@@ -20,8 +27,9 @@
    authenticated read-only native pilot, follow the distinct setup in `README.md`
    and use `./bin/project-os-pilot-server`. The credential-free M5a writer uses a
    separately configured `npm start` plus immutable local runner digest; the
-   credential-free M5b lifecycle is also registered default-off and needs the
-   additional reviewed gateway/model configuration in `README.md`. Do not add
+   subscription-capable M5b pre-live lifecycle is also registered default-off and
+   needs the dedicated profile plus reviewed gateway/model configuration in
+   `README.md`. Do not add
    either writer feature flag to a default wrapper.
 9. Open `http://127.0.0.1:8787`.
 10. For the isolated Hermes/native pilot, run `npm run setup:hermes`; it registers

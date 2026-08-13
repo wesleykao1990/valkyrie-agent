@@ -16,7 +16,7 @@ const policy: ScopedInferencePolicy = {
     implementer: "fixture-implementer", verifier_initial: "fixture-verifier-initial",
     repair: "fixture-repair", verifier_final: "fixture-verifier-final",
   },
-  roles: ["implementer", "verifier_initial", "repair", "verifier_final"], maxRequests: 4,
+  roles: ["implementer", "verifier_initial", "repair", "verifier_final"], maxRequests: 16,
   maxInputTokens: 32_000, maxOutputTokens: 8_000, maxCostMicros: 1_000_000,
   maxElapsedMs: 240_000, ttlMs: 10 * 60_000,
   inputCostMicrosPerMillion: 1000, outputCostMicrosPerMillion: 2000,

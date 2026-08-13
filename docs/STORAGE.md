@@ -284,8 +284,8 @@ approved final effect is still only a safe mock receipt, never a GitHub or
 canonical-memory write.
 
 Migration 007 adds the credential-free portion of the M5b inference ledger:
-run/project/workflow-bound capabilities, one exact request row per native model
-role, hashes of capability/request/response payloads, authoritative token/cost
+run/project/workflow-bound capabilities, request rows for native model roles,
+hashes of capability/request/response payloads, authoritative token/cost
 totals, expiry/revocation state, and matching outbox evidence. Plaintext run
 capabilities and provider credentials are never stored. Reservation and
 completion are transactional in SQLite and PostgreSQL; a role cannot spend
@@ -297,10 +297,66 @@ checksummed and forward-only. Binary rollback requires
 a verified pre-v7 backup or separate compatible data set; an older binary must
 reject the v7 ledger.
 
-The credential-free M5b tests use an in-memory fake upstream and private Unix socket.
+Migration 008 corrects the ledger for native custom-tool conversations. Request
+identity is unique on `(capability_id, role, request_hash)`, so one role may make
+several changed turns while an exact replay is still rejected without spending.
+The fixed capability ceiling is 16 requests, with aggregate input/output bounds
+up to 1,000,000/131,072 tokens. Reservation, completion, outbox, request-count,
+and aggregate-budget behavior share the same SQLite/PostgreSQL contract tests.
+Migration 008 is checksummed and forward-only; binary rollback requires a
+verified pre-v8 backup or separate compatible data set.
+
+The normal M5b tests use in-memory fake upstreams, a fake pinned Codex child, and a private Unix socket.
 They do not contact a provider and do not establish model quality. Normal test
 wrappers strip every `ATOMIC_FIXTURE_MODEL_*` setting so an inherited credential,
 endpoint, or enable flag cannot turn verification into live inference.
+
+### Migration 009: runtime comparison ledger
+
+Migration 009 adds `runtime_comparisons` and `runtime_comparison_candidates` in
+both dialects. The aggregate binds one exact project/task/objective contract and
+selection policy. Each candidate binds one run/runtime/workflow/ordinal; its
+terminal metrics/evidence digest are write-once and idempotently replayable. A
+database trigger rejects a candidate whose run belongs to another project. The
+ledger stores no credential or artifact bytes; those remain behind their existing
+boundaries.
+
+Migration 009 is checksummed and forward-only. An older binary fails closed on
+the unknown v9 ledger. Rollback requires a verified pre-v9 backup or a separate
+compatible SQLite dataset; there is no destructive down migration.
+
+### Migrations 010–011: routing assessments and provider-session evidence
+
+Migration 010 adds `engineering_routing_assessments`. Each immutable record binds
+one project and optional same-project task to the literal request, request/context
+SHA-256 values, source provenance, six control-plane-owned dimensions, hard
+signals, upward-only preference, final-action intent, baseline/selected shape,
+score, reasons, policy version, support state, and TTL. Creation, idempotency, and
+the bounded outbox event are one transaction. The raw literal request remains in
+the assessment row but is deliberately omitted from the outbox payload. The
+reserved unique run binding is null until a future explicit launch operation is
+designed; current assessments cannot launch.
+
+Migration 011 adds `provider_session_id` and `provider_session_reused` to inference
+requests. A partial unique index permits only one `reserved` request per
+capability/role, preventing two concurrent turns from racing one native provider
+thread. Completed turns in the same role may share the same stable thread ID;
+different roles keep separate lineages. These fields are audit evidence, not a
+cross-process resume capability.
+
+Both migrations are forward-only and checksummed. An older binary must reject
+schema v10/v11. Rollback requires a verified pre-v10/pre-v11 backup, as
+appropriate, or a separate compatible SQLite data set; there is no destructive
+down migration. Before applying migration 011 to retained data, audit that no
+capability/role has multiple `reserved` requests, or migration must fail closed.
+
+The immutability and transition guarantees above are store-contract and database
+constraint guarantees, not protection from an administrator issuing arbitrary
+SQL. A production PostgreSQL runtime role should have only the minimum DML needed
+by the store and no DDL/direct-maintenance path around its transactions or
+triggers; migrations should use a separate role. SQLite is an embedded demo
+adapter and therefore trusts the owning control-plane process not to bypass the
+store with raw SQL.
 
 The full repository verifier runs both suites:
 

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 
 interface FakeMount {
   Type: "bind";
@@ -134,7 +134,9 @@ switch (command) {
 }
 
 function persist(): void {
-  writeFileSync(statePath, `${JSON.stringify(state)}\n`, { encoding: "utf8", mode: 0o600 });
+  const temporary = `${statePath}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(state)}\n`, { encoding: "utf8", mode: 0o600 });
+  renameSync(temporary, statePath);
 }
 
 function createContainer(args: string[]): void {
@@ -376,6 +378,16 @@ function execute(args: string[]): void {
     runAtomicRpc(commandArgs, workingDirectory, containerEnvironment);
     return;
   }
+  if (
+    (JSON.stringify(commandArgs) === JSON.stringify(["/bin/mkdir", "-m", "700", "/workspace/.atomic-agent"]))
+    || (commandArgs[0] === "/usr/bin/install" && commandArgs[1] === "-m" && commandArgs[2] === "600"
+      && ["models.json", "settings.json"].some((name) => JSON.stringify(commandArgs.slice(3)) === JSON.stringify([
+        `/run-context/atomic-agent/${name}`, `/workspace/.atomic-agent/${name}`,
+      ])))
+  ) {
+    process.stdout.write("ok\n");
+    return;
+  }
   if (commandArgs[0] === "emit-bytes") {
     const count = Number(commandArgs[1]);
     process.stdout.write("x".repeat(Number.isFinite(count) ? count : 0));
@@ -410,8 +422,8 @@ function runAtomicRpc(
   };
   const acceptedEnvironment = { ...requiredEnvironment } as Record<string, string>;
   if (containerEnvironment.ATOMIC_CODING_AGENT_DIR !== undefined) {
-    if (containerEnvironment.ATOMIC_CODING_AGENT_DIR !== "/run-context/atomic-agent") process.exit(64);
-    acceptedEnvironment.ATOMIC_CODING_AGENT_DIR = "/run-context/atomic-agent";
+    if (containerEnvironment.ATOMIC_CODING_AGENT_DIR !== "/workspace/.atomic-agent") process.exit(64);
+    acceptedEnvironment.ATOMIC_CODING_AGENT_DIR = "/workspace/.atomic-agent";
   }
   if (JSON.stringify(containerEnvironment) !== JSON.stringify(acceptedEnvironment)) process.exit(64);
   const sessionIndex = commandArgs.indexOf("--session-dir");

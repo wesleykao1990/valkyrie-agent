@@ -25,6 +25,12 @@ test("MCP sends bearer auth and enforces its configured tool allowlist", async (
     if (request.url === "/api/runtimes") {
       return response.end(JSON.stringify([{ runtime: "codex", available: true }]));
     }
+    if (request.url === "/api/engineering/assessments" && request.method === "POST") {
+      return response.end(JSON.stringify({ assessment: { id: "route_fixture", selectedShape: "atomic-lite", executionSupported: false } }));
+    }
+    if (request.url === "/api/engineering/assessments/route_fixture") {
+      return response.end(JSON.stringify({ id: "route_fixture", selectedShape: "atomic-lite", executionSupported: false }));
+    }
     if (request.url === "/api/atomic-fixture/runs/run_fixture/artifacts/artifact_fixture") {
       return response.end(JSON.stringify({
         runId: "run_fixture",
@@ -54,7 +60,7 @@ test("MCP sends bearer auth and enforces its configured tool allowlist", async (
   environment.CONTROL_PLANE_AUTH_TOKEN = token;
   environment.CONTROL_PLANE_API = `http://127.0.0.1:${port}`;
   environment.CONTROL_PLANE_MCP_TOOL_ALLOWLIST =
-    "projects_list,runtimes_status,runs_start,atomic_fixture_artifact_read,atomic_model_fixture_artifact_read,atomic_model_fixture_approval_resolve";
+    "projects_list,runtimes_status,engineering_assess,engineering_assessment_get,runs_start,atomic_fixture_artifact_read,atomic_model_fixture_artifact_read,atomic_model_fixture_approval_resolve";
   const child = spawn(
     process.execPath,
     ["--experimental-strip-types", "apps/mcp-server/src/index.ts"],
@@ -102,12 +108,18 @@ test("MCP sends bearer auth and enforces its configured tool allowlist", async (
     assert.equal(initialized.result.serverInfo.name, "wesley-agent-control-plane");
     const listed = await rpc("tools/list");
     assert.deepEqual(listed.result.tools.map((item: any) => item.name), [
-      "projects_list", "runtimes_status", "runs_start", "atomic_fixture_artifact_read",
+      "projects_list", "runtimes_status", "engineering_assess", "engineering_assessment_get", "runs_start", "atomic_fixture_artifact_read",
       "atomic_model_fixture_artifact_read", "atomic_model_fixture_approval_resolve",
     ]);
+    const engineeringTool = listed.result.tools.find((item: any) => item.name === "engineering_assess");
+    assert.deepEqual(engineeringTool.inputSchema.required, ["projectId", "request"]);
+    assert.equal(engineeringTool.inputSchema.additionalProperties, false);
+    assert.equal(engineeringTool.inputSchema.properties.request.maxLength, 16_000);
+    assert.equal("structure" in engineeringTool.inputSchema.properties, false, "Hermes cannot submit routing scores");
     const runStartTool = listed.result.tools.find((item: any) => item.name === "runs_start");
     assert.deepEqual(runStartTool.inputSchema.properties.workflow.enum, [
       "runtime-connectivity", "atomic-fixture-pilot", "atomic-fixture-model-pilot",
+      "direct-codex-fixture-model-pilot", "direct-claude-code-fixture-model-pilot",
     ]);
     const artifactReadTool = listed.result.tools.find((item: any) =>
       item.name === "atomic_fixture_artifact_read");
@@ -124,6 +136,24 @@ test("MCP sends bearer auth and enforces its configured tool allowlist", async (
     assert.match(projects.result.content[0].text, /ovalo/);
     const runtimes = await rpc("tools/call", { name: "runtimes_status", arguments: {} });
     assert.match(runtimes.result.content[0].text, /codex/);
+    const assessment = await rpc("tools/call", {
+      name: "engineering_assess",
+      arguments: {
+        projectId: "ovalo", request: "Implement a bounded parser with unit tests.",
+        preference: "atomic-lite", finalAction: "prepare_reviewable_result", idempotencyKey: "route_retry_1",
+      },
+    });
+    assert.match(assessment.result.content[0].text, /atomic-lite/);
+    const assessmentGet = await rpc("tools/call", {
+      name: "engineering_assessment_get", arguments: { assessmentId: "route_fixture" },
+    });
+    assert.match(assessmentGet.result.content[0].text, /route_fixture/);
+    const scoreInjection = await rpc("tools/call", {
+      name: "engineering_assess",
+      arguments: { projectId: "ovalo", request: "Implement a bounded parser with unit tests.", structure: 0 },
+    });
+    assert.equal(scoreInjection.error.code, -32000);
+    assert.match(scoreInjection.error.message, /unsupported field/);
     const artifact = await rpc("tools/call", {
       name: "atomic_fixture_artifact_read",
       arguments: { runId: "run_fixture", artifactId: "artifact_fixture" },
@@ -157,7 +187,7 @@ test("MCP sends bearer auth and enforces its configured tool allowlist", async (
     const denied = await rpc("tools/call", { name: "memory_search", arguments: {} });
     assert.equal(denied.error.code, -32601);
     assert.match(denied.error.message, /not available/);
-    assert.deepEqual(receivedAuthorization, Array(5).fill(`Bearer ${token}`));
+    assert.deepEqual(receivedAuthorization, Array(7).fill(`Bearer ${token}`));
     assert.doesNotMatch(stderr, new RegExp(token));
   } finally {
     child.kill("SIGTERM");

@@ -105,6 +105,27 @@ export interface AtomicModelPilotPreflight {
 
 function sha(value: string | Buffer): string { return createHash("sha256").update(value).digest("hex"); }
 
+class AtomicModelPilotPhaseError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "AtomicModelPilotPhaseError";
+    this.code = code;
+  }
+}
+
+async function inPilotPhase<T>(code: string, message: string, operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof Error && /^[A-Z][A-Z0-9_]{2,63}$/.test(String((error as Error & { code?: string }).code ?? ""))) {
+      throw error;
+    }
+    throw new AtomicModelPilotPhaseError(code, message);
+  }
+}
+
 /** Coordinates the literal disposable model fixture through scoped inference. */
 export class AtomicModelPilotCoordinator {
   private active = false;
@@ -284,19 +305,31 @@ export class AtomicModelPilotCoordinator {
             crossProcessResume: false,
             externalActionPerformed: false,
           } });
-          bridge = await this.options.bridge.start(input.run.id);
+          bridge = await inPilotPhase(
+            "ATOMIC_MODEL_BRIDGE_START_FAILED",
+            "Atomic model inference bridge failed its bounded start contract",
+            () => this.options.bridge.start(input.run.id),
+          );
         },
         execute: async (handle): Promise<OciRunResult> => {
           if (!prepared) throw new Error("Atomic model context was not prepared before execution");
-          const client = await this.options.provider.openAtomicRpc(handle);
+          const preparedContext = prepared;
+          const client = await inPilotPhase(
+            "ATOMIC_MODEL_RPC_OPEN_FAILED",
+            "Atomic model RPC transport failed its bounded open contract",
+            () => this.options.provider.openAtomicRpc(handle),
+          );
           try {
-            native = await executeAtomicFixtureModelWorkflow({
+            native = await inPilotPhase(
+              "ATOMIC_MODEL_WORKFLOW_FAILED",
+              "Atomic model native workflow failed its bounded execution contract",
+              () => executeAtomicFixtureModelWorkflow({
               client,
               inputs: {
                 control_plane_run_id: input.run.id,
-                contract_sha256: prepared.runContractSha256,
+                contract_sha256: preparedContext.runContractSha256,
                 expected_before_sha256: ATOMIC_FIXTURE_EXPECTED_BEFORE_SHA256,
-                capability_policy_sha256: prepared.capability.policyHash,
+                capability_policy_sha256: preparedContext.capability.policyHash,
                 package_sha256: this.options.acceptedPackageSha256,
                 live_provider_expected: this.options.liveProviderExpected ?? false,
               },
@@ -320,16 +353,36 @@ export class AtomicModelPilotCoordinator {
                   createdAt: this.clock().toISOString(),
                 });
               },
+              }),
+            ).catch((error) => {
+              const diagnostic = client.diagnosticStderrSnapshot()
+                .replace(/vki_[A-Za-z0-9_-]{43}/gu, "[REDACTED_CAPABILITY]")
+                .trim();
+              if (diagnostic) process.stderr.write(`Atomic model native startup diagnostic: ${diagnostic.slice(0, 4_096)}\n`);
+              throw error;
             });
-            evidenceSnapshot = await validateAtomicModelPilotEvidence({
-              store: this.options.store,
-              runId: input.run.id,
-              handle,
-              contextPath,
-              capabilityId: prepared.capability.id,
-              native,
-              liveProviderExpected: this.options.liveProviderExpected ?? false,
-            });
+            evidenceSnapshot = await inPilotPhase(
+              "ATOMIC_MODEL_EVIDENCE_FAILED",
+              "Atomic model evidence failed its deterministic validation contract",
+              async () => {
+                try {
+                  return await validateAtomicModelPilotEvidence({
+                    store: this.options.store,
+                    runId: input.run.id,
+                    handle,
+                    contextPath,
+                    capabilityId: preparedContext.capability.id,
+                    native: native!,
+                    liveProviderExpected: this.options.liveProviderExpected ?? false,
+                  });
+                } catch (error) {
+                  const diagnostic = (error instanceof Error ? error.message : "unknown evidence failure")
+                    .replace(/\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+/gu, "[path]");
+                  process.stderr.write(`Atomic model evidence diagnostic: ${diagnostic.slice(0, 1_024)}\n`);
+                  throw error;
+                }
+              },
+            );
             const summary = "Atomic model workflow produced bounded provider-backed evidence\n";
             return { exitCode: 0, stdout: summary, stderr: "", stdoutBytes: Buffer.byteLength(summary), stderrBytes: 0 };
           } finally { await client.stop().catch(() => undefined); }

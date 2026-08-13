@@ -128,6 +128,7 @@ function modelFixtureOutput(): JsonRecord {
     context_pack_path: ".valkyrie-model-output/context-pack.json",
     run_contract_path: ".valkyrie-model-output/run-contract.json",
     launch_manifest_path: ".valkyrie-model-output/atomic-model-launch-manifest.json",
+    source_after_sha256: FAKE_SOURCE_AFTER_SHA256,
     repair_count: process.env.FAKE_ATOMIC_MODEL_REPAIR === "1" ? 1 : 0,
     checks_passed: true,
     verifier_passed: true,

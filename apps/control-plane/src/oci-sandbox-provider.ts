@@ -23,7 +23,8 @@ const CONTROL_CHAR = /[\u0000-\u001f\u007f]/;
 const ATOMIC_RPC_WORKDIR = "/workspace/worktree";
 const ATOMIC_RPC_EXTENSION = "/run-context/atomic-package";
 const ATOMIC_RPC_SESSION_DIR = "/workspace/.atomic-sessions";
-const ATOMIC_MODEL_AGENT_DIR = "/run-context/atomic-agent";
+const ATOMIC_MODEL_AGENT_SOURCE_DIR = "/run-context/atomic-agent";
+const ATOMIC_MODEL_AGENT_RUNTIME_DIR = "/workspace/.atomic-agent";
 const ATOMIC_RPC_ENV = Object.freeze({
   HOME: "/workspace/.atomic-home",
   XDG_CONFIG_HOME: "/workspace/.atomic-home/config",
@@ -1233,7 +1234,8 @@ export class OciSandboxProvider {
         "--env", `${name}=${value}`,
       ]);
       if (this.atomicRpc.stagedAgentConfig) {
-        containerEnvironmentArgs.push("--env", `ATOMIC_CODING_AGENT_DIR=${ATOMIC_MODEL_AGENT_DIR}`);
+        await this.stageAtomicAgentRuntimeConfig(handle);
+        containerEnvironmentArgs.push("--env", `ATOMIC_CODING_AGENT_DIR=${ATOMIC_MODEL_AGENT_RUNTIME_DIR}`);
       }
       const client = new AtomicRpcClient({
         command: this.options.engineCommand,
@@ -1687,6 +1689,22 @@ export class OciSandboxProvider {
           || !isContained(root, realpathSync(path))) {
         throw new Error(`Atomic model agent ${name} must be a bounded contained regular file`);
       }
+    }
+  }
+
+  private async stageAtomicAgentRuntimeConfig(handle: OciSandboxHandle): Promise<void> {
+    const commands = [
+      ["/bin/mkdir", "-m", "700", ATOMIC_MODEL_AGENT_RUNTIME_DIR],
+      ["/usr/bin/install", "-m", "600", `${ATOMIC_MODEL_AGENT_SOURCE_DIR}/models.json`, `${ATOMIC_MODEL_AGENT_RUNTIME_DIR}/models.json`],
+      ["/usr/bin/install", "-m", "600", `${ATOMIC_MODEL_AGENT_SOURCE_DIR}/settings.json`, `${ATOMIC_MODEL_AGENT_RUNTIME_DIR}/settings.json`],
+    ] as const;
+    for (const command of commands) {
+      await this.invoke(
+        "execute",
+        ["exec", handle.containerId, ...command],
+        this.timeouts.runMs,
+        this.maxEngineOutputBytes,
+      );
     }
   }
 

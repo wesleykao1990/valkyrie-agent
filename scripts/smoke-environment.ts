@@ -61,6 +61,9 @@ export function buildIsolatedSmokeEnvironment(
       value !== undefined
       && !blockedNames.has(name)
       && !name.startsWith("ATOMIC_FIXTURE_MODEL_")
+      && !name.startsWith("DIRECT_CODEX_MODEL_")
+      && !name.startsWith("DIRECT_CLAUDE_MODEL_")
+      && !name.startsWith("VALKYRIE_M6_")
       && !name.startsWith("REPOSITORY_PATH_")
     ),
   );

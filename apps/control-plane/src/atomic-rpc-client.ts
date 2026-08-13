@@ -395,6 +395,7 @@ export class AtomicRpcClient extends EventEmitter<AtomicRpcClientEventMap> {
   private earlyRecords: Array<AtomicRpcResponse | AtomicRpcNativeEvent> = [];
   private earlyRecordBytes = 0;
   private earlyRecordsDrained = false;
+  private diagnosticStderr = "";
 
   constructor(commandOrOptions: string | AtomicRpcClientOptions = process.env.ATOMIC_COMMAND ?? "atomic") {
     super();
@@ -462,6 +463,7 @@ export class AtomicRpcClient extends EventEmitter<AtomicRpcClientEventMap> {
     this.earlyRecords = [];
     this.earlyRecordBytes = 0;
     this.earlyRecordsDrained = false;
+    this.diagnosticStderr = "";
     this.closePromise = new Promise((resolve) => {
       this.resolveClose = resolve;
     });
@@ -471,7 +473,11 @@ export class AtomicRpcClient extends EventEmitter<AtomicRpcClientEventMap> {
     child.stdout.on("error", (value) => this.handleTransportError(child, "stdout", value));
     child.stderr.on("data", (chunk: Buffer) => {
       if (this.reserveTransportBytes(child, "stderr", chunk.byteLength)) {
-        this.emit("stderr", chunk.toString("utf8"));
+        const text = chunk.toString("utf8");
+        if (this.diagnosticStderr.length < 16_384) {
+          this.diagnosticStderr += text.slice(0, 16_384 - this.diagnosticStderr.length);
+        }
+        this.emit("stderr", text);
       }
     });
     child.stderr.on("error", (value) => this.handleTransportError(child, "stderr", value));
@@ -645,6 +651,11 @@ export class AtomicRpcClient extends EventEmitter<AtomicRpcClientEventMap> {
       for (const record of pending) listener(record);
     }
     return () => this.off("record", listener);
+  }
+
+  /** Bounded local-process diagnostics; callers must not persist this text. */
+  diagnosticStderrSnapshot(): string {
+    return this.diagnosticStderr;
   }
 
   private enqueueFrame(child: ChildProcessWithoutNullStreams, value: object, id?: string): Promise<void> {

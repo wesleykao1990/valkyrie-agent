@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createServer } from "node:net";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -15,9 +16,14 @@ class FakeBridgeEngine implements BridgeEngine {
   wrongNetwork = false;
   createArgs: string[] = [];
   failCreateAfterReservation = false;
+  egressConnected = false;
   async invoke(operation: string, args: readonly string[]) {
     this.calls.push({ operation, args: [...args] });
-    if (operation === "network-inspect") return { stdout: JSON.stringify({ Name: "valkyrie-m5b", Internal: !this.wrongNetwork, Ingress: false, Driver: "bridge", Scope: "local" }), stderr: "" };
+    if (operation === "network-inspect") {
+      const name = args.at(-1);
+      return { stdout: JSON.stringify({ Name: name, Internal: name === "valkyrie-m5b" ? !this.wrongNetwork : false, Ingress: false, Driver: "bridge", Scope: "local" }), stderr: "" };
+    }
+    if (operation === "network-connect") { this.egressConnected = true; return { stdout: "", stderr: "" }; }
     if (operation === "create") {
       this.createArgs = [...args];
       if (this.failCreateAfterReservation) throw new Error("simulated uncertain create");
@@ -29,12 +35,15 @@ class FakeBridgeEngine implements BridgeEngine {
       for (let index = 0; index < this.createArgs.length; index += 1) if (this.createArgs[index] === "--label") {
         const [key, ...rest] = this.createArgs[++index].split("="); labelValues[key] = rest.join("=");
       }
-      const mount = this.createArgs[this.createArgs.indexOf("--mount") + 1];
-      const source = /src=([^,]+)/.exec(mount)?.[1];
+      const expectedName = `valkyrie-inference-${createHash("sha256").update(labelValues["valkyrie.run-id"]).digest("hex").slice(0, 20)}`;
+      const mountIndex = this.createArgs.indexOf("--mount");
+      const mount = mountIndex < 0 ? undefined : this.createArgs[mountIndex + 1];
+      const source = mount ? /src=([^,]+)/.exec(mount)?.[1] : undefined;
+      const script = this.createArgs[this.createArgs.indexOf("-e") + 1];
       return { stdout: JSON.stringify([{
-        Id: id, Name: "/valkyrie-inference-f903ee77b33627de1327", Config: {
+        Id: id, Name: `/${expectedName}`, Config: {
           Image: image, User: "501:20", Labels: labelValues,
-          Entrypoint: ["/usr/local/bin/node"], Cmd: ["-e", "const n=require('node:net');const s=n.createServer(c=>{const u=n.createConnection('/gateway/inference.sock');c.pipe(u);u.pipe(c);const x=()=>{c.destroy();u.destroy()};c.on('error',x);u.on('error',x)});s.listen(8790,'0.0.0.0');"],
+          Entrypoint: ["/usr/local/bin/node"], Cmd: ["-e", script],
         },
         HostConfig: {
           NetworkMode: "valkyrie-m5b", ReadonlyRootfs: true, Privileged: false, IpcMode: "none",
@@ -43,8 +52,8 @@ class FakeBridgeEngine implements BridgeEngine {
           SecurityOpt: ["no-new-privileges:true", "seccomp=builtin"],
           Tmpfs: { "/tmp": "rw,nosuid,nodev,noexec,size=16777216" },
         },
-        NetworkSettings: { Networks: { "valkyrie-m5b": {} } },
-        Mounts: [{ Source: source, Destination: "/gateway", RW: false }],
+        NetworkSettings: { Networks: { "valkyrie-m5b": {}, ...(this.egressConnected ? { bridge: {} } : {}) } },
+        Mounts: source ? [{ Source: source, Destination: "/gateway", RW: false }] : [],
       }]), stderr: "" };
     }
     return { stdout: "", stderr: "" };
@@ -76,6 +85,28 @@ test("inference bridge exposes only a private Unix gateway on one internal netwo
     server.close();
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("inference bridge dual-homes only its fixed host-gateway proxy while the writer network stays internal", async () => {
+  const engine = new FakeBridgeEngine();
+  const bridge = new ScopedInferenceBridge({
+    engine,
+    image,
+    networkName: "valkyrie-m5b",
+    hostGateway: { hostname: "host.docker.internal", port: 8790, egressNetworkName: "bridge" },
+    user: "501:20",
+  });
+  const handle = await bridge.start("run_bridge_tcp");
+  const create = engine.calls.find((call) => call.operation === "create")!;
+  assert.equal(create.args.includes("--mount"), false);
+  assert.match(create.args.at(-1)!, /host\.docker\.internal/);
+  assert.deepEqual(engine.calls.filter((call) => call.operation === "network-inspect").map((call) => call.args.at(-1)), [
+    "valkyrie-m5b", "bridge",
+  ]);
+  assert.ok(engine.calls.some((call) => call.operation === "network-connect"
+    && JSON.stringify(call.args) === JSON.stringify(["network", "connect", "bridge", id])));
+  assert.equal(handle.gatewayBinding, "tcp:host.docker.internal:8790:bridge");
+  await bridge.stop(handle);
 });
 
 test("inference bridge removes only an exactly-owned reservation after uncertain create", async () => {
