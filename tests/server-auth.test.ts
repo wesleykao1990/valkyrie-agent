@@ -23,6 +23,7 @@ test("HTTP bearer auth protects every API route while health and static files st
   const service = {
     portfolio: async () => ({ projects: [] }),
     runtimeStatus: async () => [{ runtime: "atomic", adapter: "mock", available: true }],
+    skillSuiteStatus: () => ({ enabled: false, rootRef: "private-managed-skill-suites", suites: [] }),
     assessEngineeringRequest: async (input: unknown) => {
       engineeringRequests.push(input);
       return { assessment: { id: "route_fixture", selectedShape: "atomic-lite", executionSupported: false }, replayed: false };
@@ -110,6 +111,11 @@ test("HTTP bearer auth protects every API route while health and static files st
     });
     assert.equal(runtimes.status, 200);
     assert.equal((await runtimes.json())[0].runtime, "atomic");
+    const suites = await fetch(`${base}/api/skill-suites`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(suites.status, 200);
+    assert.equal((await suites.json() as any).rootRef, "private-managed-skill-suites");
 
     const engineering = await fetch(`${base}/api/engineering/assessments`, {
       method: "POST",

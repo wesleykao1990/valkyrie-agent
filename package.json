@@ -22,6 +22,7 @@
     "setup:codex-subscription": "node --experimental-strip-types scripts/setup-codex-subscription-profile.ts",
     "setup:pilot": "node --experimental-strip-types scripts/setup-local-pilot.ts",
     "setup:hermes": "node --experimental-strip-types scripts/setup-hermes-profile.ts",
+    "skills:manage": "node --experimental-strip-types scripts/manage-skill-suite.ts",
     "mcp:quiet": "node --experimental-strip-types apps/mcp-server/src/index.ts",
     "smoke:mcp": "node --experimental-strip-types scripts/mcp-smoke.ts",
     "smoke:native": "node --experimental-strip-types scripts/live-native-smoke.ts",

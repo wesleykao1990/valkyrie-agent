@@ -358,6 +358,7 @@ async function route(
 
   if (method === "GET" && path === "/api/portfolio") return sendJson(res, 200, await service.portfolio());
   if (method === "GET" && path === "/api/runtimes") return sendJson(res, 200, await service.runtimeStatus());
+  if (method === "GET" && path === "/api/skill-suites") return sendJson(res, 200, service.skillSuiteStatus());
   if (method === "GET" && path === "/api/projects") return sendJson(res, 200, await service.listProjects());
   if (method === "GET" && path === "/api/tasks") return sendJson(res, 200, await service.listTasks(url.searchParams.get("projectId") ?? undefined));
   if (method === "GET" && path === "/api/runs") return sendJson(res, 200, await service.listRuns());

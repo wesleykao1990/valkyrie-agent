@@ -163,8 +163,10 @@ make a retry appear clean.
 
 ## Current limitations
 
-- No live Linear or GitHub credential has been exercised in the recorded M7
-  verification until the opt-in smoke is run and documented.
+- A team-scoped, read-only Linear credential and the Ovalo project were
+  exercised successfully on 13 August 2026. The private credential and accepted
+  policy remain ignored local state; GitHub and every connector write mode remain
+  disabled and unexercised.
 - Static bearer auth identifies one configured operator context; it is not
   multi-user actor attestation.
 - General Direct/Atomic Lite/Atomic Full launch remains fail-closed even when an

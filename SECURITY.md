@@ -366,6 +366,29 @@ not exposed to the default Hermes MCP allowlist. The static bearer identifies on
 configured local operator context, not multi-user human presence or actor
 attestation; production remote use needs per-actor authorization and audit.
 
+## Managed skill-suite boundary
+
+M8a admits only an exact local source generation under an exact digest-pinned
+policy. Source links, hard links, special files, oversized/excessive trees, copy
+drift, and later installed-object drift fail closed. Accepted objects and the
+catalog live under an owner-private control-plane directory; API/MCP status does
+not reveal the operator's original source path.
+
+Admission is not execution authority. M8a never runs suite setup, hooks,
+installers, binaries, dependency managers, update code, MCP servers, or skills.
+Telemetry is forced off. Declared capabilities outside the suite trust profile
+make an individual skill operator-gated; a later generation that expands the
+active capability set is quarantined unless that exact expansion is explicitly
+accepted. Scoped tool names are classified conservatively and an unrecognized
+tool remains gated. Hermes receives status/request-level access only and cannot install,
+activate, roll back, or manipulate suite files. Future native projection must
+revalidate the project/runtime/digest-bound capability pack and retain the
+control plane's credential and final-action boundaries.
+
+Public web, browser control, credential use, host administration, self-update,
+deployment, merge, and memory promotion are not enabled by accepting a suite.
+They require separate brokered capabilities and policy/approval where applicable.
+
 ## Storage and retained command data
 
 - SQLite is the local default. PostgreSQL is explicit and never receives an

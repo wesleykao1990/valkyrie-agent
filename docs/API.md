@@ -72,6 +72,16 @@ When M5a is enabled, a second Atomic record has
 configured immutable runner and fixed tool-only workflow preflight, not model
 availability or general repository-writing authority.
 
+### `GET /api/skill-suites`
+
+Returns read-only status for locally admitted managed skill-suite generations:
+suite/version/tree digest, trust profile, runtime modes, discovered skills,
+derived capability requirements, activation/quarantine state, and warnings. The
+response uses only an opaque managed object reference; it does not return the
+operator's source path. This route cannot inspect a new path, install source,
+run setup code, activate, update, or roll back a suite. Those remain explicit
+local operator CLI operations.
+
 ## Read operations
 
 - `GET /api/portfolio`

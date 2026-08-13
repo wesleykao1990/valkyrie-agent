@@ -16,6 +16,7 @@ const authToken = "mcp-smoke-local-bearer-token-0123456789";
 const allowedTools = [
   "projects_list",
   "runtimes_status",
+  "skill_suites_status",
   "runs_start",
   "memory_search",
   "memory_propose",
@@ -132,7 +133,7 @@ try {
   if (toolNames.size !== allowedTools.length || allowedTools.some((name) => !toolNames.has(name))) {
     throw new Error("MCP tools/list did not exactly enforce CONTROL_PLANE_MCP_TOOL_ALLOWLIST");
   }
-  if (!toolNames.has("runs_start") || !toolNames.has("memory_preview") || !toolNames.has("memory_promote")) throw new Error("Expected MCP tools were not listed");
+  if (!toolNames.has("runs_start") || !toolNames.has("skill_suites_status") || !toolNames.has("memory_preview") || !toolNames.has("memory_promote")) throw new Error("Expected MCP tools were not listed");
   let disallowedRejected = false;
   try {
     await rpc("tools/call", { name: "approvals_list", arguments: {} });

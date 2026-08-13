@@ -16,6 +16,7 @@ const allTools = [
   tool("projects_list", "List all registered projects and portfolio health.", {}),
   tool("project_get_brief", "Get current roadmap, runs, accepted decisions, approvals, and freshness for one project.", { projectId: stringProp("Project ID") }, ["projectId"]),
   tool("runtimes_status", "Inspect configured runtime adapters, verified availability, authentication, and supported capabilities.", {}),
+  tool("skill_suites_status", "Inspect installed managed skill suites, immutable versions, runtime compatibility, and gated capabilities without exposing host paths.", {}),
   tool("connectors_status", "Inspect bounded production connector modes, policy identity, outbox counts, and permitted external effects.", {}),
   tool("connector_dead_letters_list", "List bounded dead-letter evidence for the fixed production connector consumer.", { limit: integerProp("Maximum dead-letter records") }),
   tool("connector_dead_letter_replay", "Replay one fixed-consumer dead-letter delivery using the configured operator principal.", { outboxId: controlPlaneIdProp("Dead-letter outbox ID") }, ["outboxId"]),
@@ -161,6 +162,7 @@ async function callTool(name: string, args: any): Promise<unknown> {
     case "projects_list": return api("/api/portfolio");
     case "project_get_brief": return api(`/api/projects/${encodeURIComponent(args.projectId)}/brief`);
     case "runtimes_status": return api("/api/runtimes");
+    case "skill_suites_status": return api("/api/skill-suites");
     case "connectors_status": return api("/api/connectors/status");
     case "connector_dead_letters_list": {
       const input = requireDeadLetterListArguments(args);

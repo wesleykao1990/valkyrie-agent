@@ -24,7 +24,7 @@ function project(overrides: Record<string, unknown> = {}) {
     identifier: "VAL",
     name: "Valkyrie test project",
     updatedAt: "2026-08-13T00:00:00.000Z",
-    team: { id: TEAM, key: "VAL", name: "Valkyrie" },
+    teams: { nodes: [{ id: TEAM, key: "VAL", name: "Valkyrie" }] },
     ...overrides,
   };
 }
@@ -64,6 +64,9 @@ test("Linear authority reads are bounded, ownership-bound, observed, and canonic
   assert.equal(issueSnapshot.payload.team.id, TEAM);
   assert.equal(item.transport.requests[0].url, LINEAR_GRAPHQL_ORIGIN);
   assert.equal(item.transport.requests[0].method, "POST");
+  const projectRequest = JSON.parse(item.transport.requests[0].body) as { query: string };
+  assert.match(projectRequest.query, /teams\s*\{\s*nodes/u);
+  assert.doesNotMatch(projectRequest.query, /identifier/u);
 });
 
 test("Linear connector is inert without an explicitly injected or live transport", async () => {
@@ -102,8 +105,12 @@ test("Linear rejects GraphQL partial success, malformed JSON, and oversized resp
 
 test("Linear rejects cross-team/project authority payloads before returning a snapshot", async () => {
   const crossTeam = gateway();
-  crossTeam.transport.projects.set(PROJECT, project({ team: { id: "other-team" } }));
+  crossTeam.transport.projects.set(PROJECT, project({ teams: { nodes: [{ id: "other-team" }] } }));
   await assert.rejects(crossTeam.gateway.readProject(), (error: unknown) => error instanceof LinearAuthorityError && error.code === "LINEAR_OWNERSHIP_MISMATCH");
+
+  const duplicateTeam = gateway();
+  duplicateTeam.transport.projects.set(PROJECT, project({ teams: { nodes: [{ id: TEAM }, { id: TEAM }] } }));
+  await assert.rejects(duplicateTeam.gateway.readProject(), (error: unknown) => error instanceof LinearAuthorityError && error.code === "LINEAR_OWNERSHIP_MISMATCH");
 
   const crossProject = gateway();
   crossProject.transport.issues.set(ISSUE, issue({ project: { id: "other-project" } }));

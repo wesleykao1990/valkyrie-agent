@@ -2,7 +2,7 @@
 
 - Package: Wesley Agent Control Plane Prototype
 - Repository release: 0.3.0
-- Built: 13 August 2026
+- Built: 14 August 2026
 - Minimum runtime: Node.js 22.16
 - Full-verification database: disposable PostgreSQL 16
 - External credentials bundled: none
@@ -82,8 +82,19 @@ reconciliation. Linear issue/comment writes and GitHub draft-PR creation require
 their own immutable plan and exact approval; ordinary task intake never writes
 to Linear. GitHub may create only a separately approved draft PR from an
 already-existing remote head. Local Markdown remains Project Brain authority;
-the OpenViking candidate is read-only/evaluation-only. No live Linear or GitHub
-credential is bundled or claimed exercised until the opt-in M7 smoke is recorded.
+the OpenViking candidate is read-only/evaluation-only. A private, team-scoped
+Linear read key and digest-pinned Ovalo policy were exercised successfully by
+the opt-in M7 read smoke on 13 August 2026; no credential is bundled, GitHub
+remains disabled/unexercised, and no connector write was performed.
+
+Milestone 8a's managed skill-suite foundation is implemented without enabling
+third-party execution. It admits one exact local suite generation under an exact
+policy, discovers and classifies skills automatically, preserves private
+content-addressed generations, quarantines capability expansion, supports
+activation/rollback, produces immutable runtime packs, and exposes authenticated
+path-opaque status. Native Codex/Claude projections, Atomic delegation, a general
+launcher, and web/browser brokers remain pending; admitted skills are not yet
+executed.
 
 ## Verification entry point
 
@@ -118,3 +129,5 @@ See `docs/VERIFICATION.md` for the recorded baseline/final evidence and
 19. `docs/IMPLEMENTATION_PLAN_M7.md`
 20. `docs/adr/ADR-P010-production-connector-boundary.md`
 21. `docs/M7_CONNECTOR_SETUP.md`
+22. `docs/IMPLEMENTATION_PLAN_M8.md`
+23. `docs/adr/ADR-P011-managed-skill-suite-plane.md`

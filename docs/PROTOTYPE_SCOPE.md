@@ -60,6 +60,12 @@ Pilot: proposed ADR-P003 read-only native connectivity slice
   bounded JSONL/usage, and no OAuth export or writer mount. Fake-child contracts
   plus dedicated-profile marker and end-to-end Atomic model evidence are recorded;
   restart resume remains disabled.
+- M8a managed skill-suite admission: exact policy/source digests, bounded
+  `SKILL.md` discovery, derived capability classification, private
+  content-addressed generations, compatible/manual update behavior, capability-
+  expansion quarantine, explicit activation/rollback, immutable runtime packs,
+  and authenticated path-opaque status. No third-party setup or skill code is
+  executed by this boundary.
 
 ## Default behavior remains simulated
 
@@ -114,6 +120,11 @@ implemented capability and live exercise are reported separately.
   deletion policy.
 
 ## Not implemented or enabled
+
+- Native managed-suite projection into Codex/Claude Code, Atomic specialist
+  delegation, a general launcher that consumes capability packs, remote suite
+  fetch/dependency setup, or governed web/browser capability brokering. The M8a
+  catalog alone does not make an admitted skill executable.
 
 - General/confidential repository writing, production credential injection, or a
   separately isolated credential-broker service. The current subscription broker

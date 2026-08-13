@@ -805,6 +805,52 @@ See [the complete M7 setup and recovery runbook](docs/M7_CONNECTOR_SETUP.md) for
 credential requirements, read-only-first commands, dead-letter operations,
 ambiguous-effect reconciliation, rollback, and current limitations.
 
+## Milestone 8a managed skill suites
+
+Valkyrie now has a local, suite-level admission and policy plane so Wesley does
+not need to manually decide which individual skill goes to Hermes, Atomic,
+Codex, or Claude Code. One reviewed policy covers the whole suite. Valkyrie
+discovers its `SKILL.md` files, derives declared capabilities, preserves the
+exact source in a private content-addressed object, and applies these runtime
+modes automatically:
+
+- Codex and Claude Code: future native projections;
+- Atomic: delegated specialist use rather than copying the suite into Atomic's
+  workflow engine;
+- Hermes: request and status only, never raw shell/filesystem/install tools.
+
+M8a is the admission/catalog foundation. It does **not** fetch a repository,
+execute a third-party installer, install dependencies, alter global runtime
+state, or make a suite available to a general writer yet. Web and browser access
+remain disabled until a reviewed runtime projection and capability broker
+consume the immutable pack.
+
+To inspect and install a locally reviewed suite generation:
+
+```bash
+cp config/managed-skill-suite.example.json /absolute/private/skill-suite-policy.json
+# Edit the private policy's source path, suite metadata, projects, and runtime grants.
+npm run skills:manage -- inspect --policy /absolute/private/skill-suite-policy.json
+# Copy the reported treeSha256 into source.expectedSha256, then accept the exact policy bytes:
+shasum -a 256 /absolute/private/skill-suite-policy.json
+npm run skills:manage -- install \
+  --policy /absolute/private/skill-suite-policy.json \
+  --policy-sha256 <exact-policy-sha256> \
+  --root "$PWD/data/managed-skill-suites"
+npm run skills:manage -- status --root "$PWD/data/managed-skill-suites"
+```
+
+The first generation activates. A compatible update activates automatically
+only under `reviewed-compatible`; `manual` updates wait for explicit activation.
+A generation that adds a capability is quarantined unless expansion was
+explicitly accepted. Scoped tool declarations are classified conservatively and
+unknown tools stay gated. Activation and rollback always rehash installed bytes.
+The authenticated `/api/skill-suites` and Hermes `skill_suites_status` surfaces
+are read-only and path-opaque.
+
+See [the M8 plan](docs/IMPLEMENTATION_PLAN_M8.md) and
+[proposed ADR-P011](docs/adr/ADR-P011-managed-skill-suite-plane.md).
+
 ## Project Brain memory boundary
 
 - Accepted canonical Markdown under `project-brain/Projects/**/Decisions/` is

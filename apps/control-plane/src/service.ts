@@ -49,6 +49,7 @@ import type {
   PrepareLinearEvidenceCommentInput,
   PrepareLinearIssueInput,
 } from "./external-final-action.ts";
+import type { ManagedSkillSuiteManager } from "./managed-skill-suites.ts";
 
 function requestHash(value: unknown): string {
   const normalized = JSON.parse(JSON.stringify(value)) as unknown;
@@ -70,6 +71,7 @@ interface ControlPlaneServiceOptions {
   directClaudeModelPilotEnabled?: boolean;
   connectors?: ProductionConnectorRegistry;
   externalFinalActions?: ExternalFinalActionCoordinator;
+  skillSuites?: Pick<ManagedSkillSuiteManager, "status">;
 }
 
 export class ControlPlaneService {
@@ -86,6 +88,7 @@ export class ControlPlaneService {
   private readonly directClaudeModelPilotEnabled: boolean;
   private readonly connectors?: ProductionConnectorRegistry;
   private readonly externalFinalActions?: ExternalFinalActionCoordinator;
+  private readonly skillSuites?: Pick<ManagedSkillSuiteManager, "status">;
   private currentTick: Promise<void> | null = null;
   private approvalQueue = new Map<string, Promise<unknown>>();
 
@@ -108,6 +111,7 @@ export class ControlPlaneService {
     this.directClaudeModelPilotEnabled = options.directClaudeModelPilotEnabled ?? false;
     this.connectors = options.connectors;
     this.externalFinalActions = options.externalFinalActions;
+    this.skillSuites = options.skillSuites;
   }
 
   listProjects(): Promise<Project[]> { return this.store.listProjects(); }
@@ -140,6 +144,14 @@ export class ControlPlaneService {
         ambiguous: (await this.externalFinalActions.listPlans({ state: "ambiguous", limit: 100 })).length,
         executing: (await this.externalFinalActions.listPlans({ state: "executing", limit: 100 })).length,
       } : null,
+    };
+  }
+
+  skillSuiteStatus() {
+    return this.skillSuites?.status() ?? {
+      enabled: false,
+      rootRef: "private-managed-skill-suites" as const,
+      suites: [],
     };
   }
 

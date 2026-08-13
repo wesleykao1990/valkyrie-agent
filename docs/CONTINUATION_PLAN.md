@@ -208,6 +208,37 @@ General project execution launch, branch publication, merge/deploy, multi-user
 actor attestation, a live OpenViking transport, and live connector evidence are
 separate remaining gates.
 
+## Milestone 8 — Unified harness and managed capability plane
+
+### M8a — managed skill-suite foundation
+
+- [x] exact local source and policy digest admission;
+- [x] bounded `SKILL.md` discovery and declared-capability classification;
+- [x] one suite-level project/runtime/trust policy so Wesley does not manually
+  map each skill to every harness;
+- [x] private content-addressed generations, rehash-on-use, compatible/manual
+  update posture, capability-expansion quarantine, activation, and rollback;
+- [x] immutable project/runtime/skill capability packs for future runtime
+  composition;
+- [x] authenticated, read-only, path-opaque HTTP/Hermes status;
+- [x] no execution of setup, hooks, binaries, dependencies, updates, MCP servers,
+  or skills during admission.
+
+### Remaining M8 work before web capability enablement
+
+- [ ] prove one exact native projection/setup adapter for Codex and Claude Code;
+- [ ] compose Atomic through a compatible delegated specialist without building
+  another workflow engine above Atomic;
+- [ ] make the reviewed general launcher consume and record capability packs;
+- [ ] add a broker for public web/search/browser access, bounded egress, evidence,
+  and audit without exposing raw network tooling to Hermes;
+- [ ] exercise one real suite such as GStack end to end, including upstream
+  behavior, updates, rollback, and final-action separation.
+
+Remote fetch, dependency installation, signed publisher provenance, unattended
+updates, shared/mobile actor authorization, GBrain, personal memory, and external
+knowledge ingestion remain later reviewed slices.
+
 ## Required method for every milestone
 
 1. Update a short implementation plan.

@@ -727,12 +727,67 @@ exact locked delivery reread plus primary-key conflict-safe insert, then the ful
 verification and independent concurrency review both passed. The separate
 disposable PostgreSQL phase above is authoritative for PostgreSQL.
 
-No live Linear, GitHub, or OpenViking credential was loaded. `npm run
-smoke:m7-read` remains opt-in and was not run. No Linear issue/comment, GitHub
-draft PR, branch publication, merge, deployment, external project status change,
-or canonical-memory promotion occurred. Official Linear GraphQL/OAuth and GitHub
-pull-request/reference documentation was reviewed for the implemented fixed
-wire contracts; this is documentation verification, not live integration proof.
+After the deterministic verifier, the opt-in live read exercise used a private
+Linear key with only `Read` permission and access restricted to the `Oropher`
+team. The accepted Ovalo policy digest was
+`2ef60676cab8de0141c8e0b7bc37a11feded66cd5259a990d05dce32fe112c4d`.
+The first attempts preserved two useful failures: Linear's current `Project`
+schema uses `teams` rather than `team`, and this new workspace rejects the
+optional `Project.identifier` field while its Project IDs feature is disabled.
+The query was narrowed to `teams.nodes` plus universally available project
+fields, with exact accepted-team selection and focused regressions.
+
+The final `npm run smoke:m7-read` passed and an exact idempotency replay returned
+the same assessment `route_996ab07e-dc93-4e5b-8650-f933d7c890d1`. Linear was
+revision-bound at `2026-08-13T06:53:29.958Z`; Git was revision-bound to `main`
+commit `4d6e319de5b6764f9b73fd5599e25607aabd53fb` with the empty-patch digest
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+The smoke launched no runtime and performed no Linear/GitHub write. Operator
+setup created the otherwise empty `Ovalo` Linear project and the scoped key;
+no issue/comment, GitHub request, branch publication, PR, merge, deployment,
+status change, OpenViking request, or canonical-memory promotion occurred.
+
+The post-fix full `npm run verify` also passed with the same authoritative counts
+above: 311 total / 308 passed / 3 honest skips, PostgreSQL 23/23 plus 7/7,
+Atomic package verification, HTTP smoke, and MCP smoke.
+
+## Milestone 8a managed skill-suite evidence
+
+The 14 August 2026 pre-change baseline passed `npm run verify` on the M7 tree:
+311 total / 308 passed / 3 honest skips, PostgreSQL 23/23 plus 7/7 model
+lifecycle, Atomic package verification, HTTP smoke, and the 7-tool test MCP
+smoke.
+
+After the M8a implementation and a fresh local security pass, the complete
+command passed again:
+
+```bash
+npm run verify
+```
+
+- strict TypeScript passed;
+- the general suite reported 321 total: 318 passed, 0 failed, and 3 honest
+  opt-in skips;
+- disposable PostgreSQL passed 23/23 storage and 7/7 model-lifecycle tests;
+- the Atomic package still verified 38 required files, 6 workflows, 16 routing
+  cases, 5 prompt templates, and 11 invalid launch-manifest rejections;
+- authenticated HTTP smoke passed unchanged; and
+- authenticated MCP smoke passed with 8 explicitly allowlisted tools, including
+  read-only managed-suite status.
+
+Focused M8a evidence passed 10/10 for deterministic discovery/capability
+classification, content-addressed private installation, exact replay, runtime and
+project grants, operator-gated skills, compatible/manual updates, privilege-
+expansion quarantine, explicit activation/rollback, source/policy/capability-pack
+digests, source and installed tamper refusal, path/control-character refusal,
+path-opaque/prose-free status, and the operator CLI. Authenticated HTTP/MCP
+contract tests passed 7/7.
+
+No third-party suite was fetched, installed into a native runtime, or executed.
+No web/browser capability, dependency, setup script, telemetry, credential,
+external action, or global runtime state was enabled. This verifies the M8a
+admission/catalog foundation only; native projection and a real suite proof are
+the next gate.
 
 ## Reproduction commands
 

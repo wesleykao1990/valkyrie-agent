@@ -31,7 +31,7 @@ project_brain:
   candidate_backend: openviking-evaluation-only-no-live-transport
   automatic_capture: false
 production_connectors:
-  status: deterministic-contract-tested-default-off-live-credentials-pending
+  status: deterministic-contract-tested-default-off-linear-read-live-verified
   policy: digest-pinned-project-allowlist
   linear: revision-bound-read-plus-idempotent-bounded-writes
   git: read-only-revision-and-check-policy-authority
@@ -40,6 +40,15 @@ production_connectors:
   merge: false
   deployment: false
   actor_attestation: static-local-operator-context-only
+managed_skill_suites:
+  status: local-admission-catalog-implemented-runtime-projection-pending
+  policy_schema: 1.0.0
+  source: exact-local-directory-digest-only
+  telemetry: disabled
+  hermes_mode: request-only
+  atomic_mode: delegated
+  codex_claude_mode: native-projection-pending
+  web_browser_capabilities: disabled-pending-broker
 runtime_policy:
   atomic_status: connectivity-plus-fixed-pilots-and-package-local-lite-contract
   atomic_fixture_workflow: atomic-fixture-pilot
@@ -98,4 +107,5 @@ milestones:
   atomic_model_backed_pilot: live-verified-through-evidence-gate-operator-decision-pending
   direct_runtime_comparison: live-verified-both-candidate-approvals-pending-no-default-selected
   post_m6_routing_efficiency_gaps: implemented-general-launch-still-separate
-  production_connectors: deterministic-implemented-live-credentials-pending
+  production_connectors: deterministic-implemented-linear-read-live-verified-github-disabled
+  managed_skill_suite_foundation: implemented-runtime-projection-pending

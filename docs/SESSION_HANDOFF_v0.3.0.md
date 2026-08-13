@@ -1,6 +1,6 @@
-# Session handoff — v0.3.0 through deterministic Milestone 7
+# Session handoff — v0.3.0 through M8a managed-suite foundation
 
-Date: 2026-08-13
+Date: 2026-08-14
 
 ## 1. Milestone completed
 
@@ -44,7 +44,17 @@ Date: 2026-08-13
   snapshots; fenced, retryable per-consumer external outbox delivery; a
   deterministic Project Brain retrieval evaluation/provider boundary; and
   approval/evidence/revision-bound Linear and GitHub draft-PR final actions with
-  ambiguous-effect reconciliation. No live connector credential was exercised.
+  ambiguous-effect reconciliation. A private team-scoped Linear read credential
+  and accepted Ovalo policy were subsequently exercised successfully; GitHub and
+  every connector write mode remain disabled/unexercised.
+- Milestone 8a adds the managed skill-suite admission/catalog foundation. One
+  exact local suite policy now controls project/runtime modes for the whole
+  suite; Valkyrie discovers and classifies skills, preserves private immutable
+  generations, quarantines capability expansion, supports activation/rollback,
+  emits runtime capability packs, and reports authenticated path-opaque status.
+  It does not run setup or skill code. Native Codex/Claude projection, Atomic
+  specialist delegation, general-launch consumption, GStack live proof, and
+  web/browser brokering remain the next M8 work.
 
 The M5a implementation, deterministic contracts, and live no-model runner smoke
 are complete. Exact immutable-image and native-run evidence is recorded in
@@ -126,6 +136,11 @@ Project Brain provider evaluation; authenticated HTTP/MCP operator operations;
 the opt-in read-only live smoke; deterministic fake-gateway tests; proposed
 ADR-P010; and `docs/M7_CONNECTOR_SETUP.md`.
 
+The M8a slice adds `managed-skill-suites.ts`, the local operator CLI and example
+policy, authenticated HTTP/MCP status, nine deterministic tests, proposed
+ADR-P011, and its implementation/continuation documentation. It has no database
+migration and does not execute third-party code.
+
 ## 4. Tests and verification evidence
 
 The recorded pre-M5 baseline was:
@@ -195,14 +210,23 @@ Final deterministic M7 `npm run verify` passed on 13 August 2026: strict
 TypeScript; 311 general tests with 308 passed, 0 failed, and 3 honest opt-in
 skips; disposable PostgreSQL storage 23/23 and model lifecycle 7/7; Atomic
 package verification with 38 required files and 6 workflows; authenticated HTTP
-smoke; and the 7-tool authenticated MCP smoke. The M7 live-read smoke remained
-opt-in and was not run because no Linear/GitHub credential was supplied.
+smoke; and the 7-tool authenticated MCP smoke. After two preserved schema-drift
+failures, the opt-in M7 live-read smoke and its exact idempotency replay passed
+against the empty Ovalo Linear project and clean Git `main` authority. The
+post-fix full verifier retained the same counts.
 
 The first release-candidate PostgreSQL run caught a real concurrent delivery
 claim race. The final implementation re-reads and locks the exact
 `(outbox_id,consumer_id)` identity and uses a conflict-safe primary-key insert,
 so a stale candidate snapshot cannot return another worker's fence. The repaired
 PostgreSQL contract, full verifier, and independent concurrency review passed.
+
+Final M8a `npm run verify` passed on 14 August 2026: strict TypeScript; 321
+general tests with 318 passed, 0 failed, and 3 honest opt-in skips; disposable
+PostgreSQL storage 23/23 plus model lifecycle 7/7; Atomic package verification
+with 38 required files and 6 workflows; authenticated HTTP smoke; and the
+expanded 8-tool authenticated MCP smoke. Focused managed-suite coverage passed
+10/10 and authenticated HTTP/MCP contracts passed 7/7.
 
 ## 5. Live integrations actually exercised
 
@@ -225,9 +249,9 @@ metadata and is not counted as success.
 
 Exercised in M6: fresh live Atomic and direct Codex candidates against the same
 fixed contract, plus the durable comparison ledger. Not exercised: Claude Code
-model execution, candidate acceptance, real GitHub/PR/merge/deploy, Linear,
-OpenViking, mobile gateway, external outbox publishing, destructive database
-action, production secret, or canonical memory promotion.
+model execution, candidate acceptance, real GitHub/PR/merge/deploy, Linear
+writes, OpenViking, mobile gateway, external outbox publishing, destructive
+database action, production secret, or canonical memory promotion.
 
 Exercised after M6: two bounded ChatGPT-subscription marker turns on one native
 Codex thread. The durable engineering-assessment HTTP/MCP paths were exercised
@@ -236,12 +260,14 @@ nothing. Atomic Lite itself remains contract-tested rather than live-model run.
 
 Exercised for M7: SQLite and disposable PostgreSQL migrations/contracts,
 deterministic fake Linear/GitHub gateways, local disposable Git authority,
-Project Brain retrieval evaluation, authenticated HTTP/MCP operations, external
-final-action outbox retry/dead-letter/replay, approval-gated Linear issue/comment
+Project Brain retrieval evaluation, authenticated HTTP/MCP operations, live
+revision-bound Linear project reads, external final-action outbox
+retry/dead-letter/replay, approval-gated Linear issue/comment
 paths, and approval/receipt/reconciliation paths. Ordinary `task.created` events
-have no provider-write consumer. No
-live Linear, GitHub, or OpenViking request was made; no issue, comment, branch,
-PR, merge, deployment, or external project status was created or changed.
+have no provider-write consumer. The operator setup created one otherwise empty
+`Ovalo` project and a read-only team-scoped key. No connector issue, comment,
+branch, PR, merge, deployment, external status change, GitHub request, or
+OpenViking request occurred.
 
 ## 6. Known limitations and risks
 
@@ -283,14 +309,18 @@ PR, merge, deployment, or external project status was created or changed.
   resume rather than trusting a stored native ID it no longer owns.
 - The nested Atomic module remains `UNLICENSED` despite public repository
   visibility.
-- M7 live connectors remain disabled and unexercised. Static bearer auth is not
-  multi-user actor attestation, branch publication is absent, and GitHub draft
-  PR creation requires an already-existing remote head whose revision matches
-  the approved plan.
+- M7 remains default-off; only the bounded Linear read path has live evidence.
+  Static bearer auth is not multi-user actor attestation, branch publication is
+  absent, and GitHub draft PR creation requires an already-existing remote head
+  whose revision matches the approved plan.
 - General Direct / Atomic Lite / Atomic Full launch remains fail-closed after an
   assessment; fixed M5/M6 pilots are not substituted for arbitrary work.
 - The OpenViking provider is evaluation-only. Local accepted Markdown remains
   the active Project Brain provider.
+- M8a is admission/catalog only. No admitted suite is projected into a native
+  runtime or executable by a general launcher. Remote fetch, setup/dependency
+  installation, GStack live evidence, and web/browser capability brokers remain
+  pending. Status deliberately omits third-party prose and source filenames.
 
 ## 7. Manual setup still required
 
@@ -306,6 +336,10 @@ PR, merge, deployment, or external project status was created or changed.
 - The complete copy-paste commands and failure notes are in `README.md`.
 - Full repository verification needs PostgreSQL 16 `initdb` and `pg_ctl`.
 - Hermes/Claude/mobile setup remains separate from the fixture writers.
+- To use the M8a catalog, copy `config/managed-skill-suite.example.json` to a
+  private absolute path, inspect the source, place the reported tree digest into
+  that policy, accept the policy bytes, and run the documented `skills:manage`
+  command. This still does not install the suite into Codex/Claude/Atomic.
 - To reproduce M5b with the preferred subscription path, retain or recreate the
   dedicated profile with `npm run setup:codex-subscription`, then run the opt-in
   broker marker smoke.
@@ -320,11 +354,10 @@ PR, merge, deployment, or external project status was created or changed.
   test/candidate/check/verifier payload to the external ChatGPT subscription
   service, so an explicit operator acknowledgment remains required for each new
   external run. The smoke stops before either candidate approval.
-- To exercise M7, review and digest a private copy of
-  `config/m7-connectors.example.json`, create only the necessary private `0600`
-  credential file, and follow `docs/M7_CONNECTOR_SETUP.md`. Start with
-  `LINEAR_CONNECTOR_MODE=read-only` and `npm run smoke:m7-read`. GitHub write
-  credentials are not needed for the first read-only exercise.
+- To reproduce the recorded M7 read exercise, use the ignored private policy,
+  credential, and clean authority checkout documented in
+  `docs/M7_CONNECTOR_SETUP.md`, then run with `LINEAR_CONNECTOR_MODE=read-only`
+  and `npm run smoke:m7-read`. GitHub credentials are not needed.
 
 ## 8. ADRs or decisions requiring Wesley
 
@@ -346,6 +379,11 @@ PR, merge, deployment, or external project status was created or changed.
 - Accept/amend/reject proposed ADR-P010's digest-pinned connector policy,
   revision-bound authority snapshots, per-consumer external outbox, and separate
   external-action plan/approval/receipt boundary.
+- Accept/amend/reject proposed ADR-P011's install-once managed suite plane,
+  immutable project/runtime capability packs, native Codex/Claude projection,
+  delegated Atomic posture, and request-only Hermes posture. Wesley accepted the
+  product direction; exact GStack projection and web-broker behavior remain to be
+  reviewed before activation.
 - Choose the first accepted M7 project policy and credential posture: dedicated
   Linear read-only key/OAuth first; only later authorize one disposable Linear
   write or GitHub draft PR. Decide whether a GitHub App installation token or a
@@ -366,6 +404,12 @@ Default demo and repository verification:
 npm ci
 npm run verify
 npm start
+```
+
+M8a local catalog status (this runs no suite code):
+
+```bash
+npm run skills:manage -- status --root "$PWD/data/managed-skill-suites"
 ```
 
 M7 deterministic verification and read-only live preparation:

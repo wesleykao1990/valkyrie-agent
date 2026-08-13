@@ -59,11 +59,12 @@ This should initialize the stdio server and discover the restricted pilot tools.
 It proves MCP connectivity and bearer authentication without spending model
 tokens.
 
-The wrapper exposes these 17 tools:
+The wrapper exposes these 18 tools:
 
 - `projects_list`
 - `project_get_brief`
 - `runtimes_status`
+- `skill_suites_status`
 - `engineering_assess`
 - `engineering_assessment_get`
 - `runs_start`
@@ -81,6 +82,9 @@ The wrapper exposes these 17 tools:
 
 It intentionally excludes idea creation, comparisons, runtime steering, general
 approval resolution, general execution launch, demo reset, and `memory_promote`.
+`skill_suites_status` is read-only: it reports admitted immutable generations,
+runtime modes, and gated capabilities. Hermes cannot install, update, activate,
+roll back, execute setup code, or receive a source filesystem path through it.
 The two engineering tools persist/read an explainable route only; they cannot
 start a writer or substitute a fixed pilot. The narrow
 `atomic_fixture_approval_resolve` tool can resolve only the evidence-bound,
@@ -129,7 +133,7 @@ arbitrary request into one of those fixtures.
 
 ## Optional M7 operator tools
 
-The default 17-tool pilot allowlist above intentionally omits production-
+The default 18-tool pilot allowlist above intentionally omits production-
 connector mutations. After reviewing
 [`docs/M7_CONNECTOR_SETUP.md`](M7_CONNECTOR_SETUP.md), an operator may replace
 `CONTROL_PLANE_MCP_TOOL_ALLOWLIST` with an exact subset of these M7 tools:

@@ -40,6 +40,7 @@ apps/control-plane/src/http.ts
 apps/control-plane/src/ids.ts
 apps/control-plane/src/index.ts
 apps/control-plane/src/linear-authority.ts
+apps/control-plane/src/managed-skill-suites.ts
 apps/control-plane/src/migrations.ts
 apps/control-plane/src/mock-runtimes.ts
 apps/control-plane/src/oci-sandbox-provider.ts
@@ -70,6 +71,7 @@ bin/project-os-pilot-mcp
 bin/project-os-pilot-server
 bin/project-os-server
 config/m7-connectors.example.json
+config/managed-skill-suite.example.json
 config/projects.json
 data/.gitkeep
 data/artifacts/.gitkeep
@@ -97,6 +99,7 @@ docs/IMPLEMENTATION_PLAN_M5B_PRELIVE.md
 docs/IMPLEMENTATION_PLAN_M5B_SUBSCRIPTION.md
 docs/IMPLEMENTATION_PLAN_M6.md
 docs/IMPLEMENTATION_PLAN_M7.md
+docs/IMPLEMENTATION_PLAN_M8.md
 docs/IMPLEMENTATION_PLAN_POST_M6_GAPS.md
 docs/M7_CONNECTOR_SETUP.md
 docs/NEXT_SESSION_PROMPT.md
@@ -116,6 +119,7 @@ docs/adr/ADR-P007-subscription-inference-broker.md
 docs/adr/ADR-P008-direct-runtime-comparison.md
 docs/adr/ADR-P009-risk-based-execution-shapes.md
 docs/adr/ADR-P010-production-connector-boundary.md
+docs/adr/ADR-P011-managed-skill-suite-plane.md
 fixtures/atomic-pilot-template/.atomic/settings.json
 fixtures/atomic-pilot-template/README.md
 fixtures/atomic-pilot-template/package.json
@@ -246,6 +250,7 @@ scripts/fake-oci-engine.ts
 scripts/http-smoke.ts
 scripts/live-native-smoke.ts
 scripts/m7-live-read-smoke.ts
+scripts/manage-skill-suite.ts
 scripts/mcp-smoke.ts
 scripts/migrate-storage.ts
 scripts/reset-demo.ts
@@ -282,6 +287,7 @@ tests/git-authority.test.ts
 tests/github-draft-pr-gateway.test.ts
 tests/governed-artifact-export.test.ts
 tests/linear-authority.test.ts
+tests/managed-skill-suites.test.ts
 tests/mcp-auth.test.ts
 tests/native-service-integration.test.ts
 tests/oci-sandbox-provider.test.ts

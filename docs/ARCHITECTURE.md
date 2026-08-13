@@ -262,6 +262,24 @@ Restart recovery never claims native cross-process resume. A fake provider prove
 contracts only; `liveProviderVerified` becomes true solely for a launch bound to
 live execution whose durable role requests and native evidence all agree.
 
+## Managed skill-suite capability plane
+
+The M8a `ManagedSkillSuiteManager` is an operational admission/catalog boundary,
+not a workflow engine and not project knowledge. It accepts one exact local
+source tree only after an exact policy binds suite identity, version, projects,
+runtime modes, trust profile, telemetry posture, and update semantics. The
+manager discovers `SKILL.md` definitions without running them, derives declared
+capabilities, copies exact bytes into a private content-addressed generation,
+and rehashes that generation before status, activation, rollback, or pack use.
+
+The active generation can emit an immutable capability pack bound to project,
+runtime, selected skills, and digests. Codex/Claude are designated future native
+hosts; Atomic receives a delegated specialist rather than a second workflow
+engine; Hermes remains request/status only. The current general launcher does
+not consume these packs, so admission grants no execution. A later projection
+adapter and broker must preserve workspace, credential, network, approval, and
+external-action policy. Web/browser capabilities remain disabled.
+
 ## Prototype substitution
 
 The production architecture uses PostgreSQL and a read-only OpenViking trial. The

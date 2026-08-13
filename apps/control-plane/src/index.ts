@@ -31,6 +31,7 @@ import { DockerCliBridgeEngine, ScopedInferenceBridge } from "./scoped-inference
 import { DirectModelPilotCoordinator } from "./direct-model-pilot.ts";
 import { ProductionConnectorRegistry } from "./production-connectors.ts";
 import { ExternalFinalActionCoordinator } from "./external-final-action.ts";
+import { ManagedSkillSuiteManager } from "./managed-skill-suites.ts";
 
 // Local databases, context packs, contracts, and native output are sensitive.
 // New POSIX files/directories created by the server must be owner-only.
@@ -302,6 +303,7 @@ if (config.atomicFixtureModelPilot.enabled) {
 }
 
 const connectors = new ProductionConnectorRegistry(config.m7Connectors, store);
+const skillSuites = new ManagedSkillSuiteManager({ root: join(config.dataDir, "managed-skill-suites") });
 const externalFinalActions = config.m7Connectors.linear.mode === "read-write"
   || config.m7Connectors.github.mode === "draft-pr"
   ? new ExternalFinalActionCoordinator({
@@ -353,6 +355,7 @@ const service = new ControlPlaneService(store, brain, workspaces, adapters, {
   directClaudeModelPilotEnabled: config.directClaudeModelPilotEnabled,
   connectors,
   externalFinalActions,
+  skillSuites,
 });
 const [existingTasks, existingRuns] = await Promise.all([store.listTasks(), store.listRuns(1)]);
 if (config.seedDemoData && existingTasks.length === 0 && existingRuns.length === 0) await service.resetDemo(true);

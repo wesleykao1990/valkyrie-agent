@@ -1,86 +1,75 @@
-# Continuation prompt — M7 live authority acceptance and general-launch design
+# Continuation prompt — M8 native skill projection before web enablement
 
 Continue the existing public `valkyrie-agent` repository and draft PR #1. Do not
-create a new repository, substitute another framework, expose generic network/
-filesystem/process tools, or redesign the accepted architecture.
+create a new repository, replace the accepted runtime/storage/workspace/authority
+boundaries, expose raw shell/network/filesystem/credential tools to Hermes, or
+silently enable third-party code.
 
 Read `START_HERE.md`, `AGENTS.md`, `.project-context.yaml`, `CLAUDE.md`,
 `docs/DECISIONS.md`, `docs/ARCHITECTURE.md`, `SECURITY.md`,
 `docs/CONTINUATION_PLAN.md`, `docs/VERIFICATION.md`,
-`docs/SESSION_HANDOFF_v0.3.0.md`, `docs/IMPLEMENTATION_PLAN_M7.md`,
-`docs/adr/ADR-P010-production-connector-boundary.md`, and
-`docs/M7_CONNECTOR_SETUP.md`. Run `npm run verify` before changing code.
+`docs/SESSION_HANDOFF_v0.3.0.md`, `docs/IMPLEMENTATION_PLAN_M8.md`, and
+`docs/adr/ADR-P011-managed-skill-suite-plane.md`. Run `npm run verify` before
+changing code.
 
 ## Current state
 
-Milestones 0–7 are deterministically implemented for their documented default-
-off scope. M7 adds:
+Milestones 0–7 retain their documented deterministic/default-off state. M8a now
+adds a local managed skill-suite foundation:
 
-- digest-pinned per-project Linear/Git/GitHub authority policy;
-- bounded Linear project/issue reads and idempotent task/evidence writes;
-- read-only Git commit/tree/patch/check-policy evidence;
-- migration 012 authority bindings and fenced per-consumer outbox delivery with
-  retry, dead letters, replay, retention, and status;
-- migration 013 immutable evidence-bound external-action plans, approvals,
-  receipts, and ambiguous-effect reconciliation;
-- GitHub draft-PR creation from a pre-existing remote head only;
-- deterministic local Project Brain evaluation and an inert, namespace-bound
-  OpenViking candidate provider;
-- authenticated bounded HTTP/MCP operations and a read-only live smoke.
-
-Normal verification uses deterministic fakes and no connector credential. No
-live Linear or GitHub request may be claimed until the opt-in record is run.
-General Direct/Atomic Lite/Atomic Full assessment remains launch-unsupported;
-fixed pilots must not be substituted. Branch publication, merge, deploy,
-canonical-memory promotion, and multi-user actor attestation remain absent.
+- exact digest-pinned local policy and source admission;
+- bounded skill discovery and declared capability derivation;
+- private content-addressed immutable generations with integrity rechecks;
+- automatic suite-level project/runtime modes so Wesley does not map every skill;
+- manual/reviewed-compatible updates, capability-expansion quarantine, explicit
+  activation, and rollback;
+- immutable capability packs plus authenticated read-only HTTP/Hermes status;
+- no source fetch, dependency/setup execution, skill execution, or web/browser
+  capability.
 
 ## Next objective
 
-1. Review and accept/amend ADR-P010 and one exact project connector policy.
-2. Obtain only the credential needed for the next exercise. Start with a
-   dedicated Linear read credential and `LINEAR_CONNECTOR_MODE=read-only`; do not
-   reuse Hermes ambient tool state.
-3. Run `npm run smoke:m7-read`, record the exact authority revisions/digests, and
-   verify it launched no runtime and made no external write.
-4. If Wesley separately authorizes a disposable write, exercise exactly one
-   approved Linear issue/comment action or one GitHub draft PR from a pre-existing disposable
-   remote head. Stop before merge/deploy/status changes and retain the provider
-   receipt.
-5. Design the next separate change: a trusted general project launcher that
-   consumes an unexpired assessment and rechecks authority, but cannot broaden
-   project/command/credential/final-action policy. Do not implement it by mapping
-   arbitrary requests onto fixed M5/M6 fixtures.
-6. Before any shared/mobile deployment, replace the static operator bearer with
-   authenticated actor provenance and scoped authorization.
+Finish M8 before enabling general web search:
+
+1. Select one exact reviewed GStack release/source digest and record provenance.
+2. Design and implement an isolated native projection/setup adapter for Codex and
+   Claude Code that consumes an immutable capability pack and never changes
+   global user state.
+3. Preserve upstream suite routing where compatible. If a skill needs a broker
+   the runtime lacks, report it as gated rather than silently weakening it.
+4. Compose Atomic only through a compatible delegated specialist; Atomic remains
+   the root owner of its internal workflow graph.
+5. Make the future trusted general launcher record the exact suite/skill/runtime/
+   project/digest pack and revalidate it at start.
+6. Prove install, run, compatible update, expansion quarantine, rollback, and
+   cleanup with deterministic fakes before an opt-in live GStack exercise.
+7. Only after this is green, add a separately reviewed public-web/search broker
+   with bounded egress, evidence, source attribution, rate/cost controls, and no
+   credentials or final-action authority in Hermes/model context.
 
 ## Non-negotiable checks
 
-- Linear remains roadmap/status authority; never mirror its full roadmap.
-- Git/GitHub and executable checks remain implementation/delivery authority.
-- Credentials stay host-side in private regular files and never enter Hermes,
-  model context, writer mounts, artifacts, events, or logs.
-- Callers never choose provider URL, repository path, ref, command, issue target,
-  or raw request body.
-- External writes require a separate exact evidence/policy/expiry-bound plan and
-  approval. Ambiguous effects reconcile by stable marker and are never blindly
-  retried.
-- GitHub is draft-only from a pre-existing matching head. Branch publication,
-  merge, deploy, destructive database changes, expanded secret access, and memory
-  promotion remain separate approvals/actions.
-- Local accepted Markdown remains active Project Brain authority; OpenViking is
-  evaluation-only until an accepted live retrieval result exists.
+- Admission is not execution authority; never run third-party setup during
+  inspection/install.
+- No runtime receives ambient credentials, global config, or another runtime's
+  session/state.
+- Hermes requests/status only. It never installs, activates, updates, rolls back,
+  or receives raw browser/network/process/filesystem tools.
+- New capability expansion is quarantined and requires explicit operator
+  acceptance.
+- Deployment, merge, branch publication, external writes, canonical-memory
+  promotion, credential expansion, and self-update remain separate final actions.
+- Web results and third-party skill output are advisory evidence; they cannot
+  override current Linear/Git authority or accepted Project Brain decisions.
 
 ## Exact starting commands
 
 ```bash
 npm ci
 npm run verify
-cp config/m7-connectors.example.json /absolute/private/accepted-m7-connectors.json
-# Review and edit outside the repository, then compute:
-shasum -a 256 /absolute/private/accepted-m7-connectors.json
+npm run skills:manage -- status --root "$PWD/data/managed-skill-suites"
 ```
 
-Follow `docs/M7_CONNECTOR_SETUP.md` for private token files and the read-only
-server/smoke commands. Do not request a GitHub write token for the Linear read
-exercise, and do not enable `read-write`/`draft-pr` until Wesley authorizes that
-specific external effect.
+Do not install or fetch GStack until its exact source version, digest, license,
+setup behavior, dependency graph, telemetry/update posture, and requested tools
+have been reviewed and recorded.

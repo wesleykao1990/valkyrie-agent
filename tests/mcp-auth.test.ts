@@ -25,6 +25,9 @@ test("MCP sends bearer auth and enforces its configured tool allowlist", async (
     if (request.url === "/api/runtimes") {
       return response.end(JSON.stringify([{ runtime: "codex", available: true }]));
     }
+    if (request.url === "/api/skill-suites") {
+      return response.end(JSON.stringify({ enabled: false, rootRef: "private-managed-skill-suites", suites: [] }));
+    }
     if (request.url === "/api/engineering/assessments" && request.method === "POST") {
       return response.end(JSON.stringify({ assessment: { id: "route_fixture", selectedShape: "atomic-lite", executionSupported: false } }));
     }
@@ -60,7 +63,7 @@ test("MCP sends bearer auth and enforces its configured tool allowlist", async (
   environment.CONTROL_PLANE_AUTH_TOKEN = token;
   environment.CONTROL_PLANE_API = `http://127.0.0.1:${port}`;
   environment.CONTROL_PLANE_MCP_TOOL_ALLOWLIST =
-    "projects_list,runtimes_status,engineering_assess,engineering_assessment_get,runs_start,atomic_fixture_artifact_read,atomic_model_fixture_artifact_read,atomic_model_fixture_approval_resolve";
+    "projects_list,runtimes_status,skill_suites_status,engineering_assess,engineering_assessment_get,runs_start,atomic_fixture_artifact_read,atomic_model_fixture_artifact_read,atomic_model_fixture_approval_resolve";
   const child = spawn(
     process.execPath,
     ["--experimental-strip-types", "apps/mcp-server/src/index.ts"],
@@ -108,7 +111,7 @@ test("MCP sends bearer auth and enforces its configured tool allowlist", async (
     assert.equal(initialized.result.serverInfo.name, "wesley-agent-control-plane");
     const listed = await rpc("tools/list");
     assert.deepEqual(listed.result.tools.map((item: any) => item.name), [
-      "projects_list", "runtimes_status", "engineering_assess", "engineering_assessment_get", "runs_start", "atomic_fixture_artifact_read",
+      "projects_list", "runtimes_status", "skill_suites_status", "engineering_assess", "engineering_assessment_get", "runs_start", "atomic_fixture_artifact_read",
       "atomic_model_fixture_artifact_read", "atomic_model_fixture_approval_resolve",
     ]);
     const engineeringTool = listed.result.tools.find((item: any) => item.name === "engineering_assess");
@@ -136,6 +139,8 @@ test("MCP sends bearer auth and enforces its configured tool allowlist", async (
     assert.match(projects.result.content[0].text, /ovalo/);
     const runtimes = await rpc("tools/call", { name: "runtimes_status", arguments: {} });
     assert.match(runtimes.result.content[0].text, /codex/);
+    const suites = await rpc("tools/call", { name: "skill_suites_status", arguments: {} });
+    assert.match(suites.result.content[0].text, /private-managed-skill-suites/);
     const assessment = await rpc("tools/call", {
       name: "engineering_assess",
       arguments: {
@@ -187,7 +192,7 @@ test("MCP sends bearer auth and enforces its configured tool allowlist", async (
     const denied = await rpc("tools/call", { name: "memory_search", arguments: {} });
     assert.equal(denied.error.code, -32601);
     assert.match(denied.error.message, /not available/);
-    assert.deepEqual(receivedAuthorization, Array(7).fill(`Bearer ${token}`));
+    assert.deepEqual(receivedAuthorization, Array(8).fill(`Bearer ${token}`));
     assert.doesNotMatch(stderr, new RegExp(token));
   } finally {
     child.kill("SIGTERM");

@@ -283,8 +283,17 @@ function parseTeam(value: unknown): LinearProjectView["team"] {
   return result;
 }
 
-function parseProject(value: unknown): LinearProjectView {
+function parseProject(value: unknown, expectedTeamId: string): LinearProjectView {
   const project = asRecord(value, "project");
+  const teams = asRecord(project.teams, "project teams");
+  if (!Array.isArray(teams.nodes) || teams.nodes.length < 1 || teams.nodes.length > 64) {
+    throw new LinearAuthorityError("LINEAR_SCHEMA_INVALID", "Linear project teams are malformed");
+  }
+  const projectTeams = teams.nodes.map(parseTeam);
+  const matchingTeams = projectTeams.filter((team) => team.id === expectedTeamId);
+  if (matchingTeams.length !== 1) {
+    throw new LinearAuthorityError("LINEAR_OWNERSHIP_MISMATCH", "Linear project is outside the accepted team policy");
+  }
   const result: {
     id: string;
     identifier?: string;
@@ -295,7 +304,7 @@ function parseProject(value: unknown): LinearProjectView {
     id: safeProviderId(project.id, "project ID"),
     name: boundedUtf8(project.name as string, "project name", 512),
     updatedAt: isoRevision(project.updatedAt, "project updatedAt"),
-    team: parseTeam(project.team),
+    team: matchingTeams[0],
   };
   const identifier = optionalText(project.identifier, "project identifier", 128);
   if (identifier !== undefined) result.identifier = identifier;
@@ -431,7 +440,7 @@ function cloneReceipt(receipt: LinearMutationReceipt, replayed: boolean): Linear
 }
 
 const PROJECT_QUERY = `query ValkyrieProject($id: String!) {
-  project(id: $id) { id identifier name updatedAt team { id key name } }
+  project(id: $id) { id name updatedAt teams { nodes { id key name } } }
 }`;
 const ISSUE_QUERY = `query ValkyrieIssue($id: String!) {
   issue(id: $id) {
@@ -495,7 +504,7 @@ export class LinearAuthorityGateway {
     if (data.project === null || data.project === undefined) {
       throw new LinearAuthorityError("LINEAR_NOT_FOUND", "Linear project was not found");
     }
-    const project = parseProject(data.project);
+    const project = parseProject(data.project, this.policy.teamId);
     ensureProjectOwnership(project, this.policy);
     return this.snapshot("project", project, project.updatedAt);
   }

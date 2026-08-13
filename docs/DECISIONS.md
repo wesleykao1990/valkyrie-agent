@@ -141,6 +141,20 @@ credential expansion, and memory promotion remain separate actions. See
 Wesley accepts or amends the live operational policy and actor-authentication
 boundary.
 
+### D-25 — One managed capability plane for third-party skill suites
+
+Wesley approves and manages a suite generation once rather than manually mapping
+every skill to every harness. The control plane preserves exact source bytes,
+derives declared requirements, assigns project/runtime modes, quarantines
+capability expansion, and produces a digest-bound runtime pack. Codex and Claude
+Code are future native projection hosts; Atomic delegates to a compatible
+specialist while retaining its native workflow graph; Hermes can request and
+inspect but cannot install or receive raw runtime authority. Admission never runs
+third-party setup or enables web, credentials, external actions, or self-update.
+See `docs/adr/ADR-P011-managed-skill-suite-plane.md`. The foundation is
+implemented, but the decision remains proposed until a real suite projection and
+broker are reviewed and exercised.
+
 ## Deferred
 
 - Prime Agent until long-horizon benchmark tasks show incremental value.
