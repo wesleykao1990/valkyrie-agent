@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -41,9 +41,17 @@ function skill(root: string, directory: string, input: {
   ].join("\n"));
 }
 
+function rawSkill(root: string, directory: string, content: string): string {
+  const path = join(root, directory);
+  mkdirSync(path, { recursive: true });
+  const file = join(path, "SKILL.md");
+  writeFileSync(file, content);
+  return file;
+}
+
 function basePolicy(source: string, suiteId = "fixture-suite"): ManagedSkillSuitePolicy {
   return {
-    schemaVersion: "1.0.0",
+    schemaVersion: "1.1.0",
     suiteId,
     displayName: "Fixture Suite",
     version: "1.0.0",
@@ -59,6 +67,8 @@ function basePolicy(source: string, suiteId = "fixture-suite"): ManagedSkillSuit
     telemetry: "disabled",
     updates: "reviewed-compatible",
     allowCapabilityExpansion: false,
+    manifestDialect: "skill-frontmatter-v1",
+    capabilityOverrides: [],
   };
 }
 
@@ -81,6 +91,100 @@ test("managed suite inspection discovers skills and derives capabilities without
     ["filesystem-read", "filesystem-write", "public-network", "shell", "subagents"]);
   assert.match(inspected.treeSha256, /^[a-f0-9]{64}$/u);
   assert.deepEqual(inspected.warnings, ["Source mentions telemetry; managed execution keeps telemetry disabled"]);
+});
+
+test("accepted YAML authority dialect supports tools aliases, arrays, blocks, and multiline scalars", () => {
+  const item = fixture("managed-yaml-dialect");
+  rawSkill(item.source, "tools-inline", `---\nname: tools-inline\ntools: [Read, Bash(git:*)]\n---\n# Inline\n`);
+  rawSkill(item.source, "allowed-inline", `---\nname: allowed-inline\nallowed-tools: [Read, WebSearch]\n---\n# Inline alias\n`);
+  rawSkill(item.source, "block", `---\nname: block\ntools:\n  - Read\n  - AskUserQuestion\n---\n# Block\n`);
+  rawSkill(item.source, "multiline", `---\nname: multiline\nallowed-tools: >-\n  Read,\n  Grep\n---\n# Folded\n`);
+  const inspected = inspectManagedSkillSuite(basePolicy(item.source));
+  assert.equal(inspected.skills.every((entry) => entry.compatible), true);
+  assert.deepEqual(inspected.skills.find((entry) => entry.name === "tools-inline")?.requiredCapabilities,
+    ["filesystem-read", "shell"]);
+  assert.deepEqual(inspected.skills.find((entry) => entry.name === "allowed-inline")?.requiredCapabilities,
+    ["filesystem-read", "public-network"]);
+  assert.equal(inspected.skills.find((entry) => entry.name === "block")?.authoritySource, "tools");
+  assert.equal(inspected.skills.find((entry) => entry.name === "multiline")?.authoritySource, "allowed-tools");
+});
+
+test("missing, malformed, duplicate, conflicting, and nested authority declarations fail closed", () => {
+  const cases = [
+    ["missing", `---\nname: missing\ndescription: no authority\n---\n# Missing\n`],
+    ["malformed", `---\nname: [unterminated\nallowed-tools: [Read]\n---\n# Malformed\n`],
+    ["duplicate", `---\nname: duplicate\nname: duplicate\nallowed-tools: [Read]\n---\n# Duplicate\n`],
+    ["conflicting", `---\nname: conflicting\ntools: [Read]\nallowed-tools: [Read]\n---\n# Conflict\n`],
+    ["nested", `---\nname: nested\nallowed-tools: [Read]\nmetadata:\n  tools: [Bash]\n---\n# Nested\n`],
+    ["unknown-authority", `---\nname: unknown-authority\nallowed-tools: [Read]\npermissions: [network]\n---\n# Unknown authority\n`],
+    ["unknown-compound-authority", `---\nname: unknown-compound-authority\nallowed-tools: [Read]\nruntime_permissions:\n  network-access: true\n---\n# Unknown compound authority\n`],
+  ] as const;
+  for (const [directory, content] of cases) {
+    const item = fixture(`managed-${directory}`);
+    rawSkill(item.source, directory, content);
+    const descriptor = inspectManagedSkillSuite(basePolicy(item.source)).skills[0];
+    assert.equal(descriptor.compatible, false, directory);
+    assert.equal(descriptor.authorityIssues.length > 0, true, directory);
+    const manager = new ManagedSkillSuiteManager({ root: item.store });
+    manager.install(acceptedPolicy(item.source));
+    assert.throws(() => manager.capabilityPack({
+      suiteId: "fixture-suite", projectId: "ovalo", runtime: "codex", skills: [descriptor.name],
+    }), /operator-gated/i, directory);
+  }
+});
+
+test("a digest-bound policy override can complete missing upstream authority but cannot hide detected risk", () => {
+  const item = fixture("managed-policy-override");
+  rawSkill(item.source, "advisory", `---\nname: advisory\ndescription: reviewed local advisory skill\n---\n# Advisory\n`);
+  const policy = basePolicy(item.source);
+  policy.trustProfile = "restricted-advisory";
+  policy.capabilityOverrides = [{
+    skill: "advisory",
+    capabilities: ["filesystem-read"],
+    reason: "Upstream manifest has no authority field; exact reviewed bytes require read-only file access.",
+  }];
+  const inspection = inspectManagedSkillSuite(policy);
+  assert.equal(inspection.skills[0].authoritySource, "policy-override");
+  assert.deepEqual(inspection.skills[0].authorityIssues, []);
+  assert.equal(inspection.skills[0].compatible, true);
+  const accepted = { ...policy, source: { ...policy.source, expectedSha256: inspection.treeSha256 } };
+  const manager = new ManagedSkillSuiteManager({ root: item.store });
+  manager.install(accepted);
+  assert.deepEqual(manager.capabilityPack({ suiteId: "fixture-suite", projectId: "ovalo", runtime: "codex" })
+    .requiredCapabilities, ["filesystem-read"]);
+});
+
+test("executable setup, package lifecycle, and MCP definitions add capabilities and require explicit coverage", () => {
+  const item = fixture("managed-source-risk");
+  skill(item.source, "builder", { name: "builder", tools: ["Bash", "Read", "WebSearch"] });
+  const setup = join(item.source, "setup.sh");
+  writeFileSync(setup, "#!/bin/sh\nnpm install\n");
+  chmodSync(setup, 0o755);
+  writeFileSync(join(item.source, "package.json"), JSON.stringify({
+    dependencies: { example: "1.0.0" },
+    scripts: { postinstall: "node setup.js" },
+  }));
+  writeFileSync(join(item.source, "mcp.json"), JSON.stringify({
+    mcpServers: { remote: { url: "https://example.invalid", headers: { authorization: "env" } } },
+  }));
+  const descriptor = inspectManagedSkillSuite(basePolicy(item.source)).skills[0];
+  assert.deepEqual(descriptor.requiredCapabilities,
+    ["credentials", "filesystem-read", "host-administration", "public-network", "shell"]);
+  assert.equal(descriptor.compatible, false);
+  assert.ok(descriptor.authorityIssues.includes("undeclared-detected-capability:credentials"));
+  assert.ok(descriptor.authorityIssues.includes("undeclared-detected-capability:host-administration"));
+});
+
+test("static name and body scanning is additive and never satisfies authority", () => {
+  const item = fixture("managed-additive-risk");
+  rawSkill(item.source, "safe-label", `---\nname: safe-label\nallowed-tools: [Read]\n---\nUse OAuth credentials, browser automation, and a public web search.\nCreate and deploy a release, then self-update.\n`);
+  const descriptor = inspectManagedSkillSuite(basePolicy(item.source)).skills[0];
+  assert.deepEqual(descriptor.requiredCapabilities, [
+    "browser", "credentials", "external-action", "filesystem-read", "public-network", "self-update",
+  ]);
+  assert.equal(descriptor.compatible, false);
+  assert.ok(descriptor.authorityIssues.includes("undeclared-detected-capability:browser"));
+  assert.ok(descriptor.blockedCapabilities.includes("credentials"));
 });
 
 test("suite install is content-addressed, idempotent, private, and produces a verified run pack", () => {

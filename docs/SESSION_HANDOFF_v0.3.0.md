@@ -1,6 +1,18 @@
-# Session handoff — v0.3.0 through M8a managed-suite foundation
+# Session handoff — v0.3.0 through PR #1 stabilization
 
 Date: 2026-08-14
+
+## PR #1 stabilization update
+
+The stabilization session started from reviewed head
+`5e7a80dc9b34d08f1b8bcc07e7d5054c308b32c2` on
+`agent/postgres-atomic-integration`. It adds least-privilege GitHub Actions,
+strict fail-closed managed-skill authority parsing, role/runtime separation,
+LINE/Buzz/GBrain authority reconciliation, and `docs/PR1_REVIEW_MAP.md` only.
+It does not implement GBrain, meeting intelligence, Buzz, LINE synchronization,
+commitments, actor identity, or a general launcher. The exact final head and CI
+run are recorded after push; do not mark the PR ready before both are green and a
+fresh review reports no blocker.
 
 ## 1. Milestone completed
 
@@ -35,7 +47,8 @@ Date: 2026-08-14
   with both candidate approvals pending and no default selected.
 - The pre-M7 routing/efficiency gaps are implemented without enabling a general
   writer: authenticated durable engineering assessments select Direct, Atomic
-  Lite, or Atomic Full but fail closed while live Linear/Git authority is absent;
+  Lite, or Atomic Full but fail closed until a reviewed general launcher
+  revalidates and consumes current authority;
   the package-local Atomic Lite contract implements retained implementer/forked
   repair/conditional review with deterministic integrity gates; and Codex
   subscription lineages reuse one process-local thread per capability/role.
@@ -49,12 +62,15 @@ Date: 2026-08-14
   every connector write mode remain disabled/unexercised.
 - Milestone 8a adds the managed skill-suite admission/catalog foundation. One
   exact local suite policy now controls project/runtime modes for the whole
-  suite; Valkyrie discovers and classifies skills, preserves private immutable
+  suite; pinned strict YAML plus additive source inspection now fail closed on
+  missing, malformed, ambiguous, unknown, executable/setup/package/MCP authority;
+  Valkyrie discovers and classifies skills, preserves private immutable
   generations, quarantines capability expansion, supports activation/rollback,
   emits runtime capability packs, and reports authenticated path-opaque status.
   It does not run setup or skill code. Native Codex/Claude projection, Atomic
-  specialist delegation, general-launch consumption, GStack live proof, and
-  web/browser brokering remain the next M8 work.
+  specialist delegation, GStack live proof, and web/browser brokering remain
+  deferred. The next branch is M9 actor identity and the General Governed
+  Launcher after PR #1 merges.
 
 The M5a implementation, deterministic contracts, and live no-model runner smoke
 are complete. Exact immutable-image and native-run evidence is recorded in

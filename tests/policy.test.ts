@@ -11,15 +11,41 @@ import { loadConfig } from "../apps/control-plane/src/config.ts";
 import { buildIsolatedSmokeEnvironment } from "../scripts/smoke-environment.ts";
 
 test("routes non-trivial engineering work to Atomic", () => {
-  assert.equal(routeTask({ projectId: "ovalo", objective: "Implement pronunciation feedback with tests" }).runtime, "atomic");
+  const decision = routeTask({
+    projectId: "ovalo",
+    objective: "Implement pronunciation feedback across multiple files with integration tests",
+  });
+  assert.equal(decision.runtime, "atomic");
+  assert.equal(decision.role, "engineering-lead");
+  assert.equal(decision.executionShape, "atomic-lite");
 });
 
-test("routes long research to Prime", () => {
-  assert.equal(routeTask({ projectId: "ovalo", objective: "Research and benchmark three speech architectures" }).runtime, "prime");
+test("research selects a future Research Lead role without assuming Prime", () => {
+  const decision = routeTask({ projectId: "ovalo", objective: "Research and benchmark three speech architectures" });
+  assert.equal(decision.workClass, "research");
+  assert.equal(decision.role, "research-lead");
+  assert.equal(decision.runtime, null);
+  assert.equal(decision.supported, false);
+  assert.match(decision.reason, /no keyword selects Prime/i);
+});
+
+test("engineering that includes research terms still uses the engineering risk rubric", () => {
+  const decision = routeTask({
+    projectId: "ovalo",
+    objective: "Research and implement a benchmark harness with integration tests",
+  });
+  assert.equal(decision.workClass, "engineering");
+  assert.equal(decision.role, "engineering-lead");
+  assert.notEqual(decision.runtime, "prime");
+  assert.notEqual(decision.executionShape, null);
 });
 
 test("explicit runtime wins", () => {
   assert.equal(routeTask({ projectId: "ovalo", objective: "Anything", runtime: "claude" }).runtime, "claude");
+  const prime = routeTask({ projectId: "ovalo", objective: "Research a bounded fixture", runtime: "prime" });
+  assert.equal(prime.role, "research-lead");
+  assert.equal(prime.runtime, "prime");
+  assert.equal(prime.supported, true);
 });
 
 test("engineering routing selects the smallest complete execution shape", () => {

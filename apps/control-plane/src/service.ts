@@ -270,7 +270,7 @@ export class ControlPlaneService {
           replayed: true,
           launch: {
             supported: false,
-            reason: "The assessment is durable, but general execution remains fail-closed until M7 supplies live authority and a reviewed project execution policy.",
+            reason: "The assessment is durable, but general execution remains fail-closed until a reviewed general launcher revalidates current authority and consumes it.",
           },
         };
       }
@@ -315,7 +315,7 @@ export class ControlPlaneService {
     const unsupportedReasons = [
       ...(connectorContext.linear.status === "revision-bound" ? [] : ["live-linear-authority-unavailable"]),
       ...(connectorContext.git.status === "revision-bound" ? [] : ["live-git-authority-unavailable"]),
-      ...(connectorContext.git.status === "revision-bound" ? [] : ["trusted-project-execution-policy-unavailable"]),
+      "reviewed-general-launcher-unavailable",
       `general-${derived.decision.shape}-launch-unavailable`,
     ];
     const observedAt = this.now();
@@ -375,7 +375,7 @@ export class ControlPlaneService {
       ...result,
       launch: {
         supported: false,
-        reason: "The assessment is durable, but general execution remains fail-closed until M7 supplies live authority and a reviewed project execution policy.",
+        reason: "The assessment is durable, but general execution remains fail-closed until a reviewed general launcher revalidates current authority and consumes it.",
       },
     };
   }
@@ -770,6 +770,7 @@ export class ControlPlaneService {
       throw new Error("Direct Claude Code model pilot is not available until its separate credential boundary is reviewed and exercised");
     }
 
+    if (!route.supported || !route.runtime) throw new Error(route.reason);
     const adapter = this.requireAdapter(route.runtime);
     const preflight = await adapter.preflight();
     if (!preflight.enabled || !preflight.available) {

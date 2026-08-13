@@ -78,7 +78,9 @@ pilots are never substituted.
 The Atomic package now includes an independently testable `atomic-lite-writer`
 contract with one retained implementer stage, model-free checks, at most one
 forked repair, and policy-conditional fresh review. It remains package-local and
-unregistered until M7 can supply live authority and a reviewed project launcher.
+unregistered until a reviewed general project launcher consumes and revalidates
+current authority. M7 can supply a narrow revision-bound authority path but does
+not itself authorize launch.
 
 Migration 011 and the subscription broker retain one live Codex provider thread
 per capability/role and send only appended conversation deltas. Different roles

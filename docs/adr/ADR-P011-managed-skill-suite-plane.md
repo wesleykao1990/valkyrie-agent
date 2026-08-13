@@ -30,6 +30,17 @@ final actions to components that must not hold them.
    control-plane actions even when a skill prepares them.
 8. Installation and activation remain local operator operations. Models and MCP
    callers cannot add, update, activate, or roll back a suite.
+9. The accepted manifest dialect is `skill-frontmatter-v1`, parsed as strict
+   YAML 1.2 by pinned `yaml@2.9.0`. Only top-level `tools` or `allowed-tools`
+   declarations are authority-bearing, and using both is ambiguous.
+10. Missing, malformed, duplicate, conflicting, nested, empty, or unknown
+    authority stays operator-gated. Executables, setup/install files, dependency
+    manifests and lifecycle hooks, MCP definitions, and static prose/name risk
+    scanning may add authority requirements but may never prove safety.
+11. When upstream metadata cannot express a reviewed capability, only the exact
+    digest-bound suite policy may supply a per-skill capability override. An
+    override cannot erase malformed metadata, an unknown tool, or detected risk
+    that it does not explicitly cover.
 
 ## Consequences
 
@@ -44,8 +55,9 @@ final actions to components that must not hold them.
 
 ## M8a acceptance boundary
 
-The first slice implements deterministic local admission, catalog generations,
-compatibility classification, rollback, status, and capability-pack attestation.
+The first slice implements deterministic local admission, fail-closed YAML
+authority parsing and source-risk inspection, catalog generations, compatibility
+classification, rollback, status, and capability-pack attestation.
 It intentionally does not fetch the internet, run third-party setup code, install
 dependencies, alter global Codex/Claude/Hermes state, or compose a general writer.
 

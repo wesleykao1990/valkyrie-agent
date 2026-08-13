@@ -23,6 +23,12 @@ this slice.
   operational installation state, not roadmap or project knowledge.
 - Add an exact JSON policy whose bytes and source-tree digest are accepted before
   installation.
+- Parse the explicit `skill-frontmatter-v1` authority dialect as strict YAML 1.2
+  with pinned `yaml@2.9.0`: exactly one top-level `tools` or `allowed-tools`
+  declaration, with every missing/malformed/ambiguous/unknown form gated.
+- Inspect executable/setup files, dependency manifests/lifecycle hooks, MCP
+  definitions, and static name/body risk additively. Exact policy-digest
+  overrides may supply missing upstream capabilities but never erase risk.
 - Preserve each source generation in an owner-private, content-addressed object.
 - Discover bounded `SKILL.md` definitions and derive their declared tool needs.
 - Treat scoped forms such as `Bash(git:*)` conservatively and keep every
@@ -68,6 +74,9 @@ database does not delete installed suites.
 ## Verification
 
 - Deterministic discovery, tool/capability classification, and tree hashing.
+- Inline, block, and multiline YAML plus missing, malformed, duplicate,
+  conflicting, nested, unknown, executable/setup, package-lifecycle, MCP, and
+  policy-override fail-closed cases.
 - Exact idempotent install and owner-private copied object.
 - Project/runtime scoping and Hermes/Atomic mode restrictions.
 - Operator-gated skill exclusion from ordinary packs.

@@ -2,7 +2,7 @@
 
 ## Accepted
 
-### D-01 — Hermes is the primary interface
+### D-01 — Hermes is the primary interface (historical; superseded by D-26)
 
 Hermes is the mobile front door for idea capture, portfolio briefings, run control, notifications, and approvals. Chat is not a system of record; Hermes assembles answers from current sources.
 
@@ -46,7 +46,7 @@ Current user instruction outranks the curated user profile, which outranks prior
 
 Each coding candidate receives its own worktree and external container or VM. A runtime must hold the writer lease before modifying the workspace.
 
-### D-12 — Telegram first for the pilot
+### D-12 — Telegram first for the pilot (historical; superseded by D-26)
 
 Telegram is the default first Hermes channel because it is a low-friction control surface. The channel is configurable and LINE can be added later without changing architecture.
 
@@ -66,13 +66,45 @@ on 2026-08-11. The root MIT license applies only within its grant. The nested
 preserved, and public visibility does not grant additional use or redistribution
 rights for that subtree.
 
+### D-26 — LINE is active and Hermes is the interaction gateway
+
+LINE is Wesley's active first mobile channel through Hermes. Hermes is the
+interaction gateway, not the only interface or an authority for roadmap,
+implementation, project rationale, identity, or commitments. Buzz is the
+proposed graphical operations workspace. Future LINE and Buzz projections share
+stable Valkyrie conversation and run IDs; Buzz remains an interface/event
+workspace, not a roadmap, runtime, or memory authority. PR #1 records this
+direction but does not implement LINE/Buzz synchronization or remote identity.
+See proposed ADR-P012.
+
+### D-27 — Project, broad, personal, and commitment knowledge stay separate
+
+Accepted Project Brain Markdown remains canonical project-rationale authority.
+GBrain is the proposed broad advisory Knowledge Plane candidate for people,
+companies, meetings, sources, and research; it cannot override or write Project
+Brain. Personal Profile is a separate explicit preference authority, and the
+future Commitment Ledger is separate operational authority for promises and
+follow-ups. The current OpenViking path remains an alternative read-only Project
+Brain provider evaluation, not a simultaneous production memory system beside
+GBrain. See proposed ADR-P012.
+
+### D-28 — Agent role, runtime, communication, and tools are independent
+
+Research Lead is a role; Prime is one optional runtime when persistent or
+long-horizon execution warrants it. Engineering Lead and Fresh Reviewer are also
+roles rather than runtime aliases. Codex/Claude workers and fresh reviewers are
+normally transient. Permission to communicate or delegate is separate from tool
+permission and room membership grants neither. Unrestricted agent DMs and
+delegation remain disabled; every future delegation must be a governed child
+task/run with bounded scope, budget, and evidence. See proposed ADR-P012.
+
 ## Proposed / pilot-gated
 
 ### D-15 — Atomic is the default non-trivial engineering runtime
 
 Atomic is the leading candidate because of explicit graphs, evidence, fresh verification, gates, and resumability. It becomes the default only after an A/B pilot against direct Codex/Claude paths measures quality, time, cost, review burden, and recovery.
 
-### D-16 — OpenViking is the first machine-memory candidate
+### D-16 — OpenViking is the first machine-memory candidate (historical scope narrowed by D-27)
 
 Start behind the Project Brain interface in read-only mode. Promote it only if retrieval quality, project isolation, deletion, privacy, and operational reliability meet acceptance thresholds.
 
@@ -157,8 +189,11 @@ broker are reviewed and exercised.
 
 ## Deferred
 
-- Prime Agent until long-horizon benchmark tasks show incremental value.
+- General Prime selection until long-horizon benchmark tasks show incremental
+  value; explicit fixed/test selection remains available.
 - Orca integration until live parallel-agent supervision is a repeated pain point.
-- Buzz until multi-person and persistent-agent collaboration requires a shared event workspace.
+- Buzz mutations and LINE/Buzz synchronization until actor identity and the
+  shared conversation foundation are reviewed.
 - Linear AgentSession preview integration until ordinary issue/comment projection is reliable.
+- Unrestricted agent-to-agent DMs or recursive delegation.
 - Automatic canonical-memory promotion.

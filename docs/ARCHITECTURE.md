@@ -3,14 +3,21 @@
 ## Recommended system
 
 ```text
-Wesley on mobile
-      |
-      v
-Hermes messaging and approvals
-      |
+Wesley
+  +---- LINE (active mobile surface) through Hermes
+  +---- Buzz (proposed graphical workspace) through Hermes
+                         |
+                         v
+              Valkyrie interaction gateway
+              actor/channel/conversation identity: M9, not implemented
+                         |
+      +------------------+-------------------+
+      |                  |                   |
       +---- Linear: roadmap and live work truth
-      +---- Project Brain: accepted vault knowledge + read-only retrieval pilot
-      +---- Control-plane MCP: runs, approvals, budgets, evidence
+      +---- Project Brain: accepted project rationale
+      +---- future separate authorities: GBrain advisory knowledge,
+      |     Personal Profile, and Commitment Ledger
+      +---- Control-plane API/MCP: runs, approvals, budgets, evidence
                          |
                          v
               Thin TypeScript control plane
@@ -25,7 +32,7 @@ Hermes messaging and approvals
        |                 |                  |
        v                 v                  v
      Atomic          Codex/Claude         Prime
- pilot workflow      bounded workers   long research
+ pilot workflow     transient workers  optional runtime
        |                 |                  |
        +-----------------+------------------+
                          |
@@ -35,13 +42,19 @@ Hermes messaging and approvals
 
 ## Authority boundaries
 
-- **Hermes** owns conversation, mobile notification, and user-facing summaries.
+- **Hermes** is the interaction gateway for LINE and the proposed Buzz surface;
+  it does not own roadmap, implementation, project rationale, identity, or
+  commitments. Stable cross-surface conversations are planned for M9+.
 - **Linear** owns initiatives, projects, issues, dependencies, and work status.
 - **Git/GitHub** owns source code, PRs, CI, and accepted delivery history.
 - **Control plane** owns cross-runtime run IDs, policies, approvals, budgets, workspace leases, and normalized event projections.
 - **Native runtime** owns its internal workflow/session state.
 - **Obsidian/Git vault** owns accepted project rationale and enduring knowledge.
 - **Machine memory** supplies retrieved or episodic context but cannot override live or accepted sources.
+- **Future GBrain Knowledge Plane** is a separate broad advisory candidate. It
+  cannot write or override Project Brain.
+- **Future Personal Profile** and **Commitment Ledger** are separate explicit
+  preference and operational follow-up authorities.
 
 These are domain authorities, not one global precedence list. Linear controls
 roadmap and work state; Git and executable checks control implementation truth;
@@ -75,10 +88,20 @@ final-action boundaries. Atomic Lite and Atomic Full are both Atomic root runs;
 they are not Codex or Claude runs hidden underneath an Atomic wrapper. The
 structured selector plus authenticated assessment/read operations are
 implemented and tested. Assessments are durable, source-labeled, and explicitly
-unsupported for execution while Linear/Git authority and a trusted project
-launcher are absent. The package-level Atomic Lite workflow is independently
+unsupported for general execution until a reviewed launcher revalidates and
+consumes current authority. M7 can supply narrow revision-bound Linear/Git
+authority but is not that launcher. The package-level Atomic Lite workflow is independently
 testable but is not registered as a general writer; current live writer pilots
 retain their fixed literal contracts.
+
+Task capability and agent role are separate from runtime. Research Lead is a
+role and Prime is only an explicit optional runtime; an unqualified research
+keyword now fails closed pending the future Research Lead selector. Legacy
+fixed/demo engineering launch maps through the same Direct / Atomic Lite /
+Atomic Full risk rubric, while the future general launcher must consume its
+durable, non-expired assessment. Codex/Claude workers and fresh reviewers are
+normally transient. Communication/delegation permission is separate from tool
+permission, and unrestricted agent DMs/delegation remain disabled.
 
 ## Storage boundary
 
@@ -272,6 +295,14 @@ manager discovers `SKILL.md` definitions without running them, derives declared
 capabilities, copies exact bytes into a private content-addressed generation,
 and rehashes that generation before status, activation, rollback, or pack use.
 
+`skill-frontmatter-v1` uses pinned strict YAML 1.2 parsing and recognizes only
+top-level `tools` or `allowed-tools` authority. Missing, malformed, duplicate,
+conflicting, nested, empty, and unknown declarations are operator-gated. Source
+inspection of executables, setup/install files, package lifecycle hooks, MCP
+definitions, and static prose/name risk can only add requirements. A per-skill
+override must be present in the exact digest-bound suite policy and cannot erase
+malformed or unrecognized authority.
+
 The active generation can emit an immutable capability pack bound to project,
 runtime, selected skills, and digests. Codex/Claude are designated future native
 hosts; Atomic receives a delegated specialist rather than a second workflow
@@ -282,7 +313,9 @@ external-action policy. Web/browser capabilities remain disabled.
 
 ## Prototype substitution
 
-The production architecture uses PostgreSQL and a read-only OpenViking trial. The
+The production-candidate architecture uses PostgreSQL and retains OpenViking as
+an alternative read-only Project Brain provider trial. It is not a simultaneous
+production memory system beside the proposed separate GBrain Knowledge Plane. The
 downloadable prototype defaults to SQLite and local Markdown retrieval so it can
 run without external credentials. PostgreSQL now exists behind the store contract;
 OpenViking and general writer runtimes remain disabled continuation work. The

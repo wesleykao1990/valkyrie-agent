@@ -216,7 +216,10 @@ test("accepted Linear and Git gateways bind current revisions without authorizin
     });
     assert.equal((result.assessment.contextSources.linear as { status: string }).status, "revision-bound");
     assert.equal((result.assessment.contextSources.git as { status: string }).status, "revision-bound");
-    assert.deepEqual(result.assessment.unsupportedReasons, ["general-atomic-lite-launch-unavailable"]);
+    assert.deepEqual(result.assessment.unsupportedReasons, [
+      "reviewed-general-launcher-unavailable",
+      "general-atomic-lite-launch-unavailable",
+    ]);
     assert.equal(result.assessment.executionSupported, false);
     const [projectBinding, taskBinding, gitBinding] = await Promise.all([
       item.store.getAuthorityBinding("linear", "project", "ovalo"),

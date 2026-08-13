@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "1.0.0",
+  "schemaVersion": "1.1.0",
   "suiteId": "example-suite",
   "displayName": "Example Managed Skill Suite",
   "version": "1.0.0",
@@ -32,5 +32,7 @@
   ],
   "telemetry": "disabled",
   "updates": "reviewed-compatible",
-  "allowCapabilityExpansion": false
+  "allowCapabilityExpansion": false,
+  "manifestDialect": "skill-frontmatter-v1",
+  "capabilityOverrides": []
 }

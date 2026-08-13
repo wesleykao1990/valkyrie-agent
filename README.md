@@ -2,9 +2,11 @@
 
 Valkyrie is Wesley's local-first, mobile-oriented Project OS control plane. It
 coordinates project context, one root runtime per run, bounded workspaces,
-approvals, evidence, and governed Project Brain memory. Hermes is the intended
-conversation interface; this repository supplies the control plane and its local
-MCP bridge.
+approvals, evidence, and governed Project Brain memory. LINE is Wesley's active
+mobile surface through Hermes; Hermes is the interaction gateway, and Buzz is a
+proposed graphical workspace. This repository supplies only the control plane
+and local MCP bridge: remote actor identity, LINE/Buzz synchronization, Buzz,
+GBrain, meetings, commitments, and the general launcher are not implemented.
 
 This is the user guide for
 [draft PR #1](https://github.com/wesleykao1990/valkyrie-agent/pull/1).
@@ -847,6 +849,13 @@ explicitly accepted. Scoped tool declarations are classified conservatively and
 unknown tools stay gated. Activation and rollback always rehash installed bytes.
 The authenticated `/api/skill-suites` and Hermes `skill_suites_status` surfaces
 are read-only and path-opaque.
+
+Policy schema `1.1.0` fixes `manifestDialect` to `skill-frontmatter-v1` and may
+contain digest-bound per-skill `capabilityOverrides`. Strict YAML 1.2 accepts
+exactly one top-level `tools` or `allowed-tools` declaration. Missing, malformed,
+duplicate, conflicting, nested, empty, or unknown authority remains
+operator-gated. Executable/setup files, package lifecycle hooks, MCP definitions,
+and static risk scanning only add requirements; inspection never executes them.
 
 See [the M8 plan](docs/IMPLEMENTATION_PLAN_M8.md) and
 [proposed ADR-P011](docs/adr/ADR-P011-managed-skill-suite-plane.md).

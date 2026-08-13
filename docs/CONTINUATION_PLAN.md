@@ -214,6 +214,11 @@ separate remaining gates.
 
 - [x] exact local source and policy digest admission;
 - [x] bounded `SKILL.md` discovery and declared-capability classification;
+- [x] strict pinned YAML 1.2 `skill-frontmatter-v1` parsing with missing,
+  malformed, duplicate, conflicting, nested, empty, and unknown authority
+  declarations operator-gated;
+- [x] additive inspection of executable/setup/package-lifecycle/MCP/static risk
+  plus exact policy-digest capability overrides;
 - [x] one suite-level project/runtime/trust policy so Wesley does not manually
   map each skill to every harness;
 - [x] private content-addressed generations, rehash-on-use, compatible/manual
@@ -224,7 +229,7 @@ separate remaining gates.
 - [x] no execution of setup, hooks, binaries, dependencies, updates, MCP servers,
   or skills during admission.
 
-### Remaining M8 work before web capability enablement
+### Deferred M8 projection work after the PR #1 release gate
 
 - [ ] prove one exact native projection/setup adapter for Codex and Claude Code;
 - [ ] compose Atomic through a compatible delegated specialist without building
@@ -238,6 +243,30 @@ separate remaining gates.
 Remote fetch, dependency installation, signed publisher provenance, unattended
 updates, shared/mobile actor authorization, GBrain, personal memory, and external
 knowledge ingestion remain later reviewed slices.
+
+## PR #1 release stabilization
+
+- [x] reconcile LINE/Buzz/GBrain and role/runtime architecture without adding
+  those product capabilities to PR #1;
+- [x] remove implicit research-to-Prime routing and correct the general-launcher
+  blocker wording;
+- [x] harden managed-skill authority admission before native projection;
+- [x] add least-privilege deterministic CI and a PR review map;
+- [ ] obtain green GitHub Actions and one fresh blocker-free review on the exact
+  stabilized head before marking PR #1 ready.
+
+## Milestone 9 — actor identity and the General Governed Launcher (next branch)
+
+After PR #1 merges, create `agent/m9-identity-general-launcher` from updated
+`main`; do not continue from the pre-merge PR branch. M9 first adds actor,
+external identity, channel binding, service principal, authorization grant,
+conversation/correlation, and approval-nonce state plus presentation-safe DTOs.
+It then adds a separate launcher that consumes a non-expired engineering
+assessment, revalidates Linear/Git/Project Brain and capability packs, selects
+one Direct/Atomic Lite/Atomic Full root, allocates one fenced writer transaction,
+records exact runtime/workflow/model/skills and native events, and stops before
+external final actions. LINE/Buzz synchronization, GBrain, meetings, and
+commitments remain later milestones.
 
 ## Required method for every milestone
 

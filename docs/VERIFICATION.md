@@ -789,6 +789,42 @@ external action, or global runtime state was enabled. This verifies the M8a
 admission/catalog foundation only; native projection and a real suite proof are
 the next gate.
 
+## PR #1 stabilization evidence
+
+On 14 August 2026, Assignment A was verified from reviewed baseline
+`5e7a80dc9b34d08f1b8bcc07e7d5054c308b32c2` after adding least-privilege CI,
+fail-closed managed-skill authority parsing, the role/runtime decision
+reconciliation, removal of the research-to-Prime heuristic, and the PR review
+map. The complete command passed:
+
+```bash
+npm run verify
+```
+
+- strict TypeScript passed;
+- the general suite reported 327 total: 324 passed, 0 failed, and 3 honest
+  opt-in skips;
+- disposable PostgreSQL 16 passed 23/23 storage and 7/7 model-lifecycle tests;
+- the Atomic package verified 38 required files, 6 workflows, 16 routing cases,
+  5 prompt templates, and 11 invalid launch-manifest rejections;
+- authenticated HTTP and MCP smoke passed; and
+- a local Gitleaks 8.30.1 full-history scan passed after two exact historical
+  test-only idempotency-label fingerprints were documented in
+  `.gitleaksignore`. No value-based or path-wide suppression was added.
+
+The focused preflight also passed strict TypeScript and 41 routing,
+engineering-intake, configuration, and managed-skill tests. Admission coverage
+includes the accepted `tools` / `allowed-tools` YAML forms and fail-closed cases
+for absent, malformed, duplicate, conflicting, nested, unknown, executable,
+package-lifecycle, MCP, detected-risk, override, source-drift, and installed-pack
+tamper conditions.
+
+This run made no provider call, connector read or write, Docker writer launch,
+native skill projection, subscription spend, branch publication, PR mutation,
+merge, deployment, or canonical-memory promotion. The exact pushed Git head and
+GitHub Actions result are authoritative for remote CI and are intentionally not
+self-referentially embedded in this commit.
+
 ## Reproduction commands
 
 ```bash

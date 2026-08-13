@@ -43,4 +43,4 @@
 12. For continued implementation, use `docs/NEXT_SESSION_PROMPT.md` rather than
     the superseded package prompt.
 
-The web page is a developer inspection console. Hermes remains the intended user interface and Linear remains the roadmap authority.
+The web page is a developer inspection console. LINE is the active mobile surface, Hermes is the governed interaction gateway, Buzz remains proposed, and Linear remains the roadmap authority.

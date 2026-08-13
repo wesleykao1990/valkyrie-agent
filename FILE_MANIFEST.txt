@@ -1,6 +1,8 @@
 .dockerignore
 .env.example
+.github/workflows/ci.yml
 .gitignore
+.gitleaksignore
 .project-context.yaml
 AGENTS.md
 BUILD_INFO.md
@@ -86,6 +88,7 @@ docs/API.md
 docs/ARCHITECTURE.md
 docs/ATOMIC_PACKAGE_PROVENANCE.md
 docs/Agentic_Development_Control_Plane_Architecture_Review_v0.2.2.docx
+docs/CI.md
 docs/CONTINUATION_PLAN.md
 docs/DECISIONS.md
 docs/GIT_HANDOFF.md
@@ -103,6 +106,7 @@ docs/IMPLEMENTATION_PLAN_M8.md
 docs/IMPLEMENTATION_PLAN_POST_M6_GAPS.md
 docs/M7_CONNECTOR_SETUP.md
 docs/NEXT_SESSION_PROMPT.md
+docs/PR1_REVIEW_MAP.md
 docs/PROMPT_FOR_CODEX_OR_CLAUDE.md
 docs/PROTOTYPE_SCOPE.md
 docs/REVIEW_NOTES_v0.3.0.md
@@ -120,6 +124,7 @@ docs/adr/ADR-P008-direct-runtime-comparison.md
 docs/adr/ADR-P009-risk-based-execution-shapes.md
 docs/adr/ADR-P010-production-connector-boundary.md
 docs/adr/ADR-P011-managed-skill-suite-plane.md
+docs/adr/ADR-P012-interaction-knowledge-role-boundaries.md
 fixtures/atomic-pilot-template/.atomic/settings.json
 fixtures/atomic-pilot-template/README.md
 fixtures/atomic-pilot-template/package.json

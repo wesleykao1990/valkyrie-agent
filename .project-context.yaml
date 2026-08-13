@@ -2,6 +2,12 @@ project_id: wesley-agent-control-plane
 project_name: Wesley Agent Control Plane Prototype
 repository_version: 0.3.0
 roadmap_authority: linear
+interaction:
+  gateway: hermes
+  active_mobile_channel: line
+  proposed_graphical_workspace: buzz
+  stable_cross_surface_conversation_ids: planned-m9-plus-not-implemented
+  remote_actor_identity: not-implemented
 linear:
   team_id: null
   project_id: null
@@ -29,7 +35,14 @@ project_brain:
   local_path: project-brain
   active_backend: local-markdown-readonly
   candidate_backend: openviking-evaluation-only-no-live-transport
+  gbrain_relationship: separate-future-advisory-knowledge-provider-candidate
+  openviking_and_gbrain_simultaneous_production: false
   automatic_capture: false
+knowledge_authorities:
+  project_rationale: accepted-project-brain-markdown
+  broad_advisory_knowledge: gbrain-proposed-not-implemented
+  personal_preferences: personal-profile-separate-not-implemented
+  commitments: commitment-ledger-separate-not-implemented
 production_connectors:
   status: deterministic-contract-tested-default-off-linear-read-live-verified
   policy: digest-pinned-project-allowlist
@@ -41,8 +54,9 @@ production_connectors:
   deployment: false
   actor_attestation: static-local-operator-context-only
 managed_skill_suites:
-  status: local-admission-catalog-implemented-runtime-projection-pending
-  policy_schema: 1.0.0
+  status: fail-closed-local-admission-catalog-implemented-runtime-projection-pending
+  policy_schema: 1.1.0
+  manifest_dialect: skill-frontmatter-v1
   source: exact-local-directory-digest-only
   telemetry: disabled
   hermes_mode: request-only
@@ -79,6 +93,9 @@ runtime_policy:
     - atomic-lite
     - atomic-full
   engineering_routing_policy: authenticated-durable-assessment-live-launch-unsupported
+  role_runtime_policy: research-lead-is-role-prime-is-optional-runtime
+  transient_workers: codex-claude-fresh-reviewers
+  agent_communication_permission: separate-from-tool-permission-unrestricted-dm-disabled
   engineering_routing_ledger: migration-010
   inference_session_lineage_ledger: migration-011
   atomic_lite_workflow: package-contract-tested-not-runtime-registered

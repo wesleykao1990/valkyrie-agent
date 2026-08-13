@@ -17,6 +17,7 @@ import {
   chmodSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { parseDocument } from "yaml";
 import { canonicalJson } from "./store.ts";
 
 const SAFE_ID = /^[a-z][a-z0-9-]{0,62}$/u;
@@ -27,6 +28,7 @@ const MAX_SOURCE_BYTES = 96 * 1024 * 1024;
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_SKILLS = 256;
 const IGNORED_SOURCE_NAMES = new Set([".git", ".DS_Store", "node_modules"]);
+export const MANAGED_SKILL_MANIFEST_DIALECT = "skill-frontmatter-v1" as const;
 
 export type ManagedSkillRuntime = "codex" | "claude-code" | "atomic" | "hermes";
 export type ManagedSkillRuntimeMode = "native" | "delegated" | "request-only";
@@ -49,8 +51,14 @@ export interface ManagedSkillRuntimeGrant {
   mode: ManagedSkillRuntimeMode;
 }
 
+export interface ManagedSkillCapabilityOverride {
+  skill: string;
+  capabilities: ManagedSkillCapability[];
+  reason: string;
+}
+
 export interface ManagedSkillSuitePolicy {
-  schemaVersion: "1.0.0";
+  schemaVersion: "1.1.0";
   suiteId: string;
   displayName: string;
   version: string;
@@ -65,6 +73,8 @@ export interface ManagedSkillSuitePolicy {
   telemetry: "disabled";
   updates: "manual" | "reviewed-compatible";
   allowCapabilityExpansion: boolean;
+  manifestDialect: typeof MANAGED_SKILL_MANIFEST_DIALECT;
+  capabilityOverrides: ManagedSkillCapabilityOverride[];
 }
 
 export interface ManagedSkillDescriptor {
@@ -72,6 +82,9 @@ export interface ManagedSkillDescriptor {
   relativePath: string;
   version: string | null;
   description: string | null;
+  manifestDialect: typeof MANAGED_SKILL_MANIFEST_DIALECT;
+  authoritySource: "tools" | "allowed-tools" | "policy-override" | "unresolved";
+  authorityIssues: string[];
   declaredTools: string[];
   unclassifiedTools: string[];
   requiredCapabilities: ManagedSkillCapability[];
@@ -98,6 +111,8 @@ export interface ManagedSkillSuiteRecord extends ManagedSkillSuiteInspection {
   runtimes: ManagedSkillRuntimeGrant[];
   telemetry: "disabled";
   updates: "manual" | "reviewed-compatible";
+  manifestDialect: typeof MANAGED_SKILL_MANIFEST_DIALECT;
+  capabilityOverrides: ManagedSkillCapabilityOverride[];
   installedAt: string;
   objectRef: string;
   state: "active" | "installed" | "quarantined";
@@ -105,13 +120,14 @@ export interface ManagedSkillSuiteRecord extends ManagedSkillSuiteInspection {
 }
 
 export interface ManagedSkillCapabilityPack {
-  schemaVersion: "1.0.0";
+  schemaVersion: "1.1.0";
   projectId: string;
   runtime: ManagedSkillRuntime;
   runtimeMode: ManagedSkillRuntimeMode;
   suiteId: string;
   suiteVersion: string;
   suiteSha256: string;
+  manifestDialect: typeof MANAGED_SKILL_MANIFEST_DIALECT;
   objectRef: string;
   skills: Array<{
     name: string;
@@ -137,6 +153,7 @@ export interface ManagedSkillSuiteStatusRecord {
   runtimes: ManagedSkillRuntimeGrant[];
   telemetry: "disabled";
   updates: "manual" | "reviewed-compatible";
+  manifestDialect: typeof MANAGED_SKILL_MANIFEST_DIALECT | null;
   installedAt: string;
   objectRef: string;
   state: "active" | "installed" | "quarantined";
@@ -151,6 +168,7 @@ export interface ManagedSkillSuiteStatusRecord {
     compatible: boolean;
     blockedCapabilities: ManagedSkillCapability[];
     hasUnclassifiedTools: boolean;
+    hasAuthorityIssues: boolean;
   }>;
 }
 
@@ -182,6 +200,20 @@ const PROFILE_CAPABILITIES: Record<ManagedSkillTrustProfile, ReadonlySet<Managed
     "human-input",
   ]),
 };
+
+const MANAGED_SKILL_CAPABILITIES = new Set<ManagedSkillCapability>([
+  "filesystem-read",
+  "filesystem-write",
+  "shell",
+  "public-network",
+  "browser",
+  "subagents",
+  "human-input",
+  "external-action",
+  "credentials",
+  "host-administration",
+  "self-update",
+]);
 
 function sha(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
@@ -221,8 +253,9 @@ function validatePolicy(value: unknown): ManagedSkillSuitePolicy {
   assertExactKeys(policy, [
     "schemaVersion", "suiteId", "displayName", "version", "source", "trustProfile",
     "projects", "runtimes", "telemetry", "updates", "allowCapabilityExpansion",
+    "manifestDialect", "capabilityOverrides",
   ], "Managed skill-suite policy");
-  if (policy.schemaVersion !== "1.0.0") throw new Error("Managed skill-suite policy schemaVersion is unsupported");
+  if (policy.schemaVersion !== "1.1.0") throw new Error("Managed skill-suite policy schemaVersion is unsupported");
   const suiteId = assertSafeId(policy.suiteId, "suiteId");
   const displayName = assertBoundedString(policy.displayName, "displayName", 160);
   if (typeof policy.version !== "string" || !SAFE_VERSION.test(policy.version)) throw new Error("Managed skill-suite version is invalid");
@@ -273,8 +306,40 @@ function validatePolicy(value: unknown): ManagedSkillSuitePolicy {
     throw new Error("Managed skill-suite update policy is unsupported");
   }
   if (typeof policy.allowCapabilityExpansion !== "boolean") throw new Error("allowCapabilityExpansion must be boolean");
+  if (policy.manifestDialect !== MANAGED_SKILL_MANIFEST_DIALECT) {
+    throw new Error("Managed skill-suite manifestDialect is unsupported");
+  }
+  if (!Array.isArray(policy.capabilityOverrides) || policy.capabilityOverrides.length > MAX_SKILLS) {
+    throw new Error("Managed skill-suite capabilityOverrides must be a bounded array");
+  }
+  const seenOverrides = new Set<string>();
+  const capabilityOverrides = policy.capabilityOverrides.map((item, index) => {
+    const override = object(item, `Managed skill-suite capability override ${index}`);
+    assertExactKeys(override, ["skill", "capabilities", "reason"], `Managed skill-suite capability override ${index}`);
+    const skill = assertSafeId(override.skill, "Capability override skill");
+    if (seenOverrides.has(skill)) throw new Error("Managed skill-suite capabilityOverrides contain duplicate skills");
+    seenOverrides.add(skill);
+    if (!Array.isArray(override.capabilities) || override.capabilities.length < 1
+        || override.capabilities.length > MANAGED_SKILL_CAPABILITIES.size) {
+      throw new Error("Capability override capabilities must be a bounded nonempty array");
+    }
+    const capabilities = sortedUnique(override.capabilities.map((capability) => {
+      if (typeof capability !== "string" || !MANAGED_SKILL_CAPABILITIES.has(capability as ManagedSkillCapability)) {
+        throw new Error("Capability override contains an unsupported capability");
+      }
+      return capability as ManagedSkillCapability;
+    }));
+    if (capabilities.length !== override.capabilities.length) {
+      throw new Error("Capability override capabilities contain duplicates");
+    }
+    return {
+      skill,
+      capabilities,
+      reason: assertBoundedString(override.reason, "Capability override reason", 500),
+    };
+  });
   return {
-    schemaVersion: "1.0.0",
+    schemaVersion: "1.1.0",
     suiteId,
     displayName,
     version: policy.version,
@@ -285,6 +350,8 @@ function validatePolicy(value: unknown): ManagedSkillSuitePolicy {
     telemetry: "disabled",
     updates: policy.updates,
     allowCapabilityExpansion: policy.allowCapabilityExpansion,
+    manifestDialect: MANAGED_SKILL_MANIFEST_DIALECT,
+    capabilityOverrides,
   };
 }
 
@@ -378,107 +445,291 @@ function treeDigest(files: readonly SourceFile[]): string {
   }))));
 }
 
-function frontmatter(content: string): Record<string, string | string[]> {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u.exec(content);
-  if (!match) return {};
-  const result: Record<string, string | string[]> = {};
-  let listKey: string | null = null;
-  for (const raw of match[1].split(/\r?\n/u)) {
-    const list = /^\s*-\s+(.+)$/u.exec(raw);
-    if (list && listKey) {
-      const current = result[listKey];
-      result[listKey] = [...(Array.isArray(current) ? current : []), list[1].trim().replace(/^['"]|['"]$/gu, "")];
-      continue;
-    }
-    const field = /^([A-Za-z0-9_-]+):\s*(.*)$/u.exec(raw);
-    if (!field) { listKey = null; continue; }
-    const key = field[1].toLowerCase();
-    const value = field[2].trim();
-    if (!value) {
-      result[key] = [];
-      listKey = key;
-    } else {
-      result[key] = value.replace(/^['"]|['"]$/gu, "");
-      listKey = null;
-    }
+interface ParsedSkillManifest {
+  name: string | null;
+  version: string | null;
+  description: string | null;
+  authoritySource: "tools" | "allowed-tools" | "unresolved";
+  tools: string[];
+  issues: string[];
+}
+
+interface DetectedRisk {
+  capabilities: ManagedSkillCapability[];
+  issues: string[];
+}
+
+function normalizeAuthorityKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/gu, "");
+}
+
+function authorityLikeKey(key: string): boolean {
+  const normalized = normalizeAuthorityKey(key);
+  return [
+    "tool", "permission", "capability", "authority", "authorization",
+    "network", "browser", "credential", "secret", "externalaction",
+    "selfupdate", "hostadministration", "mcpserver",
+  ].some((marker) => normalized.includes(marker));
+}
+
+function nestedAuthorityPaths(value: unknown, path = "", topLevel = true): string[] {
+  if (!value || typeof value !== "object") return [];
+  if (Array.isArray(value)) return value.flatMap((entry, index) => nestedAuthorityPaths(entry, `${path}[${index}]`, false));
+  const paths: string[] = [];
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    const childPath = path ? `${path}.${key}` : key;
+    const documentedTopLevel = topLevel && (key === "tools" || key === "allowed-tools");
+    if (authorityLikeKey(key) && !documentedTopLevel) paths.push(childPath);
+    paths.push(...nestedAuthorityPaths(child, childPath, false));
   }
-  return result;
+  return paths;
 }
 
-function declaredTools(meta: Record<string, string | string[]>): string[] {
-  const value = meta["allowed-tools"];
-  if (Array.isArray(value)) return sortedUnique(value.map((item) => item.trim()).filter(Boolean));
-  if (!value) return [];
-  const stripped = value.replace(/^\[|\]$/gu, "");
-  return sortedUnique(stripped.split(/[\s,]+/u).map((item) => item.trim()).filter(Boolean));
+function parseToolValue(value: unknown): string[] | null {
+  const raw = typeof value === "string"
+    ? value.split(/[\s,]+/u)
+    : Array.isArray(value) && value.every((item) => typeof item === "string")
+      ? value
+      : null;
+  if (!raw) return null;
+  const tools = sortedUnique(raw.map((item) => item.trim()).filter(Boolean));
+  if (tools.length < 1 || tools.length > 128
+      || tools.some((tool) => Buffer.byteLength(tool, "utf8") > 256 || /[\u0000-\u001f\u007f]/u.test(tool))) {
+    return null;
+  }
+  return tools;
 }
 
-function capabilitiesFor(name: string, tools: readonly string[]): {
+function parseSkillManifest(content: string): ParsedSkillManifest {
+  const unresolved: ParsedSkillManifest = {
+    name: null,
+    version: null,
+    description: null,
+    authoritySource: "unresolved",
+    tools: [],
+    issues: [],
+  };
+  const match = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/u.exec(content);
+  if (!match) return { ...unresolved, issues: ["missing-or-unclosed-yaml-frontmatter"] };
+  const document = parseDocument(match[1], {
+    schema: "core",
+    version: "1.2",
+    strict: true,
+    uniqueKeys: true,
+    stringKeys: true,
+    prettyErrors: false,
+    merge: false,
+  });
+  if (document.errors.length > 0 || document.warnings.length > 0) {
+    return { ...unresolved, issues: ["malformed-or-ambiguous-yaml-frontmatter"] };
+  }
+  let parsed: unknown;
+  try {
+    parsed = document.toJS({ maxAliasCount: 0 });
+  } catch {
+    return { ...unresolved, issues: ["malformed-or-ambiguous-yaml-frontmatter"] };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { ...unresolved, issues: ["frontmatter-must-be-a-yaml-mapping"] };
+  }
+  const meta = parsed as Record<string, unknown>;
+  const issues = nestedAuthorityPaths(meta).map((path) => `unsupported-authority-declaration:${path}`);
+  const hasTools = Object.prototype.hasOwnProperty.call(meta, "tools");
+  const hasAllowedTools = Object.prototype.hasOwnProperty.call(meta, "allowed-tools");
+  let authoritySource: ParsedSkillManifest["authoritySource"] = "unresolved";
+  let tools: string[] = [];
+  if (hasTools && hasAllowedTools) {
+    issues.push("conflicting-authority-declarations:tools+allowed-tools");
+  } else if (hasTools || hasAllowedTools) {
+    authoritySource = hasTools ? "tools" : "allowed-tools";
+    const parsedTools = parseToolValue(meta[authoritySource]);
+    if (parsedTools) tools = parsedTools;
+    else issues.push(`invalid-or-empty-authority-declaration:${authoritySource}`);
+  } else {
+    issues.push("missing-authority-declaration");
+  }
+  const name = typeof meta.name === "string" ? meta.name : null;
+  const version = typeof meta.version === "string" ? meta.version : null;
+  const description = typeof meta.description === "string" ? meta.description : null;
+  if (meta.name !== undefined && name === null) issues.push("invalid-manifest-name");
+  if (meta.version !== undefined && version === null) issues.push("invalid-manifest-version");
+  if (meta.description !== undefined && description === null) issues.push("invalid-manifest-description");
+  return { name, version, description, authoritySource, tools, issues: sortedUnique(issues) };
+}
+
+function capabilitiesForTools(tools: readonly string[]): {
   capabilities: ManagedSkillCapability[];
   unclassifiedTools: string[];
 } {
-  const normalized = tools.map((item) => ({
-    original: item,
-    normalized: item.toLowerCase().replace(/[^a-z0-9]/gu, ""),
-  }));
-  const capabilities: ManagedSkillCapability[] = [];
-  const classified = new Set<string>();
-  const has = (...values: string[]) => {
-    const matches = normalized.filter((item) => values.some((value) => item.normalized === value
-      || item.normalized.startsWith(value)));
-    for (const match of matches) classified.add(match.original);
-    return matches.length > 0;
+  const mapping: Record<string, ManagedSkillCapability | "no-runtime-authority"> = {
+    read: "filesystem-read",
+    grep: "filesystem-read",
+    glob: "filesystem-read",
+    write: "filesystem-write",
+    edit: "filesystem-write",
+    bash: "shell",
+    shell: "shell",
+    terminal: "shell",
+    codeexecution: "shell",
+    web: "public-network",
+    websearch: "public-network",
+    webfetch: "public-network",
+    fetch: "public-network",
+    fetchcontent: "public-network",
+    browser: "browser",
+    browseruse: "browser",
+    computeruse: "browser",
+    agent: "subagents",
+    subagent: "subagents",
+    delegation: "subagents",
+    skill: "subagents",
+    askuserquestion: "human-input",
+    clarify: "human-input",
+    github: "external-action",
+    linear: "external-action",
+    deploy: "external-action",
+    sendmessage: "external-action",
+    credential: "credentials",
+    secrets: "credentials",
+    hostadmin: "host-administration",
+    selfupdate: "self-update",
+    todoread: "no-runtime-authority",
+    todowrite: "no-runtime-authority",
   };
-  if (has("read", "grep", "glob")) capabilities.push("filesystem-read");
-  if (has("write", "edit")) capabilities.push("filesystem-write");
-  if (has("bash", "shell", "terminal", "codeexecution")) capabilities.push("shell");
-  if (has("web", "websearch", "fetch", "fetchcontent")) capabilities.push("public-network");
-  if (has("browser", "browseruse", "computeruse")) capabilities.push("browser");
-  if (has("agent", "subagent", "delegation", "skill")) capabilities.push("subagents");
-  if (has("askuserquestion", "clarify")) capabilities.push("human-input");
-  has("todoread", "todowrite");
-  const lower = name.toLowerCase();
-  if (/(?:^|[-_])(ship|deploy|land)(?:$|[-_])/u.test(lower)) capabilities.push("external-action");
-  if (/cookie|credential|login|auth/u.test(lower)) capabilities.push("credentials");
-  if (/^setup-|^sync-|install|admin/u.test(lower)) capabilities.push("host-administration");
-  if (/upgrade|update-self|self-update/u.test(lower)) capabilities.push("self-update");
+  const capabilities: ManagedSkillCapability[] = [];
+  const unclassifiedTools: string[] = [];
+  for (const tool of tools) {
+    const scoped = /^([A-Za-z][A-Za-z0-9_-]*)(?:\([^()\r\n]{1,240}\))?$/u.exec(tool);
+    const key = scoped?.[1].toLowerCase().replace(/[^a-z0-9]/gu, "");
+    const capability = key ? mapping[key] : undefined;
+    if (!capability) unclassifiedTools.push(tool);
+    else if (capability !== "no-runtime-authority") capabilities.push(capability);
+  }
   return {
     capabilities: sortedUnique(capabilities),
-    unclassifiedTools: tools.filter((tool) => !classified.has(tool)),
+    unclassifiedTools: sortedUnique(unclassifiedTools),
   };
+}
+
+function additiveTextRisk(name: string, content: string): ManagedSkillCapability[] {
+  const text = `${name}\n${content.slice(0, 256_000)}`.toLowerCase();
+  const capabilities: ManagedSkillCapability[] = [];
+  if (/(?:^|[-_])(ship|deploy|land)(?:$|[-_])|\b(?:create|send|publish|merge|deploy)\b.{0,40}\b(?:pull request|email|message|comment|release|deployment)\b/us.test(text)) {
+    capabilities.push("external-action");
+  }
+  if (/cookie|credential|oauth|api[_ -]?key|login|auth token|secret file/u.test(text)) capabilities.push("credentials");
+  if (/^setup-|^sync-|install|admin|\bsudo\b|\b(?:brew|apt-get|npm) install\b|global install/u.test(text)) {
+    capabilities.push("host-administration");
+  }
+  if (/upgrade|update-self|self-update|update itself/u.test(text)) capabilities.push("self-update");
+  if (/```(?:bash|sh|shell)\b|\bexecute (?:the )?(?:shell )?command\b/u.test(text)) capabilities.push("shell");
+  if (/\b(?:web search|web browser|public network|https?:\/\/|fetch url)\b/u.test(text)) capabilities.push("public-network");
+  if (/\b(?:browser automation|browser control|playwright|puppeteer)\b/u.test(text)) capabilities.push("browser");
+  return sortedUnique(capabilities);
+}
+
+function sourceFileRisk(files: readonly SourceFile[]): DetectedRisk {
+  const capabilities: ManagedSkillCapability[] = [];
+  const issues: string[] = [];
+  for (const file of files) {
+    const path = file.relativePath.toLowerCase();
+    const name = basename(path);
+    const body = readFileSync(file.absolutePath, "utf8").slice(0, 256_000);
+    if (file.executable) capabilities.push("shell");
+    if (/^(?:setup|install|bootstrap|update)(?:\.[a-z0-9_-]+)?$/u.test(name)
+        && /\.(?:sh|bash|zsh|js|mjs|cjs|ts|py|rb|ps1)$/u.test(name)) {
+      capabilities.push("shell", "host-administration");
+    }
+    if (/^(?:package\.json|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|requirements\.txt|pyproject\.toml|poetry\.lock|gemfile|cargo\.toml|go\.mod)$/u.test(name)) {
+      capabilities.push("public-network", "host-administration");
+    }
+    if (name === "package.json") {
+      try {
+        const value = JSON.parse(body) as unknown;
+        if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("not an object");
+        const scripts = (value as Record<string, unknown>).scripts;
+        if (scripts !== undefined) {
+          if (!scripts || typeof scripts !== "object" || Array.isArray(scripts)
+              || Object.values(scripts as Record<string, unknown>).some((script) => typeof script !== "string")) {
+            issues.push(`malformed-package-scripts:${file.relativePath}`);
+          } else {
+            capabilities.push("shell");
+            if (Object.keys(scripts as Record<string, unknown>).some((script) => /^(?:preinstall|install|postinstall|prepare|prepublish|prepublishonly)$/u.test(script))) {
+              capabilities.push("host-administration");
+            }
+          }
+        }
+      } catch {
+        issues.push(`malformed-package-manifest:${file.relativePath}`);
+      }
+    }
+    if (/(?:^|\/)(?:\.mcp|mcp|mcp-servers?)\.json$/u.test(path) || /["']mcpServers["']\s*:/u.test(body)) {
+      const command = /["']command["']\s*:/u.test(body);
+      const network = /["'](?:url|endpoint)["']\s*:/u.test(body);
+      const credentials = /["'](?:env|headers?|token|credential)["']\s*:/u.test(body);
+      if (command) capabilities.push("shell");
+      if (network) capabilities.push("public-network");
+      if (credentials) capabilities.push("credentials");
+      if (!command && !network) issues.push(`ambiguous-mcp-definition:${file.relativePath}`);
+    }
+  }
+  return { capabilities: sortedUnique(capabilities), issues: sortedUnique(issues) };
 }
 
 function inspectFiles(policy: ManagedSkillSuitePolicy, root: string, files: SourceFile[]): ManagedSkillSuiteInspection {
   const skills: ManagedSkillDescriptor[] = [];
+  const fileRisk = sourceFileRisk(files);
   for (const file of files.filter((item) => basename(item.relativePath).toLowerCase() === "skill.md")) {
     if (skills.length >= MAX_SKILLS) throw new Error("Managed skill-suite source contains too many skills");
     const content = readFileSync(file.absolutePath, "utf8");
-    const meta = frontmatter(content);
-    const fallback = basename(dirname(file.relativePath)).toLowerCase().replace(/[^a-z0-9-]+/gu, "-");
-    const rawName = Array.isArray(meta.name) ? meta.name[0] : meta.name;
-    const name = assertSafeId((rawName || fallback).toLowerCase(), "Managed skill name");
+    const manifest = parseSkillManifest(content);
+    const directoryFallback = basename(dirname(file.relativePath)).toLowerCase().replace(/[^a-z0-9-]+/gu, "-");
+    const fallback = SAFE_ID.test(directoryFallback) ? directoryFallback : `skill-${sha(file.relativePath).slice(0, 12)}`;
+    const candidateName = manifest.name?.toLowerCase();
+    const name = candidateName && SAFE_ID.test(candidateName) ? candidateName : fallback;
     if (skills.some((item) => item.name === name)) throw new Error(`Managed skill-suite contains duplicate skill ${name}`);
-    const tools = declaredTools(meta);
-    const classified = capabilitiesFor(name, tools);
-    const requiredCapabilities = classified.capabilities;
+    const override = policy.capabilityOverrides.find((item) => item.skill === name);
+    const classified = capabilitiesForTools(manifest.tools);
+    const detectedCapabilities = sortedUnique([
+      ...additiveTextRisk(name, content),
+      ...fileRisk.capabilities,
+    ]);
+    const overrideCapabilities = override?.capabilities ?? [];
+    const requiredCapabilities = sortedUnique([
+      ...classified.capabilities,
+      ...overrideCapabilities,
+      ...detectedCapabilities,
+    ]);
+    const authorityIssues = manifest.issues.filter((issue) => !(issue === "missing-authority-declaration" && override));
+    if (candidateName && !SAFE_ID.test(candidateName)) authorityIssues.push("invalid-manifest-name");
+    authorityIssues.push(...fileRisk.issues);
+    authorityIssues.push(...detectedCapabilities
+      .filter((capability) => !classified.capabilities.includes(capability) && !overrideCapabilities.includes(capability))
+      .map((capability) => `undeclared-detected-capability:${capability}`));
+    if (classified.unclassifiedTools.length > 0) authorityIssues.push("unclassified-declared-tool");
     const allowed = PROFILE_CAPABILITIES[policy.trustProfile];
     const blockedCapabilities = requiredCapabilities.filter((capability) => !allowed.has(capability));
-    const rawVersion = Array.isArray(meta.version) ? meta.version[0] : meta.version;
-    const rawDescription = Array.isArray(meta.description) ? meta.description[0] : meta.description;
     skills.push({
       name,
       relativePath: file.relativePath,
-      version: rawVersion && SAFE_VERSION.test(rawVersion) ? rawVersion : null,
-      description: rawDescription ? rawDescription.slice(0, 1_000) : null,
-      declaredTools: tools,
+      version: manifest.version && SAFE_VERSION.test(manifest.version) ? manifest.version : null,
+      description: manifest.description ? manifest.description.slice(0, 1_000) : null,
+      manifestDialect: MANAGED_SKILL_MANIFEST_DIALECT,
+      authoritySource: manifest.authoritySource === "unresolved" && override ? "policy-override" : manifest.authoritySource,
+      authorityIssues: sortedUnique(authorityIssues),
+      declaredTools: manifest.tools,
       unclassifiedTools: classified.unclassifiedTools,
       requiredCapabilities,
       digest: file.digest,
-      compatible: blockedCapabilities.length === 0 && classified.unclassifiedTools.length === 0,
+      compatible: blockedCapabilities.length === 0 && classified.unclassifiedTools.length === 0 && authorityIssues.length === 0,
       blockedCapabilities,
     });
   }
   if (skills.length < 1) throw new Error("Managed skill-suite source contains no SKILL.md files");
+  const discovered = new Set(skills.map((skill) => skill.name));
+  if (policy.capabilityOverrides.some((override) => !discovered.has(override.skill))) {
+    throw new Error("Managed skill-suite capability override references an undiscovered skill");
+  }
   skills.sort((a, b) => a.name.localeCompare(b.name));
   const requiredCapabilities = sortedUnique(skills.flatMap((item) => item.requiredCapabilities));
   const warnings: string[] = [];
@@ -486,7 +737,7 @@ function inspectFiles(policy: ManagedSkillSuitePolicy, root: string, files: Sour
     warnings.push("Source mentions telemetry; managed execution keeps telemetry disabled");
   }
   if (skills.some((skill) => !skill.compatible)) {
-    warnings.push("Some skills require operator-gated or unclassified capabilities and are not eligible for an ordinary runtime pack");
+    warnings.push("Some skills have unresolved authority or require operator-gated capabilities and are not eligible for an ordinary runtime pack");
   }
   return {
     suiteId: policy.suiteId,
@@ -580,6 +831,8 @@ export class ManagedSkillSuiteManager {
           runtimes: existing.runtimes,
           telemetry: existing.telemetry,
           updates: existing.updates,
+          manifestDialect: existing.manifestDialect,
+          capabilityOverrides: existing.capabilityOverrides,
         }) !== canonicalJson({
           displayName: policy.displayName,
           version: policy.version,
@@ -588,6 +841,8 @@ export class ManagedSkillSuiteManager {
           runtimes: policy.runtimes,
           telemetry: policy.telemetry,
           updates: policy.updates,
+          manifestDialect: policy.manifestDialect,
+          capabilityOverrides: policy.capabilityOverrides,
         })) throw new Error("Managed skill-suite exact source was already installed under different policy");
         return existing;
       }
@@ -628,6 +883,8 @@ export class ManagedSkillSuiteManager {
         runtimes: policy.runtimes,
         telemetry: "disabled",
         updates: policy.updates,
+        manifestDialect: policy.manifestDialect,
+        capabilityOverrides: policy.capabilityOverrides,
         installedAt: this.now().toISOString(),
         objectRef,
         state: quarantine ? "quarantined" : manualHold ? "installed" : "active",
@@ -695,6 +952,9 @@ export class ManagedSkillSuiteManager {
         runtimes: record.runtimes,
         telemetry: record.telemetry,
         updates: record.updates,
+        manifestDialect: record.manifestDialect === MANAGED_SKILL_MANIFEST_DIALECT
+          ? MANAGED_SKILL_MANIFEST_DIALECT
+          : null,
         installedAt: record.installedAt,
         objectRef: record.objectRef,
         state,
@@ -706,9 +966,10 @@ export class ManagedSkillSuiteManager {
           version: skill.version,
           digest: skill.digest,
           requiredCapabilities: skill.requiredCapabilities,
-          compatible: skill.compatible,
+          compatible: state !== "quarantined" && skill.compatible,
           blockedCapabilities: skill.blockedCapabilities,
           hasUnclassifiedTools: skill.unclassifiedTools.length > 0,
+          hasAuthorityIssues: !Array.isArray(skill.authorityIssues) || skill.authorityIssues.length > 0,
         })),
       };
     }).sort((a, b) => a.suiteId.localeCompare(b.suiteId) || a.version.localeCompare(b.version));
@@ -747,13 +1008,14 @@ export class ManagedSkillSuiteManager {
       };
     });
     const unsigned = {
-      schemaVersion: "1.0.0" as const,
+      schemaVersion: "1.1.0" as const,
       projectId,
       runtime: input.runtime,
       runtimeMode: runtime.mode,
       suiteId,
       suiteVersion: record.version,
       suiteSha256: record.treeSha256,
+      manifestDialect: record.manifestDialect,
       objectRef: record.objectRef,
       skills,
       requiredCapabilities: sortedUnique(skills.flatMap((skill) => skill.requiredCapabilities)),
@@ -784,7 +1046,7 @@ export class ManagedSkillSuiteManager {
     if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new Error("Managed skill-suite object is unavailable");
     const files = enumerateSource(realpathSync(path));
     const actual = inspectFiles({
-      schemaVersion: "1.0.0",
+      schemaVersion: "1.1.0",
       suiteId: record.suiteId,
       displayName: record.displayName,
       version: record.version,
@@ -795,6 +1057,8 @@ export class ManagedSkillSuiteManager {
       telemetry: "disabled",
       updates: record.updates,
       allowCapabilityExpansion: false,
+      manifestDialect: record.manifestDialect,
+      capabilityOverrides: record.capabilityOverrides,
     }, path, files);
     const expected = {
       suiteId: record.suiteId,

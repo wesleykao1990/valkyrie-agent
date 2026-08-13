@@ -17,6 +17,11 @@ confidential repository or give it production credentials.
   or accepted canonical decisions.
 - Proposal, exact promotion preview, canonical promotion, PR, merge, deploy, and
   secret expansion remain separate final actions.
+- LINE is the active mobile surface through Hermes, but PR #1 has no remote actor
+  identity or LINE mutation path. Buzz, GBrain, Personal Profile, Commitment
+  Ledger, and LINE/Buzz synchronization remain unimplemented proposed boundaries.
+- Agent communication/delegation authority is separate from tool authority;
+  unrestricted agent DMs/delegation remain disabled.
 
 ## Three execution postures
 
@@ -373,6 +378,15 @@ policy. Source links, hard links, special files, oversized/excessive trees, copy
 drift, and later installed-object drift fail closed. Accepted objects and the
 catalog live under an owner-private control-plane directory; API/MCP status does
 not reveal the operator's original source path.
+
+The only accepted authority dialect is `skill-frontmatter-v1`, parsed as strict
+YAML 1.2 by pinned `yaml@2.9.0`. Only one top-level `tools` or `allowed-tools`
+field may declare authority. Missing, malformed, duplicate, conflicting, nested,
+empty, and unknown declarations are operator-gated. Executables, setup/install
+files, dependency manifests/lifecycle hooks, MCP definitions, and static prose/
+name signals can add requirements but can never prove safety. Upstream omissions
+may be completed only by a per-skill override in the exact digest-bound policy;
+an override cannot hide malformed or unrecognized authority.
 
 Admission is not execution authority. M8a never runs suite setup, hooks,
 installers, binaries, dependency managers, update code, MCP servers, or skills.

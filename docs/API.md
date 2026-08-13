@@ -77,6 +77,10 @@ availability or general repository-writing authority.
 Returns read-only status for locally admitted managed skill-suite generations:
 suite/version/tree digest, trust profile, runtime modes, discovered skills,
 derived capability requirements, activation/quarantine state, and warnings. The
+status also reports whether a skill has unresolved authority without echoing
+untrusted metadata. `skill-frontmatter-v1` authority is strict and fail-closed;
+only an exact policy-digest override can complete missing upstream capability
+metadata. The
 response uses only an opaque managed object reference; it does not return the
 operator's source path. This route cannot inspect a new path, install source,
 run setup code, activate, update, or roll back a suite. Those remain explicit
