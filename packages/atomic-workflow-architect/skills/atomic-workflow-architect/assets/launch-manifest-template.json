@@ -1,0 +1,63 @@
+{
+  "schema_version": "1.1.0",
+  "run_id": "run_example",
+  "project_id": "project_example",
+  "task_id": "task_example",
+  "request": "Replace with the exact authenticated user request.",
+  "request_class": "feature",
+  "intent": "implement",
+  "root_runtime": "atomic",
+  "context_pack_ref": "context://project_example/task_example/v1",
+  "contract_ref": "artifact://run_example/run-contract",
+  "workflow": {
+    "name": "request-preflight",
+    "path": "workflows/request-preflight.ts",
+    "version": "0.2.1",
+    "content_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "trust_state": "installed"
+  },
+  "workspace_owner": "control-plane",
+  "workspace_id": "workspace_example",
+  "workspace_ref": "workspace://workspace_example",
+  "writer_lease": {
+    "lease_id": "lease_example",
+    "holder_run_id": "run_example",
+    "workspace_id": "workspace_example",
+    "owner_id": "writer_owner_example",
+    "fencing_token": 1,
+    "mode": "exclusive-writer",
+    "expires_at": "2099-01-01T00:00:00.000Z"
+  },
+  "sandbox_policy_id": "sandbox_policy_example",
+  "durability_required": true,
+  "crossProcessResume": false,
+  "final_action": "stop_before_pr",
+  "budget": {
+    "currency": "USD",
+    "max_cost_usd": 8
+  },
+  "bounds": {
+    "max_duration_minutes": 90,
+    "max_turns": 100,
+    "max_repairs": 2,
+    "max_child_depth": 2,
+    "max_concurrency": 4
+  },
+  "model_policy": {
+    "planner": "role-policy",
+    "worker": "role-policy",
+    "reviewers": [
+      "independent-provider-family-when-useful"
+    ],
+    "fallbacks": []
+  },
+  "approvals": [
+    {
+      "action": "pr_creation",
+      "exact_effect": "Create a GitHub draft PR; do not merge or deploy.",
+      "required": true
+    }
+  ],
+  "idempotency_key": "idempotency_example",
+  "correlation_id": "correlation_example"
+}

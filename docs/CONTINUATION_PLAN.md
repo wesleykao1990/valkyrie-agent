@@ -1,83 +1,282 @@
 # Continuation plan
 
-## Milestone 1 — Production storage adapter
+Version: 0.3.0
+Sequence authority: `Wesley_Project_OS_Continuation_Bundle_v0.3.0`
 
-Replace the prototype SQLite adapter with PostgreSQL while preserving service and API contracts.
+The original `0.2.2` repository called Linear projection “Milestone 2.” The
+continuation bundle reserves Milestone 2 for Atomic package integration. This
+document follows the bundle sequence; the older numbering is historical only.
 
-Acceptance criteria:
+Complete and verify one milestone before beginning the next.
 
-- Migrations create the same entities and uniqueness constraints.
-- Run creation, event append, approval resolution, and workspace leasing are transactional.
-- Outbox rows are written in the same transaction as business state.
-- Reconciliation survives process restart.
-- Existing tests run against both SQLite and PostgreSQL adapters.
+## Milestone 0 — Inventory and plan: complete
 
-See `infra/postgres/001_initial.sql`.
+- Mapped storage, runtime adapter, Project Brain, workspace, HTTP, and MCP
+  contracts.
+- Identified mock-only paths and reviewed the disconnected Atomic RPC scaffold.
+- Compared whole-system decisions with the Atomic package.
+- Recorded implementation, migration, rollback, security, test, and flag plans in
+  `docs/IMPLEMENTATION_PLAN_M1_M2.md`.
+- Recorded evidence-backed challenges in `docs/REVIEW_NOTES_v0.3.0.md`.
 
-## Milestone 2 — Linear projection
+## Milestone 1 — PostgreSQL storage: complete
 
-Add a `LinearGateway` implementation that:
+- Async `ControlPlaneStore` with SQLite and PostgreSQL adapters.
+- Explicit checksummed migrations and PostgreSQL advisory migration lock.
+- Transactional run/workspace/lease creation, event append, approval resolution,
+  and outbox state.
+- Stable run idempotency, event replay, approval conflict handling, and worker
+  claims.
+- Startup/restart reconciliation with conservative native-runtime behavior.
+- Shared SQLite/PostgreSQL evidence for migrations, rollback, concurrency,
+  outbox, idempotency, restart, and reconciliation.
 
-- resolves project and issue identifiers;
-- creates ideas/issues with idempotency;
-- reads current status live;
-- appends concise run milestones and evidence links;
-- verifies webhooks;
-- falls back to ordinary comments/status if preview AgentSession APIs are unavailable.
+Operational setup and limitations are in `docs/STORAGE.md`. ADR-P001 remains
+proposed until Wesley accepts or amends its semantics.
 
-Do not mirror the full Linear roadmap into local tables.
+## Milestone 2 — Atomic package integration: complete (non-live)
 
-## Milestone 3 — Read-only OpenViking trial
+- Imported and versioned at `packages/atomic-workflow-architect/`.
+- Skill, router, prompts, workflows, launch template/schema, and package verifier
+  remain independently runnable.
+- Package-local bootstrap files stay lightweight.
+- Provenance, derived changes, compatibility caveat, and nested license are
+  recorded in `docs/ATOMIC_PACKAGE_PROVENANCE.md`.
+- No extension was installed and no runtime was enabled.
 
-Implement the `ProjectBrain` backend through confirmed OpenViking APIs or MCP.
+ADR-P002 and the Atomic A-01 through A-07 addendum remain proposed for explicit
+whole-system reconciliation.
 
-Evaluate:
+## Milestone 3a — Minimum native connectivity slice: implemented and verified
 
-- correct-project retrieval;
-- cross-project leakage rate;
-- accepted-decision ranking;
-- stale/superseded result suppression;
-- deletion and retention;
-- context token cost;
-- failure fallback to the local vault.
+The disabled-by-default pilot now has:
 
-Automatic capture stays disabled until this passes.
+- strict bounded LF-delimited JSONL and deterministic fake Atomic/direct-runtime
+  subprocesses with adversarial framing/exit/cancel tests;
+- pinned Atomic 0.9.12 offline RPC/package discovery as one Atomic root/main
+  session, with no model execution;
+- schema-validated launch manifest containing the literal request, IDs, bounded
+  context-pack/run-contract references, budget, final-action boundary, workspace,
+  writer lease, and provenance;
+- raw native occurrence retention before normalized events, stable native IDs,
+  cursor/result artifacts, and conservative restart reconciliation;
+- exact-version, read-only direct Codex/Claude connectivity adapters with
+  marker-only objectives and no internal Atomic orchestration;
+- authenticated loopback HTTP/MCP, runtime preflight, restricted Hermes profile,
+  and governed Project Brain search/proposal/preview/rejection;
+- `crossProcessResume=false` and unverified capabilities advertised false.
 
-## Milestone 4 — Atomic A/B pilot
+`smoke:native` is opt-in and separates implementation evidence from integrations
+actually available/exercised on the host. ADR-P003 remains proposed.
 
-Wire `AtomicRpcClient` into a real runtime adapter and compare one medium-risk Ovalo task against a direct Codex or Claude path.
+## Milestone 3b — Atomic model workflow and native capability mapping: deferred
 
-Measure:
+Do not reinterpret either offline discovery or the credential-free M5a tool-only
+workflow as a live Atomic model workflow. The external sandbox now exists, but a
+model path still requires scoped inference access. Pin and exercise only the exact
+capabilities supported by that installed Atomic version: model start/status/event cursoring, steering or
+follow-up, pause/resume/quit/cancel, HIL input/approval mapping, artifacts,
+cost/model metadata, and native durability. Atomic's main session must retain
+ownership of its workflow; Codex/Claude must not orchestrate its stages.
 
-- correctness and defects caught;
-- elapsed time;
-- model and infrastructure cost;
-- human review burden;
-- event/recovery reliability;
-- resumability;
-- integration effort.
+Keep `crossProcessResume=false` until runner startup positively proves the native
+DBOS/PostgreSQL durability contract through a process-kill/restart test.
 
-Promote Atomic to default only if the result justifies the additional runtime.
+## Milestone 4 — Real workspace boundary
 
-## Milestone 5 — Real workspace sandbox
+Status: complete for the disabled local non-production boundary. Colima/Docker
+passed the opt-in live provider smoke with an immutable ARM64 Alpine image, and
+migration 005 plus exact-label provider reconciliation cover restart/orphan
+states. Writer runtime registration remains a separate Milestone 5 action.
 
-Replace simulated workspaces with:
+- [x] Private shallow Git store plus one relative worktree per fixture candidate;
+  no developer checkout/shared Git directory and no duplicate Atomic top-level
+  worktree.
+- [x] Writer-lease owner, monotonic fencing token, heartbeat, renewal, expiry,
+  exact-fence release, and durable quarantine/reconciliation evidence.
+- [x] Disabled Docker-compatible provider with one container per fixture, exact
+  ownership labels, digest-pinned image, default no-network policy, read-only
+  root/context, non-root user, built-in seccomp, privilege/resource bounds, and
+  bounded cleanup.
+- [x] Explicit artifact manifest, path/type/size bounds, baseline secret scan,
+  atomic idempotent registration, opaque references, terminal cleanup, and
+  quarantine behavior.
+- [x] Deterministic fake-engine/workspace/lease/artifact/coordinator tests.
+- [x] Opt-in provider smoke passes against local Colima/Docker and the reviewed
+  immutable `alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce`
+  ARM64 fixture image.
+- [x] Durable sandbox-instance lifecycle state and provider-aware restart/orphan
+  reconciliation by immutable engine ID and exact ownership/policy labels.
+- [x] Caller-supplied context staging is separate, read-only in the container,
+  bounded/checksummed before execution, and rechecked before export.
+- [ ] Remote micro-VM or equivalent stronger isolation for confidential/high-risk
+  work; scoped model egress and short-lived credential broker.
 
-- one Git worktree per candidate;
-- container/devcontainer per writing run;
-- no production credentials;
-- scoped network and filesystem access;
-- lease heartbeat and orphan cleanup;
-- artifact export and secret scanning.
+## Milestone 5 — End-to-end Atomic pilot: model slice live through approval gate
 
-## Milestone 6 — Direct coding-agent adapters
+### M5a — credential-free native integration slice
 
-Add Codex and Claude Code behind the same runtime interface. Preserve their native session IDs and events. Use them for small tasks, specialist reviews, and comparison candidates.
+The default-off `atomic-fixture-pilot` now composes the hard lifecycle boundaries
+for one disposable, non-production fixture:
 
-## Milestone 7 — Production Hermes experience
+authenticated Hermes-compatible MCP request → stable fixed task/run → isolated
+fake Linear projection → bounded accepted Project Brain pack → M4 private
+worktree/fenced no-network container → real Atomic 0.9.12 main session and native
+tool-only workflow → reviewed fixture implementation → deterministic checks →
+fresh deterministic verifier → frozen/secret-scanned checksummed evidence →
+container/worktree/lease cleanup → evidence/policy/expiry-bound,
+operator-intended approval gate → safe mock receipt, while the evidence-derived
+memory proposal remains unpromoted.
 
-- Authenticate the MCP bridge.
-- Add exact mutation previews.
-- Add quiet hours and attention ranking.
-- Return Linear, GitHub, vault, artifact, and optional Orca deep links.
-- Keep the web console as an operational/debugging view, not the roadmap authority.
+The fixed workflow has one turn, zero repair rounds, one concurrency slot, zero
+child depth, and hard command/workflow/output/cost limits. Every raw Atomic record
+is retained alongside normalized lifecycle events. The approval is exposed through
+a narrow MCP mutation that cannot create a PR or promote memory. The feature flag
+is false by default and the zero-service SQLite/mock demo is unchanged.
+The live smoke exercised approval automatically after its assertions; this does
+not attest human presence or judgment.
+
+This is valid integration evidence, not model-quality evidence. No provider/model
+request, model-based verifier, token/cost, real GitHub PR, merge, deploy, Linear
+write, expanded secret access, or canonical promotion is implemented. Native
+cross-process resume remains false.
+
+### M5b — model-backed pilot: subscription live evidence complete through gate
+
+The fixed scoped inference gateway, role capabilities, model workflow, fresh
+verifiers, one-repair path, authenticated service/Hermes lifecycle, restart,
+artifact review, approval, and SQLite/PostgreSQL parity are implemented
+default-off. Normal verification is credential-free and cannot claim model
+quality. A pinned host-side Codex broker uses a dedicated ChatGPT subscription
+profile without exporting OAuth material or mounting it in the writer; the
+OpenAI-compatible API path remains available. Migration 008 supplies the bounded
+multi-turn request ledger needed for Atomic custom-tool conversations. The live
+fixed fixture completed real implementer and fresh-verifier turns, passed the
+deterministic checks, exported and rehashed 11 governed artifacts, cleaned all
+writer resources, and stopped at its evidence-bound approval. Wesley's separate
+decision remains pending. Atomic still owns its graph, and real draft PR creation
+remains a separate final action.
+
+## Milestone 6 — Direct Codex/Claude comparison
+
+M6 is deterministic- and live-verified, default-off. A direct Codex
+root candidate uses the exact M5b fixture contract and model policy through its
+own worktree/container/fenced lease/capability/artifacts/approval, without invoking
+Atomic. Migration 009 persists an evidence-derived comparison aggregate and
+candidate metrics for correctness, repairs, token/cost/elapsed usage, review
+burden, events/recovery, resumability, and integration complexity. Raw Codex JSONL
+is retained alongside normalized inference events. Claude Code remains separately
+unavailable rather than falling back to Codex.
+
+Wesley approved the fixed external payload and the opt-in smoke completed with
+both candidates correct, independently cleaned, and stopped at unresolved
+approvals. Atomic used more elapsed time/tokens on this fixture; that one result
+does not establish general quality, recovery, human-review burden, or a permanent
+default.
+
+Post-M6 routing uses the proposed Direct / Atomic Lite / Atomic Full rubric in
+ADR-P009. The authenticated assessment ledger and reusable package-local Atomic
+Lite contract now exist, and the subscription broker retains one process-local
+provider thread per capability/role with appended-message continuation. Forked
+repair, artifact/delta handoff, model-free deterministic gates, and conditional
+review are encoded in the Lite contract. M7 can now supply revision-bound
+Linear/Git authority and an accepted project execution policy, but general launch
+remains fail-closed until a separate reviewed launcher consumes that evidence.
+The next benchmark must hold model/provider/cache/task/checks constant and include
+a task large or risky enough for workflow structure to have a measurable
+opportunity to help.
+
+## Milestone 7 — Production connectors
+
+Status: deterministic implementation complete, default-off; live Linear/GitHub
+credential exercise pending.
+
+- [x] authenticated least-privilege control-plane HTTP/MCP operations with a
+  separate default Hermes allowlist;
+- [x] Linear reads plus idempotent issue/idea/evidence writes without depending
+  on preview AgentSession APIs or mirroring the roadmap;
+- [x] deterministic local Project Brain context packs first;
+- [x] read-only OpenViking candidate provider and retrieval/isolation/staleness/deletion/
+  latency/token evaluation;
+- [x] GitHub draft PR creation only after exact approval/evidence gates and from
+  a pre-existing remote head;
+- [x] concise Linear evidence updates without comment flooding;
+- [x] approval-bound external-action outbox dispatcher, retention, observability, dead-letter replay,
+  ambiguous-effect reconciliation, and recovery runbook.
+
+General project execution launch, branch publication, merge/deploy, multi-user
+actor attestation, a live OpenViking transport, and live connector evidence are
+separate remaining gates.
+
+## Milestone 8 — Unified harness and managed capability plane
+
+### M8a — managed skill-suite foundation
+
+- [x] exact local source and policy digest admission;
+- [x] bounded `SKILL.md` discovery and declared-capability classification;
+- [x] strict pinned YAML 1.2 `skill-frontmatter-v1` parsing with missing,
+  malformed, duplicate, conflicting, nested, empty, and unknown authority
+  declarations operator-gated;
+- [x] additive inspection of executable/setup/package-lifecycle/MCP/static risk
+  plus exact policy-digest capability overrides;
+- [x] one suite-level project/runtime/trust policy so Wesley does not manually
+  map each skill to every harness;
+- [x] private content-addressed generations, rehash-on-use, compatible/manual
+  update posture, capability-expansion quarantine, activation, and rollback;
+- [x] immutable project/runtime/skill capability packs for future runtime
+  composition;
+- [x] authenticated, read-only, path-opaque HTTP/Hermes status;
+- [x] no execution of setup, hooks, binaries, dependencies, updates, MCP servers,
+  or skills during admission.
+
+### Deferred M8 projection work after the PR #1 release gate
+
+- [ ] prove one exact native projection/setup adapter for Codex and Claude Code;
+- [ ] compose Atomic through a compatible delegated specialist without building
+  another workflow engine above Atomic;
+- [ ] make the reviewed general launcher consume and record capability packs;
+- [ ] add a broker for public web/search/browser access, bounded egress, evidence,
+  and audit without exposing raw network tooling to Hermes;
+- [ ] exercise one real suite such as GStack end to end, including upstream
+  behavior, updates, rollback, and final-action separation.
+
+Remote fetch, dependency installation, signed publisher provenance, unattended
+updates, shared/mobile actor authorization, GBrain, personal memory, and external
+knowledge ingestion remain later reviewed slices.
+
+## PR #1 release stabilization
+
+- [x] reconcile LINE/Buzz/GBrain and role/runtime architecture without adding
+  those product capabilities to PR #1;
+- [x] remove implicit research-to-Prime routing and correct the general-launcher
+  blocker wording;
+- [x] harden managed-skill authority admission before native projection;
+- [x] add least-privilege deterministic CI and a PR review map;
+- [ ] obtain green GitHub Actions and one fresh blocker-free review on the exact
+  stabilized head before marking PR #1 ready.
+
+## Milestone 9 — actor identity and the General Governed Launcher (next branch)
+
+After PR #1 merges, create `agent/m9-identity-general-launcher` from updated
+`main`; do not continue from the pre-merge PR branch. M9 first adds actor,
+external identity, channel binding, service principal, authorization grant,
+conversation/correlation, and approval-nonce state plus presentation-safe DTOs.
+It then adds a separate launcher that consumes a non-expired engineering
+assessment, revalidates Linear/Git/Project Brain and capability packs, selects
+one Direct/Atomic Lite/Atomic Full root, allocates one fenced writer transaction,
+records exact runtime/workflow/model/skills and native events, and stops before
+external final actions. LINE/Buzz synchronization, GBrain, meetings, and
+commitments remain later milestones.
+
+## Required method for every milestone
+
+1. Update a short implementation plan.
+2. Add tests before or alongside code.
+3. Use small reviewable commits.
+4. Run narrow checks, then `npm run verify`.
+5. Use a fresh reviewer that did not author the implementation.
+6. Repair only evidence-backed findings and cap repair rounds.
+7. Update setup, migrations, rollback/failure behavior, environment examples, and
+   security assumptions.
+8. Record architecture changes as proposed ADRs; do not silently rewrite accepted
+   decisions.

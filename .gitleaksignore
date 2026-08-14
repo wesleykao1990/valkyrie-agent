@@ -1,0 +1,4 @@
+# Historical test-only idempotency labels; exact fingerprints keep all other
+# generic API-key detections active.
+7d360dc2a302552d46a72eaf02998429e1be2d27:tests/comparison.test.ts:generic-api-key:98
+7d360dc2a302552d46a72eaf02998429e1be2d27:tests/comparison.test.ts:generic-api-key:109

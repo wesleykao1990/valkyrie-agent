@@ -3,6 +3,7 @@ import { cpSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
+import { buildIsolatedSmokeEnvironment } from "./smoke-environment.ts";
 
 const root = resolve(".");
 const temporaryRoot = mkdtempSync(join(tmpdir(), "wesley-acp-http-smoke-"));
@@ -11,17 +12,18 @@ const brainDir = join(temporaryRoot, "project-brain");
 cpSync(join(root, "project-brain"), brainDir, { recursive: true });
 const port = 19877 + Math.floor(Math.random() * 1000);
 const api = `http://127.0.0.1:${port}`;
+const authToken = "http-smoke-local-bearer-token-0123456789";
 
 const server = spawn(process.execPath, ["--experimental-strip-types", "apps/control-plane/src/index.ts"], {
   cwd: root,
-  env: {
-    ...process.env,
+  env: buildIsolatedSmokeEnvironment({
     HOST: "127.0.0.1",
     PORT: String(port),
     DATA_DIR: dataDir,
     PROJECT_BRAIN_DIR: brainDir,
     DEMO_STAGE_DELAY_MS: "5",
-  },
+    CONTROL_PLANE_AUTH_TOKEN: authToken,
+  }),
   stdio: ["ignore", "pipe", "pipe"],
 });
 
@@ -33,9 +35,12 @@ server.stdout.on("data", (chunk) => { serverOutput += chunk; });
 server.stderr.on("data", (chunk) => { serverError += chunk; });
 
 async function json<T = any>(path: string, method = "GET", body?: unknown): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (path.startsWith("/api/")) headers.authorization = `Bearer ${authToken}`;
+  if (body !== undefined) headers["content-type"] = "application/json";
   const response = await fetch(`${api}${path}`, {
     method,
-    headers: body === undefined ? undefined : { "content-type": "application/json" },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!response.ok) throw new Error(`${method} ${path} failed: ${response.status} ${await response.text()}`);
@@ -56,6 +61,13 @@ async function waitFor<T>(load: () => Promise<T>, predicate: (value: T) => boole
 
 try {
   await waitFor(() => json<{ ok: boolean }>("/health"), (value) => value.ok, "server health");
+
+  const unauthenticated = await fetch(`${api}/api/portfolio`);
+  if (unauthenticated.status !== 401 || unauthenticated.headers.get("www-authenticate") !== 'Bearer realm="control-plane"') {
+    throw new Error("Authenticated API boundary did not reject a request without a bearer token");
+  }
+  const wrongToken = await fetch(`${api}/api/portfolio`, { headers: { authorization: "Bearer wrong-token-value-that-is-long-enough" } });
+  if (wrongToken.status !== 401) throw new Error("Authenticated API boundary accepted an incorrect bearer token");
 
   const portfolio = await json<any>("/api/portfolio");
   if (portfolio.projects?.length !== 3) throw new Error("Expected three seeded projects");
@@ -79,6 +91,26 @@ try {
     "three approval gates",
   );
   const pending = approvals.filter((item) => item.state === "pending" && runIds.includes(item.runId));
+  const invalidApproval = await fetch(`${api}/api/approvals/${pending[0].id}/resolve`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${authToken}` },
+    body: JSON.stringify({ decision: "approve_eventually" }),
+  });
+  if (invalidApproval.status !== 400 || !(await invalidApproval.text()).includes("decision must be approve")) {
+    throw new Error("Invalid approval decision was not rejected without persistence");
+  }
+  const missingApproval = await fetch(`${api}/api/approvals/${pending[0].id}/resolve`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${authToken}` },
+    body: JSON.stringify({}),
+  });
+  if (missingApproval.status !== 400 || !(await missingApproval.text()).includes("decision must be approve")) {
+    throw new Error("Missing approval decision was not rejected without persistence");
+  }
+  const stillPending = await json<any[]>("/api/approvals");
+  if (stillPending.find((item) => item.id === pending[0].id)?.state !== "pending") {
+    throw new Error("Invalid approval decision mutated approval state");
+  }
   for (const approval of pending) {
     await json(`/api/approvals/${approval.id}/resolve`, "POST", { decision: "approve" });
   }
@@ -103,7 +135,44 @@ try {
     "three governed memory proposals",
   );
   const proposal = proposals.find((item) => item.state === "proposed" && runIds.includes(item.runId));
-  const promoted = await json<any>(`/api/memory/proposals/${proposal.id}/resolve`, "POST", { decision: "promote" });
+  const invalidMemory = await fetch(`${api}/api/memory/proposals/${proposal.id}/resolve`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${authToken}` },
+    body: JSON.stringify({ decision: "promote_eventually" }),
+  });
+  if (invalidMemory.status !== 400 || !(await invalidMemory.text()).includes("decision must be promote")) {
+    throw new Error("Invalid memory decision was not rejected without persistence");
+  }
+  const stillProposed = await json<any[]>("/api/memory/proposals");
+  if (stillProposed.find((item) => item.id === proposal.id)?.state !== "proposed") {
+    throw new Error("Invalid memory decision mutated proposal state");
+  }
+  const missingPreview = await fetch(`${api}/api/memory/proposals/${proposal.id}/resolve`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${authToken}` },
+    body: JSON.stringify({ decision: "promote" }),
+  });
+  if (missingPreview.status !== 400 || !(await missingPreview.text()).includes("exact reviewed preview")) {
+    throw new Error("Memory promotion without an exact preview was not rejected");
+  }
+  const preview = await json<any>(`/api/memory/proposals/${proposal.id}/preview`);
+  if (preview.proposalId !== proposal.id || !preview.target || !preview.content?.includes(proposal.claim)) {
+    throw new Error("Memory review endpoint did not return the exact proposal target and content");
+  }
+  if (existsSync(preview.path)) throw new Error("Memory preview wrote canonical Markdown before promotion");
+  const tamperedPreview = await fetch(`${api}/api/memory/proposals/${proposal.id}/resolve`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${authToken}` },
+    body: JSON.stringify({ decision: "promote", preview: { ...preview, content: `${preview.content}\ntampered` } }),
+  });
+  if (tamperedPreview.status !== 400 || !(await tamperedPreview.text()).includes("does not exactly match")) {
+    throw new Error("Tampered memory preview was not rejected");
+  }
+  const afterTamper = await json<any[]>("/api/memory/proposals");
+  if (afterTamper.find((item) => item.id === proposal.id)?.state !== "proposed" || existsSync(preview.path)) {
+    throw new Error("Tampered memory preview mutated proposal or canonical Project Brain state");
+  }
+  const promoted = await json<any>(`/api/memory/proposals/${proposal.id}/resolve`, "POST", { decision: "promote", preview });
   if (promoted.state !== "promoted") throw new Error("Memory proposal was not promoted through the review endpoint");
   if (!promoted.targetNote || !existsSync(join(brainDir, promoted.targetNote))) {
     throw new Error("Promoted canonical Markdown note was not created");

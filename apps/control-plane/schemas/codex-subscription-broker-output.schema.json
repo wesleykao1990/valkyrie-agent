@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkyrie.local/schemas/codex-subscription-broker-output-1.0.0.json",
+  "title": "Valkyrie Codex subscription broker response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["content", "tool_calls"],
+  "properties": {
+    "content": { "type": "string", "maxLength": 131072 },
+    "tool_calls": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "arguments_json"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$" },
+          "arguments_json": { "type": "string", "minLength": 2, "maxLength": 65536 }
+        }
+      }
+    }
+  }
+}

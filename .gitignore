@@ -6,6 +6,19 @@ data/workspaces/*
 !data/workspaces/.gitkeep
 data/artifacts/*
 !data/artifacts/.gitkeep
+data/runtime/
+data/atomic/
+data/auth/
+data/atomic-fixture-pilot/
+data/atomic-model-pilot/
+data/m5b/
+data/m5b-db/
+data/m5c/
+data/m5c-db/
+data/m6-backup-pre-v9/
+data/m6-live-db/
+data/m6-live-runtime/
+data/fixture-repositories/
 .env
 .DS_Store
 

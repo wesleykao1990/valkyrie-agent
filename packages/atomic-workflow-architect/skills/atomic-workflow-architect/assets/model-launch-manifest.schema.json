@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:wesley:atomic:model-launch-manifest:1.1.0",
+  "title": "Valkyrie Atomic model pilot launch manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "run_id", "project_id", "task_id", "request", "root_runtime",
+    "workflow", "package_sha256", "context_pack_ref", "contract_ref", "workspace",
+    "sandbox", "inference", "inference_policy_sha256", "budget", "bounds",
+    "crossProcessResume", "final_action", "approval"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.1.0-model" },
+    "run_id": { "$ref": "#/$defs/stableId" },
+    "project_id": { "$ref": "#/$defs/stableId" },
+    "task_id": { "$ref": "#/$defs/stableId" },
+    "request": { "$ref": "#/$defs/nonEmpty" },
+    "root_runtime": { "const": "atomic" },
+    "workflow": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "version", "workflow_sha256", "core_sha256"],
+      "properties": {
+        "name": { "const": "atomic-fixture-model-pilot" },
+        "version": { "$ref": "#/$defs/nonEmpty" },
+        "workflow_sha256": { "$ref": "#/$defs/sha256" },
+        "core_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "package_sha256": { "$ref": "#/$defs/sha256" },
+    "context_pack_ref": { "$ref": "#/$defs/nonEmpty" },
+    "contract_ref": { "$ref": "#/$defs/nonEmpty" },
+    "workspace": {
+      "type": "object", "additionalProperties": false,
+      "required": ["workspace_id", "owner_id", "fencing_token", "lease_expires_at"],
+      "properties": {
+        "workspace_id": { "$ref": "#/$defs/stableId" },
+        "owner_id": { "$ref": "#/$defs/stableId" },
+        "fencing_token": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "lease_expires_at": { "$ref": "#/$defs/nonEmpty" }
+      }
+    },
+    "sandbox": {
+      "type": "object", "additionalProperties": false,
+      "required": ["image_digest", "policy_sha256", "network_policy"],
+      "properties": {
+        "image_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "policy_sha256": { "$ref": "#/$defs/sha256" },
+        "network_policy": { "const": "run_internal_gateway_only" }
+      }
+    },
+    "inference": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "capability_id", "capability_token_sha256", "provider", "model", "api", "role_models",
+        "max_requests", "max_input_tokens", "max_output_tokens", "max_cost_micros",
+        "max_elapsed_ms", "expires_at", "credential_in_writer", "live_provider_expected", "live_provider_verified"
+      ],
+      "properties": {
+        "capability_id": { "$ref": "#/$defs/stableId" },
+        "capability_token_sha256": { "$ref": "#/$defs/sha256" },
+        "provider": { "$ref": "#/$defs/stableId" },
+        "model": { "$ref": "#/$defs/stableId" },
+        "api": { "const": "openai-completions" },
+        "role_models": {
+          "type": "object", "additionalProperties": false,
+          "required": ["implementer", "verifier_initial", "repair", "verifier_final"],
+          "properties": {
+            "implementer": { "$ref": "#/$defs/stableId" },
+            "verifier_initial": { "$ref": "#/$defs/stableId" },
+            "repair": { "$ref": "#/$defs/stableId" },
+            "verifier_final": { "$ref": "#/$defs/stableId" }
+          }
+        },
+        "max_requests": { "const": 16 },
+        "max_input_tokens": { "type": "integer", "minimum": 1, "maximum": 128000 },
+        "max_output_tokens": { "type": "integer", "minimum": 1, "maximum": 32768 },
+        "max_cost_micros": { "type": "integer", "minimum": 0, "maximum": 100000000 },
+        "max_elapsed_ms": { "type": "integer", "minimum": 100, "maximum": 600000 },
+        "expires_at": { "$ref": "#/$defs/nonEmpty" },
+        "credential_in_writer": { "const": false },
+        "live_provider_expected": { "type": "boolean" },
+        "live_provider_verified": { "const": false }
+      }
+    },
+    "inference_policy_sha256": { "$ref": "#/$defs/sha256" },
+    "budget": {
+      "type": "object", "additionalProperties": false,
+      "required": ["currency", "max_cost_usd"],
+      "properties": { "currency": { "const": "USD" }, "max_cost_usd": { "type": "number", "minimum": 0, "maximum": 5 } }
+    },
+    "bounds": {
+      "type": "object", "additionalProperties": false,
+      "required": ["max_duration_seconds", "max_turns", "max_repairs", "max_concurrency", "max_child_depth"],
+      "properties": {
+        "max_duration_seconds": { "type": "integer", "minimum": 1, "maximum": 600 },
+        "max_turns": { "const": 4 }, "max_repairs": { "const": 1 },
+        "max_concurrency": { "const": 1 }, "max_child_depth": { "const": 0 }
+      }
+    },
+    "crossProcessResume": { "const": false },
+    "final_action": { "const": "stop_before_external_action" },
+    "approval": {
+      "type": "object", "additionalProperties": false,
+      "required": ["action", "exact_effect", "required"],
+      "properties": {
+        "action": { "const": "accept_atomic_fixture_model_result" },
+        "exact_effect": { "$ref": "#/$defs/nonEmpty" }, "required": { "const": true }
+      }
+    }
+  },
+  "$defs": {
+    "nonEmpty": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "stableId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}

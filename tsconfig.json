@@ -7,7 +7,6 @@
     "skipLibCheck": true,
     "allowImportingTsExtensions": true,
     "rewriteRelativeImportExtensions": true,
-    "noCheck": true,
     "outDir": "dist"
   },
   "include": ["apps/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts"]

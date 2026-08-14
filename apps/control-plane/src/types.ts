@@ -74,6 +74,15 @@ export interface Approval {
   resolvedAt?: string | null;
   resolvedBy?: string | null;
   decision?: string | null;
+  /**
+   * Optional, immutable binding for evidence-gated pilot approvals. Legacy
+   * and mock approvals leave every binding field null.
+   */
+  projectId?: string | null;
+  workflow?: string | null;
+  evidenceDigest?: string | null;
+  policyHash?: string | null;
+  expiresAt?: string | null;
 }
 
 export interface Artifact {
@@ -106,6 +115,7 @@ export interface StartRunInput {
   runtime?: RuntimeName;
   workflow?: string;
   maxCostUsd?: number;
+  idempotencyKey?: string;
   approvalPolicy?: {
     preparePr?: "human" | "automatic";
   };
@@ -119,8 +129,27 @@ export interface RuntimeCapabilities {
   artifacts: boolean;
 }
 
+export interface RuntimePreflight {
+  runtime: RuntimeName;
+  adapter: "mock" | "native";
+  enabled: boolean;
+  available: boolean;
+  executionMode: "simulated" | "read-only" | "isolated-writer";
+  workflow?: string;
+  modelExecutionAttempted?: boolean;
+  command?: string;
+  version?: string;
+  authenticated?: boolean | "unknown";
+  capabilities: RuntimeCapabilities;
+  /** A separate control-plane gate, not a native runtime HIL capability. */
+  controlPlaneFinalAcceptance?: boolean;
+  reason?: string;
+}
+
 export interface NativeRunRef {
   runtime: RuntimeName;
   nativeRunId: string;
   nativeSessionId?: string;
+  runtimeVersion?: string;
+  metadata?: Record<string, unknown>;
 }

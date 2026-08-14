@@ -1,8 +1,8 @@
-# Current architecture decisions — v0.2.2
+# Current architecture decisions — through v0.3.0
 
 ## Accepted
 
-### D-01 — Hermes is the primary interface
+### D-01 — Hermes is the primary interface (historical; superseded by D-26)
 
 Hermes is the mobile front door for idea capture, portfolio briefings, run control, notifications, and approvals. Chat is not a system of record; Hermes assembles answers from current sources.
 
@@ -46,7 +46,7 @@ Current user instruction outranks the curated user profile, which outranks prior
 
 Each coding candidate receives its own worktree and external container or VM. A runtime must hold the writer lease before modifying the workspace.
 
-### D-12 — Telegram first for the pilot
+### D-12 — Telegram first for the pilot (historical; superseded by D-26)
 
 Telegram is the default first Hermes channel because it is a low-friction control surface. The channel is configurable and LINE can be added later without changing architecture.
 
@@ -58,13 +58,53 @@ Hermes chat supplies concise briefings and actions; Linear supplies the visual r
 
 Cross-project vision, research, and product rationale live in the central private vault. Code-coupled ADRs, API contracts, runbooks, and repository instructions live near the code. The Project Brain indexes both with source and revision metadata.
 
+### D-20 — Public repository with a nested license boundary
+
+Wesley explicitly authorized public visibility for `wesleykao1990/valkyrie-agent`
+on 2026-08-11. The root MIT license applies only within its grant. The nested
+`packages/atomic-workflow-architect/` `UNLICENSED`/all-rights-reserved notice is
+preserved, and public visibility does not grant additional use or redistribution
+rights for that subtree.
+
+### D-26 — LINE is active and Hermes is the interaction gateway
+
+LINE is Wesley's active first mobile channel through Hermes. Hermes is the
+interaction gateway, not the only interface or an authority for roadmap,
+implementation, project rationale, identity, or commitments. Buzz is the
+proposed graphical operations workspace. Future LINE and Buzz projections share
+stable Valkyrie conversation and run IDs; Buzz remains an interface/event
+workspace, not a roadmap, runtime, or memory authority. PR #1 records this
+direction but does not implement LINE/Buzz synchronization or remote identity.
+See proposed ADR-P012.
+
+### D-27 — Project, broad, personal, and commitment knowledge stay separate
+
+Accepted Project Brain Markdown remains canonical project-rationale authority.
+GBrain is the proposed broad advisory Knowledge Plane candidate for people,
+companies, meetings, sources, and research; it cannot override or write Project
+Brain. Personal Profile is a separate explicit preference authority, and the
+future Commitment Ledger is separate operational authority for promises and
+follow-ups. The current OpenViking path remains an alternative read-only Project
+Brain provider evaluation, not a simultaneous production memory system beside
+GBrain. See proposed ADR-P012.
+
+### D-28 — Agent role, runtime, communication, and tools are independent
+
+Research Lead is a role; Prime is one optional runtime when persistent or
+long-horizon execution warrants it. Engineering Lead and Fresh Reviewer are also
+roles rather than runtime aliases. Codex/Claude workers and fresh reviewers are
+normally transient. Permission to communicate or delegate is separate from tool
+permission and room membership grants neither. Unrestricted agent DMs and
+delegation remain disabled; every future delegation must be a governed child
+task/run with bounded scope, budget, and evidence. See proposed ADR-P012.
+
 ## Proposed / pilot-gated
 
 ### D-15 — Atomic is the default non-trivial engineering runtime
 
 Atomic is the leading candidate because of explicit graphs, evidence, fresh verification, gates, and resumability. It becomes the default only after an A/B pilot against direct Codex/Claude paths measures quality, time, cost, review burden, and recovery.
 
-### D-16 — OpenViking is the first machine-memory candidate
+### D-16 — OpenViking is the first machine-memory candidate (historical scope narrowed by D-27)
 
 Start behind the Project Brain interface in read-only mode. Promote it only if retrieval quality, project isolation, deletion, privacy, and operational reliability meet acceptance thresholds.
 
@@ -72,10 +112,88 @@ Start behind the Project Brain interface in read-only mode. Promote it only if r
 
 The pilot runner has no production secrets and handles a medium-risk repository task. Remote micro-VM isolation remains the escalation path for confidential or high-risk workloads.
 
+### D-18 — Transactional asynchronous storage boundary
+
+SQLite remains the default demo adapter and PostgreSQL is the opt-in production candidate. The proposed boundary, migration ownership, idempotency semantics, transactional outbox, and reconciliation behavior are detailed in `docs/adr/ADR-P001-transactional-storage-boundary.md`. This remains proposed until Wesley accepts the listed invariants and delivery semantics.
+
+### D-19 — Imported Atomic module and decision reconciliation
+
+The Atomic Workflow Architect source is integrated as an inert, independently testable module, not as the whole Project OS and not as an enabled runtime. Its imported addendum is evidence for reconciliation rather than a second canonical decision registry. See `docs/adr/ADR-P002-atomic-package-boundary.md`.
+
+### D-21 — Read-only native connectivity before writer execution
+
+Atomic offline discovery and direct Codex/Claude model connectivity may be tested
+only behind disabled-by-default adapters, bearer-authenticated loopback API/MCP,
+exact version gates, bounded context contracts, and `analysis_only` final actions.
+Direct prompts are fixed connectivity markers. This does not authorize a writer,
+Atomic model workflow, mobile ingress, PR, merge, deployment, or canonical-memory
+promotion. See `docs/adr/ADR-P003-read-only-native-runtime-pilot.md`; the boundary
+remains proposed until Wesley accepts or amends it.
+
+### D-22 — Fenced external writer boundary before model writes
+
+Every real writer uses a private per-run Git root, one exact owner/fencing-token
+lease with host-owned heartbeat, and a disabled-by-default external container/VM
+provider. The first Docker-compatible provider requires an immutable local image,
+no network or ambient credentials, effective-policy inspection, bounded resource
+use, explicit secret-scanned artifact export, and stop/cleanup before exact-fence
+release. Contract tests do not authorize writer mode. The local Colima/Docker
+fixture smoke and provider-aware restart contracts now pass, but runtime
+composition still requires the separately reviewed Milestone 5 launch, egress,
+and credential policy. See
+`docs/adr/ADR-P004-external-writer-boundary.md`; the boundary remains proposed
+until Wesley accepts or amends it.
+
+### D-23 — Risk-based Direct, Atomic Lite, and Atomic Full routing
+
+Hermes may collect the literal request and express a latency/rigor preference,
+but the control plane owns the final execution-shape decision after resolving
+current Linear, Git/check, and Project Brain context. The proposed deterministic
+rubric selects the smallest complete shape: Direct for small low-risk work,
+Atomic Lite for a persistent implementer plus deterministic checks and conditional
+review, and Atomic Full for hard workflow signals, high risk, iteration,
+independent candidates, durability, or evidence/approval gates. A preference may
+increase rigor but cannot weaken policy. See
+`docs/adr/ADR-P009-risk-based-execution-shapes.md`. The authenticated assessment
+ledger and reusable package-level Lite contract are implemented, but general
+execution remains fail-closed until live Linear/Git authority and a trusted
+project launcher exist.
+
+### D-24 — Revision-bound production connectors and separate final actions
+
+Linear/Git/GitHub credentials remain host-side and every project mapping is an
+exact digest-pinned policy. Linear and Git reads create narrow revision bindings,
+not a second roadmap or caller-controlled repository surface. External writes use
+fenced per-consumer outbox delivery or an immutable evidence/policy/expiry-bound
+action plan with a stable marker and durable receipt. Ambiguous outcomes are
+reconciled rather than blindly retried. GitHub may create only a draft PR from a
+pre-existing configured remote head; branch publication, merge, deployment,
+credential expansion, and memory promotion remain separate actions. See
+`docs/adr/ADR-P010-production-connector-boundary.md`. This remains proposed until
+Wesley accepts or amends the live operational policy and actor-authentication
+boundary.
+
+### D-25 — One managed capability plane for third-party skill suites
+
+Wesley approves and manages a suite generation once rather than manually mapping
+every skill to every harness. The control plane preserves exact source bytes,
+derives declared requirements, assigns project/runtime modes, quarantines
+capability expansion, and produces a digest-bound runtime pack. Codex and Claude
+Code are future native projection hosts; Atomic delegates to a compatible
+specialist while retaining its native workflow graph; Hermes can request and
+inspect but cannot install or receive raw runtime authority. Admission never runs
+third-party setup or enables web, credentials, external actions, or self-update.
+See `docs/adr/ADR-P011-managed-skill-suite-plane.md`. The foundation is
+implemented, but the decision remains proposed until a real suite projection and
+broker are reviewed and exercised.
+
 ## Deferred
 
-- Prime Agent until long-horizon benchmark tasks show incremental value.
+- General Prime selection until long-horizon benchmark tasks show incremental
+  value; explicit fixed/test selection remains available.
 - Orca integration until live parallel-agent supervision is a repeated pain point.
-- Buzz until multi-person and persistent-agent collaboration requires a shared event workspace.
+- Buzz mutations and LINE/Buzz synchronization until actor identity and the
+  shared conversation foundation are reviewed.
 - Linear AgentSession preview integration until ordinary issue/comment projection is reliable.
+- Unrestricted agent-to-agent DMs or recursive delegation.
 - Automatic canonical-memory promotion.

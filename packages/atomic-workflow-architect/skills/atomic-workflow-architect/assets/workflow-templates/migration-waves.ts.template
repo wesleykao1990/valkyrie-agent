@@ -1,0 +1,10 @@
+// Migration workflow design template
+// exact compatibility posture + rollback contract
+// → inventory call sites/data/public doors
+// → dependency clusters
+// → bounded vertical waves/stacks
+// → per-wave deterministic and fresh-review gates
+// → human approval before irreversible transition
+// → compatibility audit
+// → cleanup only after migration proof
+// Each wave is distinct tracked work. Never create DAG back-edges.

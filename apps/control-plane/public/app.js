@@ -72,10 +72,30 @@ function renderMemory() {
   const items = portfolio.needsWesley.memoryProposals;
   if (!items.length) { $("memory").innerHTML = `<div class="empty">No proposed knowledge changes.</div>`; return; }
   $("memory").innerHTML = items.map((m) => `
-    <div class="attention"><h4>${esc(m.projectId)}</h4><p>${esc(m.claim)}</p><div class="actions"><button class="small" data-memory="${esc(m.id)}" data-decision="promote">Promote</button><button class="small danger" data-memory="${esc(m.id)}" data-decision="reject">Reject</button></div></div>`).join("");
+    <div class="attention"><h4>${esc(m.projectId)}</h4><p>${esc(m.claim)}</p><div class="actions"><button class="small" data-memory="${esc(m.id)}" data-decision="promote">Review &amp; promote</button><button class="small danger" data-memory="${esc(m.id)}" data-decision="reject">Reject</button></div></div>`).join("");
   document.querySelectorAll("[data-memory]").forEach((b) => b.addEventListener("click", async () => {
-    await api(`/api/memory/proposals/${b.dataset.memory}/resolve`, { method: "POST", body: { decision: b.dataset.decision } });
-    await refresh();
+    try {
+      if (b.dataset.decision === "reject") {
+        await api(`/api/memory/proposals/${b.dataset.memory}/resolve`, { method: "POST", body: { decision: "reject" } });
+        await refresh();
+        return;
+      }
+      const preview = await api(`/api/memory/proposals/${b.dataset.memory}/preview`);
+      const confirmed = window.confirm([
+        "Review the exact canonical Project Brain change.",
+        `TARGET\n${preview.target}`,
+        `CONTENT\n${preview.content}`,
+        "Select OK only if this exact target and content should become accepted canonical memory.",
+      ].join("\n\n"));
+      if (!confirmed) return;
+      await api(`/api/memory/proposals/${b.dataset.memory}/resolve`, {
+        method: "POST",
+        body: { decision: "promote", preview },
+      });
+      await refresh();
+    } catch (error) {
+      window.alert(error.message);
+    }
   }));
 }
 

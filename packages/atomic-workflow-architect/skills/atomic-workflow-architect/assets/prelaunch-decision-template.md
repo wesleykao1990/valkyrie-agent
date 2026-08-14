@@ -1,0 +1,21 @@
+# Atomic Pre-launch Decision
+
+- Exact request:
+- Request class / user intent:
+- Project/task and authority sources:
+- Context freshness / missing sources:
+- Contract artifact:
+- Compatibility posture:
+- Complexity score and hard signals:
+- Selected execution shape / inspected workflow contract:
+- Graph and dependency/concurrency plan:
+- Context modes and artifact handoffs:
+- Evidence matrix / deterministic gates:
+- Models by role / fallbacks:
+- Workspace owner / external sandbox / durable backend:
+- Budget / repair / time / child limits:
+- Human/final-action approvals:
+- Generated-workflow trust state:
+- Assumptions:
+- Blockers:
+- Exact launch action:

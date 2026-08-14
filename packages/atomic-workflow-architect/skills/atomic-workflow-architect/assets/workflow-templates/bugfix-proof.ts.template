@@ -1,0 +1,26 @@
+import { workflow } from "@bastani/workflows";
+import { Type } from "typebox";
+
+// TEMPLATE ONLY: reproduce first and replace placeholders with project-owned probes.
+export default workflow({
+  name: "bugfix-proof-REPLACE",
+  description: "Reproduce, diagnose, minimally repair, and prove one regression.",
+  inputs: {
+    bug: Type.String(),
+    reproduction: Type.String(),
+    contract_path: Type.String(),
+  },
+  outputs: {
+    result: Type.String(),
+  },
+  run: async (ctx: any) => {
+    // 1. ctx.tool reproduction: fail before fix when feasible.
+    // 2. Fresh root-cause analysis grounded in actual failure output.
+    // 3. Forked minimal fix + regression test.
+    // 4. Rerun same reproduction and broader checks.
+    // 5. Fresh verifier checks root cause, contract, diff, and side effects.
+    // 6. One consolidated repair payload, bounded iteration, same probes rerun.
+    // 7. Stop at the final-action boundary.
+    return { result: "TEMPLATE_NOT_READY: add exact reproduction and gates" };
+  },
+});

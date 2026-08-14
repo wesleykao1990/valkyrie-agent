@@ -1,4 +1,4 @@
--- Production-target schema. The zero-dependency prototype currently uses SQLite.
+-- Initial PostgreSQL schema for the opt-in production-candidate adapter.
 CREATE TABLE IF NOT EXISTS projects (
   id text PRIMARY KEY,
   name text NOT NULL,

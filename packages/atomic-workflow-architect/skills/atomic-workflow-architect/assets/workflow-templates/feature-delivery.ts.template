@@ -1,0 +1,51 @@
+import { workflow } from "@bastani/workflows";
+import { Type } from "typebox";
+
+// TEMPLATE ONLY. Replace placeholders and add project-owned checks before loading.
+export default workflow({
+  name: "feature-delivery-REPLACE",
+  description: "Research, implement, prove, repair, and gate one scoped feature.",
+  inputs: {
+    objective: Type.String(),
+    contract_path: Type.String(),
+    final_action: Type.String({ default: "stop_before_pr" }),
+  },
+  outputs: {
+    result: Type.String(),
+    approved: Type.Boolean(),
+    next_action: Type.String(),
+  },
+  run: async (ctx: any) => {
+    const researchPath = `.atomic/workflows/runs/${String(ctx.runId ?? "current")}/research.md`;
+    const research = await ctx.task("research", {
+      context: "fresh",
+      reads: [ctx.inputs.contract_path],
+      output: researchPath,
+      prompt: "Locate the exact implementation surface, public contracts, tests, risks, existing patterns, and evidence plan. Do not implement.",
+    });
+
+    await ctx.task("implement", {
+      context: "fork",
+      reads: [ctx.inputs.contract_path, researchPath],
+      prompt: `Implement the literal contract with the smallest correct change. Research artifact: ${researchPath}. Do not perform the final action.`,
+    });
+
+    // Add project-specific durable ctx.tool checks here. Expected repair inputs should use
+    // a structured return/failure outcome and persist stdout/stderr/artifact references.
+
+    const review = await ctx.task("fresh-verifier", {
+      context: "fresh",
+      reads: [ctx.inputs.contract_path, researchPath],
+      prompt: "Review the current code delta against the literal contract and actual deterministic evidence. Identify only evidence-backed blockers and produce one repair payload.",
+    });
+
+    // Add bounded repair + exact check rerun. Do not create a DAG back-edge.
+    const approved = await ctx.ui.confirm(`Implementation review:\n\n${review.text}\n\nProceed to the explicitly authorized final action?`);
+
+    return {
+      result: "TEMPLATE_NOT_READY: add exact deterministic checks and bounded repair",
+      approved,
+      next_action: approved ? String(ctx.inputs.final_action) : "stop",
+    };
+  },
+});

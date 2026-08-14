@@ -1,0 +1,40 @@
+{
+  "name": "wesley-atomic-workflow-architect",
+  "version": "0.2.1",
+  "private": true,
+  "description": "Natural-language idea/project/feature intake that selects, authors, verifies, and launches the smallest complete Atomic workflow for Wesley.",
+  "type": "module",
+  "keywords": [
+    "atomic-package",
+    "agent-skills",
+    "atomic",
+    "workflows",
+    "verification"
+  ],
+  "license": "UNLICENSED",
+  "atomic": {
+    "extensions": [
+      "./extensions/auto-route.ts"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "prompts": [
+      "./prompts"
+    ],
+    "workflows": [
+      "./workflows"
+    ]
+  },
+  "peerDependencies": {
+    "@bastani/atomic": "*",
+    "@bastani/workflows": "*",
+    "typebox": "*"
+  },
+  "scripts": {
+    "verify": "node scripts/verify.mjs",
+    "typecheck": "tsc --noEmit",
+    "verify:all": "npm run verify && npm run typecheck",
+    "fetch:videos": "node scripts/fetch-youtube-transcripts.mjs"
+  }
+}

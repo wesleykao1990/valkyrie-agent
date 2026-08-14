@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "1.1.0",
+  "suiteId": "example-suite",
+  "displayName": "Example Managed Skill Suite",
+  "version": "1.0.0",
+  "source": {
+    "kind": "local-directory",
+    "path": "/absolute/path/to/reviewed-skill-suite",
+    "expectedSha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "trustProfile": "trusted-development",
+  "projects": [
+    "ovalo"
+  ],
+  "runtimes": [
+    {
+      "runtime": "codex",
+      "mode": "native"
+    },
+    {
+      "runtime": "claude-code",
+      "mode": "native"
+    },
+    {
+      "runtime": "atomic",
+      "mode": "delegated"
+    },
+    {
+      "runtime": "hermes",
+      "mode": "request-only"
+    }
+  ],
+  "telemetry": "disabled",
+  "updates": "reviewed-compatible",
+  "allowCapabilityExpansion": false,
+  "manifestDialect": "skill-frontmatter-v1",
+  "capabilityOverrides": []
+}
